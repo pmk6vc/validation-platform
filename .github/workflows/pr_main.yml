@@ -23,6 +23,15 @@ jobs:
       - name: Run tests
         run: ./gradlew test
 
+      - name: Test summary
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: 'build/test-results/test/*.xml'
+          include_passed: true
+          detailed_summary: true
+          summary: true
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
