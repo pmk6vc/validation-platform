@@ -65,11 +65,11 @@ tasks.test {
 tasks.register<Exec>("dockerUp") {
     group = "docker"
     description = "Build and start all containers"
-    commandLine("docker", "compose", "up", "--build", "-d")
+    commandLine("sh", "-c", "docker compose up --build -d")
 }
 
 tasks.register<Exec>("dockerDown") {
     group = "docker"
     description = "Stop and remove all containers"
-    commandLine("docker", "compose", "down")
+    commandLine("sh", "-c", "docker compose down")
 }
