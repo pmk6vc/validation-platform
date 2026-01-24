@@ -78,3 +78,7 @@ tasks.register<Exec>("dockerDown") {
 ktlint {
     version.set("1.5.0")
 }
+
+ktlint {
+    version.set("1.5.0")
+}
