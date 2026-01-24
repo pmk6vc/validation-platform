@@ -2,10 +2,14 @@ package com.platform.api
 
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
-import io.ktor.http.*
-import io.ktor.server.application.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.Application
+import io.ktor.server.application.call
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
+import io.ktor.server.routing.route
+import io.ktor.server.routing.routing
 
 fun Application.configureRouting() {
     routing {
@@ -44,7 +48,7 @@ fun Application.configureRouting() {
                         ServiceRepository.find(
                             organizationId = call.request.queryParameters["organizationId"],
                             cluster = call.request.queryParameters["cluster"],
-                            namespace = call.request.queryParameters["namespace"]
+                            namespace = call.request.queryParameters["namespace"],
                         )
                     call.respond(services)
                 }

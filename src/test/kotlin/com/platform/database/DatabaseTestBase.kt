@@ -53,7 +53,7 @@ abstract class DatabaseTestBase {
                 DatabaseFactory.init(
                     jdbcUrl = externalUrl,
                     username = System.getenv("TEST_DATABASE_USER") ?: "postgres",
-                    password = System.getenv("TEST_DATABASE_PASSWORD") ?: "postgres"
+                    password = System.getenv("TEST_DATABASE_PASSWORD") ?: "postgres",
                 )
             } else {
                 // Use testcontainers (works in CI)
@@ -68,7 +68,7 @@ abstract class DatabaseTestBase {
                 DatabaseFactory.init(
                     jdbcUrl = postgres!!.jdbcUrl,
                     username = postgres!!.username,
-                    password = postgres!!.password
+                    password = postgres!!.password,
                 )
             }
         }

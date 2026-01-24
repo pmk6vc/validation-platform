@@ -11,13 +11,13 @@ object DatabaseFactory {
     fun init(
         jdbcUrl: String,
         username: String,
-        password: String
+        password: String,
     ) {
         Database.connect(
             url = jdbcUrl,
             driver = "org.postgresql.Driver",
             user = username,
-            password = password
+            password = password,
         )
 
         transaction {

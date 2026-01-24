@@ -14,7 +14,7 @@ class OrganizationRepositoryTest : DatabaseTestBase() {
     private fun createTestOrganization(
         id: String = UUID.randomUUID().toString(),
         name: String = "Test Organization",
-        createdAt: Instant = Instant.now()
+        createdAt: Instant = Instant.now(),
     ) = Organization(id = id, name = name, createdAt = createdAt)
 
     @Test

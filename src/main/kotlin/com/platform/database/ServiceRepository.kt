@@ -1,9 +1,15 @@
 package com.platform.database
 
 import com.platform.models.Service
-import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.Op
+import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
+import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.update
 import java.util.UUID
 
 /**
@@ -44,7 +50,7 @@ object ServiceRepository {
     fun find(
         organizationId: String? = null,
         cluster: String? = null,
-        namespace: String? = null
+        namespace: String? = null,
     ): List<Service> =
         transaction {
             val conditions = mutableListOf<Op<Boolean>>()
@@ -104,6 +110,6 @@ object ServiceRepository {
             name = this[Services.name],
             provider = this[Services.provider],
             discoveredAt = this[Services.discoveredAt],
-            metadata = this[Services.metadata]
+            metadata = this[Services.metadata],
         )
 }

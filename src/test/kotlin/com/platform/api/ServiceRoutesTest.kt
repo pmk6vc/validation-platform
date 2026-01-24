@@ -5,13 +5,14 @@ import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Service
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
-import io.ktor.server.application.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.testing.*
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.Application
+import io.ktor.server.application.install
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -35,7 +36,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                 Json {
                     prettyPrint = true
                     ignoreUnknownKeys = true
-                }
+                },
             )
         }
         configureRouting()
@@ -46,7 +47,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
         cluster: String = "prod",
         namespace: String = "default",
         provider: String? = "AWS",
-        metadata: Map<String, String>? = null
+        metadata: Map<String, String>? = null,
     ) = Service(
         id = UUID.randomUUID().toString(),
         organizationId = testOrg.id,
@@ -55,7 +56,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
         name = name,
         provider = provider,
         discoveredAt = Instant.now(),
-        metadata = metadata
+        metadata = metadata,
     )
 
     @Test
@@ -105,7 +106,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     name = "other-service",
                     provider = "AWS",
                     discoveredAt = Instant.now(),
-                    metadata = null
+                    metadata = null,
                 )
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
@@ -235,7 +236,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     cluster = "production",
                     namespace = "backend",
                     provider = "GCP",
-                    metadata = mapOf("team" to "platform", "tier" to "critical")
+                    metadata = mapOf("team" to "platform", "tier" to "critical"),
                 )
             ServiceRepository.create(svc)
 

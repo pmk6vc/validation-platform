@@ -22,13 +22,13 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             Organization(
                 id = UUID.randomUUID().toString(),
                 name = "Test Organization",
-                createdAt = Instant.now()
+                createdAt = Instant.now(),
             )
         testOrg2 =
             Organization(
                 id = UUID.randomUUID().toString(),
                 name = "Another Organization",
-                createdAt = Instant.now()
+                createdAt = Instant.now(),
             )
         OrganizationRepository.create(testOrg)
         OrganizationRepository.create(testOrg2)
@@ -42,7 +42,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         name: String = "test-service",
         provider: String? = "AWS",
         discoveredAt: Instant = Instant.now(),
-        metadata: Map<String, String>? = null
+        metadata: Map<String, String>? = null,
     ) = Service(
         id = id,
         organizationId = organizationId,
@@ -51,7 +51,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         name = name,
         provider = provider,
         discoveredAt = discoveredAt,
-        metadata = metadata
+        metadata = metadata,
     )
 
     @Test
@@ -215,7 +215,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
                 cluster = "prod",
                 namespace = "default",
                 provider = "AWS",
-                metadata = mapOf("version" to "1.0")
+                metadata = mapOf("version" to "1.0"),
             )
         ServiceRepository.create(original)
 
@@ -223,7 +223,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             original.copy(
                 id = UUID.randomUUID().toString(), // Different ID but same identity
                 provider = "GCP",
-                metadata = mapOf("version" to "2.0")
+                metadata = mapOf("version" to "2.0"),
             )
 
         val result = ServiceRepository.upsert(updated)
@@ -243,13 +243,13 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             createTestService(
                 name = "order-service",
                 cluster = "prod",
-                namespace = "orders"
+                namespace = "orders",
             )
         val service2 =
             createTestService(
                 name = "order-service",
                 cluster = "prod",
-                namespace = "orders"
+                namespace = "orders",
             )
 
         ServiceRepository.create(service1)
@@ -265,13 +265,13 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             createTestService(
                 name = "api-gateway",
                 cluster = "prod",
-                namespace = "ns-1"
+                namespace = "ns-1",
             )
         val service2 =
             createTestService(
                 name = "api-gateway",
                 cluster = "prod",
-                namespace = "ns-2"
+                namespace = "ns-2",
             )
 
         ServiceRepository.create(service1)
@@ -287,13 +287,13 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             createTestService(
                 name = "api-gateway",
                 cluster = "cluster-1",
-                namespace = "default"
+                namespace = "default",
             )
         val service2 =
             createTestService(
                 name = "api-gateway",
                 cluster = "cluster-2",
-                namespace = "default"
+                namespace = "default",
             )
 
         ServiceRepository.create(service1)
@@ -308,12 +308,12 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         val service1 =
             createTestService(
                 name = "common-service",
-                organizationId = testOrg.id
+                organizationId = testOrg.id,
             )
         val service2 =
             createTestService(
                 name = "common-service",
-                organizationId = testOrg2.id
+                organizationId = testOrg2.id,
             )
 
         ServiceRepository.create(service1)
