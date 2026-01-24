@@ -39,20 +39,11 @@ fun Application.configureRouting() {
 
             route("/services") {
                 get {
-                    val orgId = call.request.queryParameters["organizationId"]
-                    val cluster = call.request.queryParameters["cluster"]
-                    val namespace = call.request.queryParameters["namespace"]
-
-                    val services = when {
-                        orgId != null && cluster != null && namespace != null ->
-                            ServiceRepository.findByNamespace(orgId, cluster, namespace)
-                        orgId != null && cluster != null ->
-                            ServiceRepository.findByCluster(orgId, cluster)
-                        orgId != null ->
-                            ServiceRepository.findByOrganization(orgId)
-                        else ->
-                            ServiceRepository.findAll()
-                    }
+                    val services = ServiceRepository.find(
+                        organizationId = call.request.queryParameters["organizationId"],
+                        cluster = call.request.queryParameters["cluster"],
+                        namespace = call.request.queryParameters["namespace"]
+                    )
                     call.respond(services)
                 }
 

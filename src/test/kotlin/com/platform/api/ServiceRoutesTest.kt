@@ -148,6 +148,46 @@ class ServiceRoutesTest : DatabaseTestBase() {
     }
 
     @Test
+    fun `GET services with only namespace filter should return filtered services`() = testApplication {
+        application { configureTestApplication() }
+
+        val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
+        val svc2 = createService(name = "payments-worker", cluster = "staging", namespace = "payments")
+        val svc3 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
+        ServiceRepository.create(svc1)
+        ServiceRepository.create(svc2)
+        ServiceRepository.create(svc3)
+
+        val response = client.get("/api/services?namespace=payments")
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.bodyAsText()
+        assertTrue(body.contains("payments-api"))
+        assertTrue(body.contains("payments-worker"))
+        assertTrue(!body.contains("orders-api"))
+    }
+
+    @Test
+    fun `GET services with only cluster filter should return filtered services`() = testApplication {
+        application { configureTestApplication() }
+
+        val svc1 = createService(name = "prod-service-1", cluster = "prod")
+        val svc2 = createService(name = "prod-service-2", cluster = "prod", namespace = "other")
+        val svc3 = createService(name = "staging-service", cluster = "staging")
+        ServiceRepository.create(svc1)
+        ServiceRepository.create(svc2)
+        ServiceRepository.create(svc3)
+
+        val response = client.get("/api/services?cluster=prod")
+
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.bodyAsText()
+        assertTrue(body.contains("prod-service-1"))
+        assertTrue(body.contains("prod-service-2"))
+        assertTrue(!body.contains("staging-service"))
+    }
+
+    @Test
     fun `GET service by id should return service when exists`() = testApplication {
         application { configureTestApplication() }
 

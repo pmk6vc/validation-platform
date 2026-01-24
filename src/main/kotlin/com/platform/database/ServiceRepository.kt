@@ -37,29 +37,28 @@ object ServiceRepository {
             .map { it.toService() }
     }
 
-    fun findByOrganization(organizationId: String): List<Service> = transaction {
-        Services.selectAll()
-            .where { Services.organizationId eq UUID.fromString(organizationId) }
-            .map { it.toService() }
-    }
+    fun find(
+        organizationId: String? = null,
+        cluster: String? = null,
+        namespace: String? = null
+    ): List<Service> = transaction {
+        val conditions = mutableListOf<Op<Boolean>>()
 
-    fun findByCluster(organizationId: String, cluster: String): List<Service> = transaction {
-        Services.selectAll()
-            .where {
-                (Services.organizationId eq UUID.fromString(organizationId)) and
-                (Services.cluster eq cluster)
-            }
-            .map { it.toService() }
-    }
+        organizationId?.let {
+            conditions.add(Services.organizationId eq UUID.fromString(it))
+        }
+        cluster?.let {
+            conditions.add(Services.cluster eq it)
+        }
+        namespace?.let {
+            conditions.add(Services.namespace eq it)
+        }
 
-    fun findByNamespace(organizationId: String, cluster: String, namespace: String): List<Service> = transaction {
-        Services.selectAll()
-            .where {
-                (Services.organizationId eq UUID.fromString(organizationId)) and
-                (Services.cluster eq cluster) and
-                (Services.namespace eq namespace)
-            }
-            .map { it.toService() }
+        if (conditions.isEmpty()) {
+            Services.selectAll()
+        } else {
+            Services.selectAll().where { conditions.reduce { acc, op -> acc and op } }
+        }.map { it.toService() }
     }
 
     fun upsert(service: Service): Service = transaction {

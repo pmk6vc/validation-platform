@@ -115,7 +115,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
     }
 
     @Test
-    fun `findByOrganization should return only services for that org`() {
+    fun `find with organizationId should return only services for that org`() {
         val service1 = createTestService(name = "service-1", organizationId = testOrg.id)
         val service2 = createTestService(name = "service-2", organizationId = testOrg.id)
         val service3 = createTestService(name = "service-3", organizationId = testOrg2.id)
@@ -124,14 +124,14 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val orgServices = ServiceRepository.findByOrganization(testOrg.id)
+        val orgServices = ServiceRepository.find(organizationId = testOrg.id)
 
         assertEquals(2, orgServices.size)
         assertTrue(orgServices.all { it.organizationId == testOrg.id })
     }
 
     @Test
-    fun `findByCluster should return services in that cluster`() {
+    fun `find with cluster should return services in that cluster`() {
         val service1 = createTestService(name = "service-1", cluster = "prod-us-east")
         val service2 = createTestService(name = "service-2", cluster = "prod-us-east")
         val service3 = createTestService(name = "service-3", cluster = "prod-eu-west")
@@ -140,26 +140,42 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val clusterServices = ServiceRepository.findByCluster(testOrg.id, "prod-us-east")
+        val clusterServices = ServiceRepository.find(cluster = "prod-us-east")
 
         assertEquals(2, clusterServices.size)
         assertTrue(clusterServices.all { it.cluster == "prod-us-east" })
     }
 
     @Test
-    fun `findByNamespace should return services in that namespace`() {
+    fun `find with namespace should return services in that namespace`() {
         val service1 = createTestService(name = "service-1", cluster = "prod", namespace = "payments")
-        val service2 = createTestService(name = "service-2", cluster = "prod", namespace = "payments")
+        val service2 = createTestService(name = "service-2", cluster = "staging", namespace = "payments")
         val service3 = createTestService(name = "service-3", cluster = "prod", namespace = "orders")
 
         ServiceRepository.create(service1)
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val nsServices = ServiceRepository.findByNamespace(testOrg.id, "prod", "payments")
+        val nsServices = ServiceRepository.find(namespace = "payments")
 
         assertEquals(2, nsServices.size)
         assertTrue(nsServices.all { it.namespace == "payments" })
+    }
+
+    @Test
+    fun `find with multiple filters should combine them with AND`() {
+        val service1 = createTestService(name = "service-1", cluster = "prod", namespace = "payments")
+        val service2 = createTestService(name = "service-2", cluster = "prod", namespace = "orders")
+        val service3 = createTestService(name = "service-3", cluster = "staging", namespace = "payments")
+
+        ServiceRepository.create(service1)
+        ServiceRepository.create(service2)
+        ServiceRepository.create(service3)
+
+        val filtered = ServiceRepository.find(cluster = "prod", namespace = "payments")
+
+        assertEquals(1, filtered.size)
+        assertEquals("service-1", filtered[0].name)
     }
 
     @Test
