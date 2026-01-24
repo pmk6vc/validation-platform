@@ -25,8 +25,9 @@ fun Application.configureRouting() {
                 }
 
                 get("/{id}") {
-                    val id = call.parameters["id"]
-                        ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                    val id =
+                        call.parameters["id"]
+                            ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
 
                     val organization = OrganizationRepository.findById(id)
                     if (organization != null) {
@@ -39,17 +40,19 @@ fun Application.configureRouting() {
 
             route("/services") {
                 get {
-                    val services = ServiceRepository.find(
-                        organizationId = call.request.queryParameters["organizationId"],
-                        cluster = call.request.queryParameters["cluster"],
-                        namespace = call.request.queryParameters["namespace"]
-                    )
+                    val services =
+                        ServiceRepository.find(
+                            organizationId = call.request.queryParameters["organizationId"],
+                            cluster = call.request.queryParameters["cluster"],
+                            namespace = call.request.queryParameters["namespace"]
+                        )
                     call.respond(services)
                 }
 
                 get("/{id}") {
-                    val id = call.parameters["id"]
-                        ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                    val id =
+                        call.parameters["id"]
+                            ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
 
                     val service = ServiceRepository.findById(id)
                     if (service != null) {

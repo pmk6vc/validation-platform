@@ -13,22 +13,23 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ServiceRepositoryTest : DatabaseTestBase() {
-
     private lateinit var testOrg: Organization
     private lateinit var testOrg2: Organization
 
     @BeforeEach
     fun setupOrganizations() {
-        testOrg = Organization(
-            id = UUID.randomUUID().toString(),
-            name = "Test Organization",
-            createdAt = Instant.now()
-        )
-        testOrg2 = Organization(
-            id = UUID.randomUUID().toString(),
-            name = "Another Organization",
-            createdAt = Instant.now()
-        )
+        testOrg =
+            Organization(
+                id = UUID.randomUUID().toString(),
+                name = "Test Organization",
+                createdAt = Instant.now()
+            )
+        testOrg2 =
+            Organization(
+                id = UUID.randomUUID().toString(),
+                name = "Another Organization",
+                createdAt = Instant.now()
+            )
         OrganizationRepository.create(testOrg)
         OrganizationRepository.create(testOrg2)
     }
@@ -208,20 +209,22 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
     @Test
     fun `upsert should update existing service when identity matches`() {
-        val original = createTestService(
-            name = "my-service",
-            cluster = "prod",
-            namespace = "default",
-            provider = "AWS",
-            metadata = mapOf("version" to "1.0")
-        )
+        val original =
+            createTestService(
+                name = "my-service",
+                cluster = "prod",
+                namespace = "default",
+                provider = "AWS",
+                metadata = mapOf("version" to "1.0")
+            )
         ServiceRepository.create(original)
 
-        val updated = original.copy(
-            id = UUID.randomUUID().toString(), // Different ID but same identity
-            provider = "GCP",
-            metadata = mapOf("version" to "2.0")
-        )
+        val updated =
+            original.copy(
+                id = UUID.randomUUID().toString(), // Different ID but same identity
+                provider = "GCP",
+                metadata = mapOf("version" to "2.0")
+            )
 
         val result = ServiceRepository.upsert(updated)
 
@@ -236,16 +239,18 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
     @Test
     fun `unique constraint should prevent duplicate service identity`() {
-        val service1 = createTestService(
-            name = "order-service",
-            cluster = "prod",
-            namespace = "orders"
-        )
-        val service2 = createTestService(
-            name = "order-service",
-            cluster = "prod",
-            namespace = "orders"
-        )
+        val service1 =
+            createTestService(
+                name = "order-service",
+                cluster = "prod",
+                namespace = "orders"
+            )
+        val service2 =
+            createTestService(
+                name = "order-service",
+                cluster = "prod",
+                namespace = "orders"
+            )
 
         ServiceRepository.create(service1)
 
@@ -256,16 +261,18 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
     @Test
     fun `same service name allowed in different namespaces`() {
-        val service1 = createTestService(
-            name = "api-gateway",
-            cluster = "prod",
-            namespace = "ns-1"
-        )
-        val service2 = createTestService(
-            name = "api-gateway",
-            cluster = "prod",
-            namespace = "ns-2"
-        )
+        val service1 =
+            createTestService(
+                name = "api-gateway",
+                cluster = "prod",
+                namespace = "ns-1"
+            )
+        val service2 =
+            createTestService(
+                name = "api-gateway",
+                cluster = "prod",
+                namespace = "ns-2"
+            )
 
         ServiceRepository.create(service1)
         ServiceRepository.create(service2)
@@ -276,16 +283,18 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
     @Test
     fun `same service name allowed in different clusters`() {
-        val service1 = createTestService(
-            name = "api-gateway",
-            cluster = "cluster-1",
-            namespace = "default"
-        )
-        val service2 = createTestService(
-            name = "api-gateway",
-            cluster = "cluster-2",
-            namespace = "default"
-        )
+        val service1 =
+            createTestService(
+                name = "api-gateway",
+                cluster = "cluster-1",
+                namespace = "default"
+            )
+        val service2 =
+            createTestService(
+                name = "api-gateway",
+                cluster = "cluster-2",
+                namespace = "default"
+            )
 
         ServiceRepository.create(service1)
         ServiceRepository.create(service2)
@@ -296,14 +305,16 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
     @Test
     fun `same service name allowed in different organizations`() {
-        val service1 = createTestService(
-            name = "common-service",
-            organizationId = testOrg.id
-        )
-        val service2 = createTestService(
-            name = "common-service",
-            organizationId = testOrg2.id
-        )
+        val service1 =
+            createTestService(
+                name = "common-service",
+                organizationId = testOrg.id
+            )
+        val service2 =
+            createTestService(
+                name = "common-service",
+                organizationId = testOrg2.id
+            )
 
         ServiceRepository.create(service1)
         ServiceRepository.create(service2)

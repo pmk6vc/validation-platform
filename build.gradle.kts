@@ -7,6 +7,7 @@ plugins {
     kotlin("jvm") version "2.2.21"
     kotlin("plugin.serialization") version "2.2.21"
     id("io.ktor.plugin") version "3.3.3"
+    id("org.jlleitschuh.gradle.ktlint") version "12.1.2"
 }
 
 group = "com.platform"
@@ -72,4 +73,8 @@ tasks.register<Exec>("dockerDown") {
     group = "docker"
     description = "Stop and remove all containers"
     commandLine("sh", "-c", "docker compose down")
+}
+
+ktlint {
+    version.set("1.5.0")
 }

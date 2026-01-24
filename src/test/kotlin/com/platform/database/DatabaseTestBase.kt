@@ -37,7 +37,6 @@ import org.testcontainers.utility.DockerImageName
  *    - TEST_DATABASE_PASSWORD: Database password
  */
 abstract class DatabaseTestBase {
-
     companion object {
         private var postgres: PostgreSQLContainer<*>? = null
         private var initialized = false
@@ -58,12 +57,13 @@ abstract class DatabaseTestBase {
                 )
             } else {
                 // Use testcontainers (works in CI)
-                postgres = PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
-                    withDatabaseName("platform_test")
-                    withUsername("test")
-                    withPassword("test")
-                    start()
-                }
+                postgres =
+                    PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
+                        withDatabaseName("platform_test")
+                        withUsername("test")
+                        withPassword("test")
+                        start()
+                    }
 
                 DatabaseFactory.init(
                     jdbcUrl = postgres!!.jdbcUrl,

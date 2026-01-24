@@ -13,34 +13,37 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
 class HealthRoutesTest : DatabaseTestBase() {
-
     private fun Application.configureTestApplication() {
         install(ContentNegotiation) {
-            json(Json {
-                prettyPrint = true
-                ignoreUnknownKeys = true
-            })
+            json(
+                Json {
+                    prettyPrint = true
+                    ignoreUnknownKeys = true
+                }
+            )
         }
         configureRouting()
     }
 
     @Test
-    fun `GET root should return welcome message`() = testApplication {
-        application { configureTestApplication() }
+    fun `GET root should return welcome message`() =
+        testApplication {
+            application { configureTestApplication() }
 
-        val response = client.get("/")
+            val response = client.get("/")
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertEquals("Validation Platform API", response.bodyAsText())
-    }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("Validation Platform API", response.bodyAsText())
+        }
 
     @Test
-    fun `GET health should return OK`() = testApplication {
-        application { configureTestApplication() }
+    fun `GET health should return OK`() =
+        testApplication {
+            application { configureTestApplication() }
 
-        val response = client.get("/health")
+            val response = client.get("/health")
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertEquals("OK", response.bodyAsText())
-    }
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("OK", response.bodyAsText())
+        }
 }

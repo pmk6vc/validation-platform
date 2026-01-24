@@ -8,7 +8,6 @@ import org.jetbrains.exposed.sql.transactions.transaction
  * Database configuration and initialization.
  */
 object DatabaseFactory {
-
     fun init(
         jdbcUrl: String,
         username: String,
