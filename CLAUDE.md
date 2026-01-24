@@ -78,12 +78,13 @@ This is a **validation and release platform** that helps engineering teams under
 - Simple mental model, no magic annotations
 - Fast startup time
 
-### Database: SQLite → PostgreSQL
+### Database: PostgreSQL
 
 **Rationale:**
-- SQLite for development (zero config, single file)
-- PostgreSQL when scale requires it
+- PostgreSQL for all environments (dev, test, prod)
+- Testcontainers for integration tests (consistent test environment)
 - Exposed ORM for type-safe queries
+- JSONB support for flexible metadata
 
 ### CLI: Clikt
 
@@ -95,43 +96,47 @@ This is a **validation and release platform** that helps engineering teams under
 ### Key Dependencies
 
 ```kotlin
-// build.gradle.kts
+// build.gradle.kts (see actual file for current versions)
+// Core versions: Kotlin 2.2.21, Ktor 3.3.3, Exposed 0.57.0
 dependencies {
     // Ktor server
-    implementation("io.ktor:ktor-server-core-jvm:2.3.7")
-    implementation("io.ktor:ktor-server-netty-jvm:2.3.7")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm:2.3.7")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:2.3.7")
-    
-    // Ktor client (for adapters)
-    implementation("io.ktor:ktor-client-core-jvm:2.3.7")
-    implementation("io.ktor:ktor-client-cio-jvm:2.3.7")
-    
-    // Database
-    implementation("org.jetbrains.exposed:exposed-core:0.45.0")
-    implementation("org.jetbrains.exposed:exposed-jdbc:0.45.0")
-    implementation("org.xerial:sqlite-jdbc:3.44.1.0")
-    
-    // Kubernetes
-    implementation("io.fabric8:kubernetes-client:6.10.0")
-    
-    // AWS (when needed)
-    implementation("aws.sdk.kotlin:cloudwatch:1.0.30")
-    implementation("aws.sdk.kotlin:xray:1.0.30")
-    
-    // CLI
-    implementation("com.github.ajalt.clikt:clikt:4.2.1")
-    
-    // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-    
+    implementation("io.ktor:ktor-server-core-jvm:$ktor_version")
+    implementation("io.ktor:ktor-server-netty-jvm:$ktor_version")
+    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktor_version")
+    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
+    implementation("io.ktor:ktor-server-config-yaml:$ktor_version")
+
+    // Ktor client (for adapters - add when needed)
+    // implementation("io.ktor:ktor-client-core-jvm:$ktor_version")
+    // implementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
+
+    // Database (Exposed + PostgreSQL)
+    implementation("org.jetbrains.exposed:exposed-core:$exposed_version")
+    implementation("org.jetbrains.exposed:exposed-jdbc:$exposed_version")
+    implementation("org.jetbrains.exposed:exposed-java-time:$exposed_version")
+    implementation("org.jetbrains.exposed:exposed-json:$exposed_version")
+    implementation("org.postgresql:postgresql:42.7.4")
+
+    // Kubernetes (add when needed)
+    // implementation("io.fabric8:kubernetes-client:6.10.0")
+
+    // AWS (add when needed)
+    // implementation("aws.sdk.kotlin:cloudwatch:1.0.30")
+    // implementation("aws.sdk.kotlin:xray:1.0.30")
+
+    // CLI (add when needed)
+    // implementation("com.github.ajalt.clikt:clikt:4.2.1")
+
     // Logging
     implementation("ch.qos.logback:logback-classic:1.4.14")
-    
+
     // Testing
-    testImplementation("io.ktor:ktor-server-tests-jvm:2.3.7")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-    testImplementation("io.mockk:mockk:1.13.8")
+    testImplementation("io.ktor:ktor-server-test-host-jvm:$ktor_version")
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:$kotlin_version")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+    testImplementation("org.testcontainers:testcontainers:1.20.4")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
+    testImplementation("org.testcontainers:postgresql:1.20.4")
 }
 ```
 
@@ -142,15 +147,24 @@ dependencies {
 ### Core Entities
 
 ```kotlin
-// Service - a deployable unit (container, function, etc.)
-data class Service(
-    val id: String,
+// Organization - a tenant in the platform
+data class Organization(
+    val id: String,                   // UUID
     val name: String,
-    val environmentId: String,
-    val discoveredVia: String,        // "kubernetes", "aws_xray", "pixie", "manual"
+    val createdAt: Instant
+)
+
+// Service - a deployable unit (container, function, etc.)
+// Uniquely identified by: organizationId + cluster + namespace + name
+data class Service(
+    val id: String,                   // UUID (surrogate key)
+    val organizationId: String,       // FK to Organization
+    val cluster: String,              // K8s cluster name
+    val namespace: String,            // K8s namespace
+    val name: String,                 // service name
+    val provider: String? = null,     // AWS, GCP, Azure, on-prem
     val discoveredAt: Instant,
-    val lastSeenAt: Instant,
-    val metadata: Map<String, String>? = null
+    val metadata: Map<String, String>? = null  // JSONB
 )
 
 // Dependency - a connection between services
@@ -249,18 +263,30 @@ data class BlastRadius(
 enum class RiskLevel { LOW, MEDIUM, HIGH }
 ```
 
-### Database Schema (Exposed)
+### Database Schema (Exposed + PostgreSQL)
 
 ```kotlin
-object Services : Table("services") {
-    val id = varchar("id", 255)
+object Organizations : Table("organizations") {
+    val id = uuid("id")
     val name = varchar("name", 255)
-    val environmentId = varchar("environment_id", 255)
-    val discoveredVia = varchar("discovered_via", 50)
-    val discoveredAt = varchar("discovered_at", 50)
-    val lastSeenAt = varchar("last_seen_at", 50)
-    val metadata = text("metadata").nullable()
+    val createdAt = timestamp("created_at")
     override val primaryKey = PrimaryKey(id)
+}
+
+object Services : Table("services") {
+    val id = uuid("id")
+    val organizationId = uuid("organization_id").references(Organizations.id)
+    val cluster = varchar("cluster", 255)
+    val namespace = varchar("namespace", 255)
+    val name = varchar("name", 255)
+    val provider = varchar("provider", 50).nullable()
+    val discoveredAt = timestamp("discovered_at")
+    val metadata = jsonb<Map<String, String>>("metadata", Json.Default).nullable()
+    override val primaryKey = PrimaryKey(id)
+
+    init {
+        uniqueIndex("uq_service_identity", organizationId, cluster, namespace, name)
+    }
 }
 
 object Dependencies : Table("dependencies") {
@@ -352,6 +378,7 @@ platform/
 │   │   │       ├── Cli.kt           # CLI entry point
 │   │   │       │
 │   │   │       ├── models/          # Data classes
+│   │   │       │   ├── Organization.kt
 │   │   │       │   ├── Service.kt
 │   │   │       │   ├── Dependency.kt
 │   │   │       │   ├── Endpoint.kt
@@ -362,7 +389,9 @@ platform/
 │   │   │       │
 │   │   │       ├── database/        # Persistence layer
 │   │   │       │   ├── Tables.kt    # Exposed table definitions
-│   │   │       │   └── Database.kt  # Repository/DAO
+│   │   │       │   ├── Database.kt  # DB connection factory
+│   │   │       │   ├── OrganizationRepository.kt
+│   │   │       │   └── ServiceRepository.kt
 │   │   │       │
 │   │   │       ├── adapters/        # Data source integrations
 │   │   │       │   ├── Adapter.kt   # Interface
@@ -386,7 +415,7 @@ platform/
 │   │   │           └── Statistics.kt
 │   │   │
 │   │   └── resources/
-│   │       ├── application.conf
+│   │       ├── application.yaml
 │   │       └── logback.xml
 │   │
 │   └── test/
