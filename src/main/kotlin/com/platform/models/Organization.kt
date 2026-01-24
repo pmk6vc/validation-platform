@@ -11,5 +11,5 @@ data class Organization(
     val id: String,
     val name: String,
     @Serializable(with = InstantSerializer::class)
-    val createdAt: Instant
+    val createdAt: Instant,
 )

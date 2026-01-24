@@ -1,8 +1,11 @@
 package com.platform.database
 
 import com.platform.models.Organization
-import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.deleteWhere
+import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.UUID
 
@@ -10,37 +13,41 @@ import java.util.UUID
  * Repository for Organization CRUD operations.
  */
 object OrganizationRepository {
-
-    fun create(organization: Organization): Organization = transaction {
-        Organizations.insert {
-            it[id] = UUID.fromString(organization.id)
-            it[name] = organization.name
-            it[createdAt] = organization.createdAt
+    fun create(organization: Organization): Organization =
+        transaction {
+            Organizations.insert {
+                it[id] = UUID.fromString(organization.id)
+                it[name] = organization.name
+                it[createdAt] = organization.createdAt
+            }
+            organization
         }
-        organization
-    }
 
-    fun findById(id: String): Organization? = transaction {
-        Organizations.selectAll()
-            .where { Organizations.id eq UUID.fromString(id) }
-            .map { it.toOrganization() }
-            .singleOrNull()
-    }
+    fun findById(id: String): Organization? =
+        transaction {
+            Organizations
+                .selectAll()
+                .where { Organizations.id eq UUID.fromString(id) }
+                .map { it.toOrganization() }
+                .singleOrNull()
+        }
 
-    fun findAll(): List<Organization> = transaction {
-        Organizations.selectAll()
-            .map { it.toOrganization() }
-    }
+    fun findAll(): List<Organization> =
+        transaction {
+            Organizations
+                .selectAll()
+                .map { it.toOrganization() }
+        }
 
-    fun delete(id: String): Boolean = transaction {
-        Organizations.deleteWhere { Organizations.id eq UUID.fromString(id) } > 0
-    }
+    fun delete(id: String): Boolean =
+        transaction {
+            Organizations.deleteWhere { Organizations.id eq UUID.fromString(id) } > 0
+        }
 
-    private fun ResultRow.toOrganization(): Organization {
-        return Organization(
+    private fun ResultRow.toOrganization(): Organization =
+        Organization(
             id = this[Organizations.id].toString(),
             name = this[Organizations.name],
-            createdAt = this[Organizations.createdAt]
+            createdAt = this[Organizations.createdAt],
         )
-    }
 }

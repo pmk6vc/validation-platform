@@ -18,5 +18,5 @@ data class Service(
     val provider: String? = null,
     @Serializable(with = InstantSerializer::class)
     val discoveredAt: Instant,
-    val metadata: Map<String, String>? = null
+    val metadata: Map<String, String>? = null,
 )
