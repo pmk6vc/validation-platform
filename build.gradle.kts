@@ -49,9 +49,9 @@ dependencies {
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktor_version")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:$kotlin_version")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
-    testImplementation("org.testcontainers:testcontainers:1.19.3")
-    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
-    testImplementation("org.testcontainers:postgresql:1.19.3")
+    testImplementation("org.testcontainers:testcontainers:1.20.4")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
+    testImplementation("org.testcontainers:postgresql:1.20.4")
 }
 
 tasks.test {
@@ -66,13 +66,13 @@ tasks.test {
 tasks.register<Exec>("dockerUp") {
     group = "docker"
     description = "Build and start all containers"
-    commandLine("sh", "-c", "docker compose up --build -d")
+    commandLine("sh", "-c", "docker compose -f deploy/docker-compose.yaml --env-file .env up --build -d")
 }
 
 tasks.register<Exec>("dockerDown") {
     group = "docker"
     description = "Stop and remove all containers"
-    commandLine("sh", "-c", "docker compose down")
+    commandLine("sh", "-c", "docker compose -f deploy/docker-compose.yaml --env-file .env down")
 }
 
 ktlint {
