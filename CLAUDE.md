@@ -378,6 +378,7 @@ platform/
 │   │   │       ├── Cli.kt           # CLI entry point
 │   │   │       │
 │   │   │       ├── models/          # Data classes
+│   │   │       │   ├── InstantSerializer.kt  # kotlinx.serialization for Instant
 │   │   │       │   ├── Organization.kt
 │   │   │       │   ├── Service.kt
 │   │   │       │   ├── Dependency.kt
@@ -389,7 +390,7 @@ platform/
 │   │   │       │
 │   │   │       ├── database/        # Persistence layer
 │   │   │       │   ├── Tables.kt    # Exposed table definitions
-│   │   │       │   ├── Database.kt  # DB connection factory
+│   │   │       │   ├── DatabaseFactory.kt  # DB connection factory
 │   │   │       │   ├── OrganizationRepository.kt
 │   │   │       │   └── ServiceRepository.kt
 │   │   │       │
