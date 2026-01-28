@@ -56,6 +56,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
         name = name,
         provider = provider,
         discoveredAt = Instant.now(),
+        lastSeenAt = Instant.now(),
         metadata = metadata,
     )
 
@@ -106,6 +107,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     name = "other-service",
                     provider = "AWS",
                     discoveredAt = Instant.now(),
+                    lastSeenAt = Instant.now(),
                     metadata = null,
                 )
             ServiceRepository.create(svc1)

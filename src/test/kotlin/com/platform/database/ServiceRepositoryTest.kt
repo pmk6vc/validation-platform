@@ -42,6 +42,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         name: String = "test-service",
         provider: String? = "AWS",
         discoveredAt: Instant = Instant.now(),
+        lastSeenAt: Instant = Instant.now(),
         metadata: Map<String, String>? = null,
     ) = Service(
         id = id,
@@ -51,6 +52,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         name = name,
         provider = provider,
         discoveredAt = discoveredAt,
+        lastSeenAt = lastSeenAt,
         metadata = metadata,
     )
 
@@ -208,22 +210,27 @@ class ServiceRepositoryTest : DatabaseTestBase() {
     }
 
     @Test
-    fun `upsert should update existing service when identity matches`() {
+    fun `upsert should update mutable fields and preserve identity fields when match exists`() {
+        val originalTime = Instant.parse("2024-01-01T00:00:00Z")
         val original =
             createTestService(
                 name = "my-service",
                 cluster = "prod",
                 namespace = "default",
                 provider = "AWS",
-                metadata = mapOf("version" to "1.0"),
+                discoveredAt = originalTime,
+                lastSeenAt = originalTime,
+                metadata = mapOf("version" to "1.0", "team" to "platform"),
             )
         ServiceRepository.create(original)
 
+        val laterTime = Instant.parse("2024-06-15T12:00:00Z")
         val updated =
             original.copy(
                 id = UUID.randomUUID().toString(), // Different ID but same identity
                 provider = "GCP",
-                metadata = mapOf("version" to "2.0"),
+                lastSeenAt = laterTime,
+                metadata = mapOf("version" to "2.0", "region" to "us-east"),
             )
 
         val result = ServiceRepository.upsert(updated)
@@ -233,8 +240,18 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
         val found = ServiceRepository.findById(original.id)
         assertNotNull(found)
+
+        // Identity fields should be unchanged
+        assertEquals(original.organizationId, found.organizationId)
+        assertEquals("prod", found.cluster)
+        assertEquals("default", found.namespace)
+        assertEquals("my-service", found.name)
+        assertEquals(originalTime, found.discoveredAt)
+
+        // Mutable fields should be updated
         assertEquals("GCP", found.provider)
-        assertEquals("2.0", found.metadata?.get("version"))
+        assertEquals(laterTime, found.lastSeenAt)
+        assertEquals(mapOf("version" to "2.0", "region" to "us-east"), found.metadata)
     }
 
     @Test

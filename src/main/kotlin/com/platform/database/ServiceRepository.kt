@@ -26,6 +26,7 @@ object ServiceRepository {
                 it[name] = service.name
                 it[provider] = service.provider
                 it[discoveredAt] = service.discoveredAt
+                it[lastSeenAt] = service.lastSeenAt
                 it[metadata] = service.metadata
             }
             service
@@ -88,6 +89,7 @@ object ServiceRepository {
             if (existingId != null) {
                 Services.update({ Services.id eq existingId }) {
                     it[provider] = service.provider
+                    it[lastSeenAt] = service.lastSeenAt
                     it[metadata] = service.metadata
                 }
                 service.copy(id = existingId.toString())
@@ -110,6 +112,7 @@ object ServiceRepository {
             name = this[Services.name],
             provider = this[Services.provider],
             discoveredAt = this[Services.discoveredAt],
+            lastSeenAt = this[Services.lastSeenAt],
             metadata = this[Services.metadata],
         )
 }

@@ -29,6 +29,7 @@ object Services : Table("services") {
     val name = varchar("name", 255)
     val provider = varchar("provider", 50).nullable()
     val discoveredAt = timestamp("discovered_at")
+    val lastSeenAt = timestamp("last_seen_at")
     val metadata = jsonb<Map<String, String>>("metadata", Json.Default).nullable()
 
     override val primaryKey = PrimaryKey(id)
