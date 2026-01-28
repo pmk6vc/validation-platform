@@ -101,4 +101,74 @@ class OrganizationRepositoryTest : DatabaseTestBase() {
             OrganizationRepository.create(org2)
         }
     }
+
+    @Test
+    fun `find with limit should return at most limit items`() {
+        repeat(5) { i ->
+            OrganizationRepository.create(createTestOrganization(name = "Org $i"))
+        }
+
+        val page = OrganizationRepository.find(limit = 3)
+
+        assertEquals(3, page.items.size)
+    }
+
+    @Test
+    fun `find should return nextCursor when more items exist`() {
+        repeat(5) { i ->
+            OrganizationRepository.create(createTestOrganization(name = "Org $i"))
+        }
+
+        val page = OrganizationRepository.find(limit = 3)
+
+        assertEquals(3, page.items.size)
+        assertNotNull(page.nextCursor)
+    }
+
+    @Test
+    fun `find should return null nextCursor when no more items`() {
+        repeat(3) { i ->
+            OrganizationRepository.create(createTestOrganization(name = "Org $i"))
+        }
+
+        val page = OrganizationRepository.find(limit = 5)
+
+        assertEquals(3, page.items.size)
+        assertNull(page.nextCursor)
+    }
+
+    @Test
+    fun `find with cursor should return items after cursor`() {
+        repeat(5) { i ->
+            OrganizationRepository.create(createTestOrganization(name = "Org $i"))
+        }
+
+        val firstPage = OrganizationRepository.find(limit = 2)
+        assertEquals(2, firstPage.items.size)
+        assertNotNull(firstPage.nextCursor)
+
+        val secondPage = OrganizationRepository.find(limit = 2, cursor = firstPage.nextCursor)
+        assertEquals(2, secondPage.items.size)
+        assertNotNull(secondPage.nextCursor)
+
+        // Verify no overlap between pages
+        val firstPageIds = firstPage.items.map { it.id }.toSet()
+        val secondPageIds = secondPage.items.map { it.id }.toSet()
+        assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
+
+        val thirdPage = OrganizationRepository.find(limit = 2, cursor = secondPage.nextCursor)
+        assertEquals(1, thirdPage.items.size)
+        assertNull(thirdPage.nextCursor)
+    }
+
+    @Test
+    fun `find should enforce max page size`() {
+        repeat(150) { i ->
+            OrganizationRepository.create(createTestOrganization(name = "Org $i"))
+        }
+
+        val page = OrganizationRepository.find(limit = 200)
+
+        assertEquals(OrganizationRepository.MAX_PAGE_SIZE, page.items.size)
+    }
 }
