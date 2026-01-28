@@ -42,6 +42,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         name: String = "test-service",
         provider: String? = "AWS",
         discoveredAt: Instant = Instant.now(),
+        lastSeenAt: Instant = Instant.now(),
         metadata: Map<String, String>? = null,
     ) = Service(
         id = id,
@@ -51,6 +52,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         name = name,
         provider = provider,
         discoveredAt = discoveredAt,
+        lastSeenAt = lastSeenAt,
         metadata = metadata,
     )
 
@@ -125,10 +127,10 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val orgServices = ServiceRepository.find(organizationId = testOrg.id)
+        val page = ServiceRepository.find(organizationId = testOrg.id)
 
-        assertEquals(2, orgServices.size)
-        assertTrue(orgServices.all { it.organizationId == testOrg.id })
+        assertEquals(2, page.items.size)
+        assertTrue(page.items.all { it.organizationId == testOrg.id })
     }
 
     @Test
@@ -141,10 +143,10 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val clusterServices = ServiceRepository.find(cluster = "prod-us-east")
+        val page = ServiceRepository.find(cluster = "prod-us-east")
 
-        assertEquals(2, clusterServices.size)
-        assertTrue(clusterServices.all { it.cluster == "prod-us-east" })
+        assertEquals(2, page.items.size)
+        assertTrue(page.items.all { it.cluster == "prod-us-east" })
     }
 
     @Test
@@ -157,10 +159,10 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val nsServices = ServiceRepository.find(namespace = "payments")
+        val page = ServiceRepository.find(namespace = "payments")
 
-        assertEquals(2, nsServices.size)
-        assertTrue(nsServices.all { it.namespace == "payments" })
+        assertEquals(2, page.items.size)
+        assertTrue(page.items.all { it.namespace == "payments" })
     }
 
     @Test
@@ -173,10 +175,80 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val filtered = ServiceRepository.find(cluster = "prod", namespace = "payments")
+        val page = ServiceRepository.find(cluster = "prod", namespace = "payments")
 
-        assertEquals(1, filtered.size)
-        assertEquals("service-1", filtered[0].name)
+        assertEquals(1, page.items.size)
+        assertEquals("service-1", page.items[0].name)
+    }
+
+    @Test
+    fun `find with limit should return at most limit items`() {
+        repeat(5) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 3)
+
+        assertEquals(3, page.items.size)
+    }
+
+    @Test
+    fun `find should return nextCursor when more items exist`() {
+        repeat(5) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 3)
+
+        assertEquals(3, page.items.size)
+        assertNotNull(page.nextCursor)
+    }
+
+    @Test
+    fun `find should return null nextCursor when no more items`() {
+        repeat(3) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 5)
+
+        assertEquals(3, page.items.size)
+        assertNull(page.nextCursor)
+    }
+
+    @Test
+    fun `find with cursor should return items after cursor`() {
+        repeat(5) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val firstPage = ServiceRepository.find(limit = 2)
+        assertEquals(2, firstPage.items.size)
+        assertNotNull(firstPage.nextCursor)
+
+        val secondPage = ServiceRepository.find(limit = 2, cursor = firstPage.nextCursor)
+        assertEquals(2, secondPage.items.size)
+        assertNotNull(secondPage.nextCursor)
+
+        // Verify no overlap between pages
+        val firstPageIds = firstPage.items.map { it.id }.toSet()
+        val secondPageIds = secondPage.items.map { it.id }.toSet()
+        assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
+
+        val thirdPage = ServiceRepository.find(limit = 2, cursor = secondPage.nextCursor)
+        assertEquals(1, thirdPage.items.size)
+        assertNull(thirdPage.nextCursor)
+    }
+
+    @Test
+    fun `find should enforce max page size`() {
+        repeat(150) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 200)
+
+        assertEquals(ServiceRepository.MAX_PAGE_SIZE, page.items.size)
     }
 
     @Test
@@ -208,22 +280,27 @@ class ServiceRepositoryTest : DatabaseTestBase() {
     }
 
     @Test
-    fun `upsert should update existing service when identity matches`() {
+    fun `upsert should update mutable fields and preserve identity fields when match exists`() {
+        val originalTime = Instant.parse("2024-01-01T00:00:00Z")
         val original =
             createTestService(
                 name = "my-service",
                 cluster = "prod",
                 namespace = "default",
                 provider = "AWS",
-                metadata = mapOf("version" to "1.0"),
+                discoveredAt = originalTime,
+                lastSeenAt = originalTime,
+                metadata = mapOf("version" to "1.0", "team" to "platform"),
             )
         ServiceRepository.create(original)
 
+        val laterTime = Instant.parse("2024-06-15T12:00:00Z")
         val updated =
             original.copy(
                 id = UUID.randomUUID().toString(), // Different ID but same identity
                 provider = "GCP",
-                metadata = mapOf("version" to "2.0"),
+                lastSeenAt = laterTime,
+                metadata = mapOf("version" to "2.0", "region" to "us-east"),
             )
 
         val result = ServiceRepository.upsert(updated)
@@ -233,8 +310,18 @@ class ServiceRepositoryTest : DatabaseTestBase() {
 
         val found = ServiceRepository.findById(original.id)
         assertNotNull(found)
+
+        // Identity fields should be unchanged
+        assertEquals(original.organizationId, found.organizationId)
+        assertEquals("prod", found.cluster)
+        assertEquals("default", found.namespace)
+        assertEquals("my-service", found.name)
+        assertEquals(originalTime, found.discoveredAt)
+
+        // Mutable fields should be updated
         assertEquals("GCP", found.provider)
-        assertEquals("2.0", found.metadata?.get("version"))
+        assertEquals(laterTime, found.lastSeenAt)
+        assertEquals(mapOf("version" to "2.0", "region" to "us-east"), found.metadata)
     }
 
     @Test

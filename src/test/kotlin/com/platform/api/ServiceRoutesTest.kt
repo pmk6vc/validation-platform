@@ -4,6 +4,7 @@ import com.platform.database.DatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
+import com.platform.models.Page
 import com.platform.models.Service
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -19,6 +20,8 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ServiceRoutesTest : DatabaseTestBase() {
@@ -56,18 +59,22 @@ class ServiceRoutesTest : DatabaseTestBase() {
         name = name,
         provider = provider,
         discoveredAt = Instant.now(),
+        lastSeenAt = Instant.now(),
         metadata = metadata,
     )
 
     @Test
-    fun `GET services should return empty list when no services`() =
+    fun `GET services should return empty page when no services`() =
         testApplication {
             application { configureTestApplication() }
 
             val response = client.get("/api/services")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals("[]", response.bodyAsText().trim())
+            val body = response.bodyAsText()
+            assertTrue(body.contains("\"items\""))
+            assertTrue(body.contains("[]"))
+            assertTrue(body.contains("\"nextCursor\""))
         }
 
     @Test
@@ -106,6 +113,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     name = "other-service",
                     provider = "AWS",
                     discoveredAt = Instant.now(),
+                    lastSeenAt = Instant.now(),
                     metadata = null,
                 )
             ServiceRepository.create(svc1)
@@ -251,5 +259,74 @@ class ServiceRoutesTest : DatabaseTestBase() {
             assertTrue(body.contains("platform"))
             assertTrue(body.contains("critical"))
             assertTrue(body.contains(testOrg.id))
+        }
+
+    @Test
+    fun `GET services with limit should return paginated response`() =
+        testApplication {
+            application { configureTestApplication() }
+
+            repeat(5) { i ->
+                ServiceRepository.create(createService(name = "service-$i"))
+            }
+
+            val response = client.get("/api/services?limit=3")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(3, page.items.size)
+            assertNotNull(page.nextCursor)
+        }
+
+    @Test
+    fun `GET services with cursor should return next page`() =
+        testApplication {
+            application { configureTestApplication() }
+
+            repeat(5) { i ->
+                ServiceRepository.create(createService(name = "service-$i"))
+            }
+
+            // Get first page
+            val firstResponse = client.get("/api/services?limit=2")
+            assertEquals(HttpStatusCode.OK, firstResponse.status)
+            val firstPage =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    firstResponse.bodyAsText(),
+                )
+            assertEquals(2, firstPage.items.size)
+            assertNotNull(firstPage.nextCursor)
+
+            // Get second page using cursor
+            val secondResponse = client.get("/api/services?limit=2&cursor=${firstPage.nextCursor}")
+            assertEquals(HttpStatusCode.OK, secondResponse.status)
+            val secondPage =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    secondResponse.bodyAsText(),
+                )
+            assertEquals(2, secondPage.items.size)
+            assertNotNull(secondPage.nextCursor)
+
+            // Verify no overlap
+            val firstPageIds = firstPage.items.map { it.id }.toSet()
+            val secondPageIds = secondPage.items.map { it.id }.toSet()
+            assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
+
+            // Get third page
+            val thirdResponse = client.get("/api/services?limit=2&cursor=${secondPage.nextCursor}")
+            assertEquals(HttpStatusCode.OK, thirdResponse.status)
+            val thirdPage =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    thirdResponse.bodyAsText(),
+                )
+            assertEquals(1, thirdPage.items.size)
+            assertNull(thirdPage.nextCursor)
         }
 }

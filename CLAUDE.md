@@ -2,21 +2,40 @@
 
 ## Project Overview
 
-This is a **validation and release platform** that helps engineering teams understand their service topology, assess the impact of changes, and detect anomalies in production. The platform ingests telemetry from multiple sources (Kubernetes, AWS, Pixie, etc.) and provides actionable insights about service dependencies and system health.
+This is a **validation and release platform** that helps engineering teams validate code changes against real production traffic before deployment. The platform captures live traffic, replays it against candidate versions, and statistically compares behavior to detect regressions—including performance degradation, memory leaks, and behavioral changes.
 
 ### Core Value Proposition
 
+> **"Validate every change against real production traffic before it hits production."**
+
 1. **"What services do I have and how do they connect?"** - Automatic topology discovery
 2. **"If I change service X, what's affected?"** - Blast radius analysis
-3. **"What does normal look like?"** - Baseline learning
-4. **"Is something wrong right now?"** - Anomaly detection
+3. **"Does this change break anything?"** - Traffic replay with statistical comparison
+4. **"Is something leaking or degrading?"** - Resource monitoring during validation
+5. **"What does normal look like?"** - Baseline learning
+6. **"Is something wrong right now?"** - Anomaly detection
 
 ### Key Differentiators
 
-- **Adapter-based architecture**: Ingest data from multiple sources (K8s, AWS, Pixie, OTel) without lock-in
-- **Unified data model**: Normalize telemetry from different sources into a consistent schema
-- **Zero-instrumentation option**: Use eBPF-based tools (Pixie) for observation without code changes
-- **Focus on validation**: Build toward traffic replay and regression detection (V2)
+| What We Do | Why It's Different |
+|------------|-------------------|
+| **Replay real production traffic** | Synthetic load tests miss edge cases; we use actual requests |
+| **Statistical comparison (control vs candidate)** | Not threshold-based; compare against current version simultaneously |
+| **Resource trend detection** | Detect memory leaks and CPU growth under realistic load |
+| **Blast radius at PR time** | CI tools don't know your service topology |
+| **Zero instrumentation** | eBPF-based capture (Pixie) requires no code changes |
+
+### What This Catches That Unit Tests Don't
+
+| Issue Type | Unit Tests | Synthetic Load | Our Approach |
+|------------|------------|----------------|--------------|
+| Logic bugs | ✓ | ✓ | ✓ |
+| Memory leaks | ✗ | Sometimes | ✓ |
+| N+1 queries with real data | ✗ | ✗ | ✓ |
+| Connection pool exhaustion | ✗ | Sometimes | ✓ |
+| Cache miss storms | ✗ | ✗ | ✓ |
+| Hot key/partition issues | ✗ | ✗ | ✓ |
+| Payload-specific edge cases | ✗ | ✗ | ✓ |
 
 ---
 
@@ -25,28 +44,66 @@ This is a **validation and release platform** that helps engineering teams under
 ### High-Level Design
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Platform                                │
-│                                                                 │
-│   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│   │  Topology   │ │   Blast     │ │  Baseline   │              │
-│   │  Service    │ │   Radius    │ │  Service    │              │
-│   └──────┬──────┘ └──────┬──────┘ └──────┬──────┘              │
-│          │               │               │                      │
-│          └───────────────┴───────────────┘                      │
-│                          │                                      │
-│                ┌─────────▼─────────┐                           │
-│                │  Unified Data     │                           │
-│                │  Model + Storage  │                           │
-│                └─────────┬─────────┘                           │
-│                          │                                      │
-│         ┌────────────────┼────────────────┐                    │
-│         │                │                │                    │
-│    ┌────▼────┐     ┌────▼────┐     ┌────▼────┐               │
-│    │   K8s   │     │   AWS   │     │  Pixie  │               │
-│    │ Adapter │     │ Adapter │     │ Adapter │               │
-│    └─────────┘     └─────────┘     └─────────┘               │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              Platform                                    │
+│                                                                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │  Topology   │  │   Blast     │  │   Replay    │  │  Anomaly    │   │
+│  │  Service    │  │   Radius    │  │   Engine    │  │  Detection  │   │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘   │
+│         │                │                │                │           │
+│         └────────────────┴────────────────┴────────────────┘           │
+│                                   │                                     │
+│                     ┌─────────────▼─────────────┐                      │
+│                     │     Unified Data Model    │                      │
+│                     │         + Storage         │                      │
+│                     └─────────────┬─────────────┘                      │
+│                                   │                                     │
+│         ┌─────────────────────────┼─────────────────────────┐          │
+│         │                         │                         │          │
+│    ┌────▼────┐              ┌────▼────┐              ┌────▼────┐      │
+│    │  Pixie  │              │   K8s   │              │   AWS   │      │
+│    │ Adapter │              │ Adapter │              │ Adapter │      │
+│    │         │              │         │              │         │      │
+│    │• Traffic│              │• Service│              │• X-Ray  │      │
+│    │• Deps   │              │• Metrics│              │• CW     │      │
+│    └─────────┘              └─────────┘              └─────────┘      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Validation Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Validation Environment                            │
+│                                                                         │
+│  1. CAPTURE (continuous)                                                │
+│     Pixie captures HTTP traffic with request/response bodies            │
+│                           │                                             │
+│                           ▼                                             │
+│  2. DEPLOY (on validation request)                                      │
+│     ┌─────────────────┐          ┌─────────────────┐                   │
+│     │    Control      │          │   Candidate     │                   │
+│     │  (current ver)  │          │  (PR branch)    │                   │
+│     └────────┬────────┘          └────────┬────────┘                   │
+│              │                            │                             │
+│              └────────────┬───────────────┘                             │
+│                           │                                             │
+│  3. REPLAY                ▼                                             │
+│     Send captured traffic to both versions simultaneously               │
+│                           │                                             │
+│         ┌─────────────────┼─────────────────┐                          │
+│         ▼                 ▼                 ▼                          │
+│    ┌─────────┐      ┌──────────┐      ┌──────────┐                    │
+│    │Response │      │ Latency  │      │ Resource │                    │
+│    │  Diff   │      │Comparison│      │ Monitor  │ ◄── K8s Metrics    │
+│    └─────────┘      └──────────┘      └──────────┘     API            │
+│                           │                                             │
+│                           ▼                                             │
+│  4. VERDICT                                                             │
+│     Statistical analysis → PASS / FAIL / INCONCLUSIVE                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Design Principles
@@ -54,7 +111,8 @@ This is a **validation and release platform** that helps engineering teams under
 1. **Adapters normalize data**: Each adapter converts source-specific data into the unified model
 2. **Features depend only on the unified model**: Business logic is decoupled from data sources
 3. **Multiple adapters can coexist**: Data from different sources is merged/deduplicated
-4. **Graceful degradation**: If one adapter fails, others continue working
+4. **Graceful degradation**: Topology/baselines work even without Pixie; replay requires Pixie
+5. **Statistical rigor**: Use proper statistical tests, not arbitrary thresholds
 
 ---
 
@@ -78,13 +136,12 @@ This is a **validation and release platform** that helps engineering teams under
 - Simple mental model, no magic annotations
 - Fast startup time
 
-### Database: PostgreSQL
+### Database: SQLite → PostgreSQL
 
 **Rationale:**
-- PostgreSQL for all environments (dev, test, prod)
-- Testcontainers for integration tests (consistent test environment)
+- SQLite for development (zero config, single file)
+- PostgreSQL when scale requires it
 - Exposed ORM for type-safe queries
-- JSONB support for flexible metadata
 
 ### CLI: Clikt
 
@@ -96,47 +153,44 @@ This is a **validation and release platform** that helps engineering teams under
 ### Key Dependencies
 
 ```kotlin
-// build.gradle.kts (see actual file for current versions)
-// Core versions: Kotlin 2.2.21, Ktor 3.3.3, Exposed 0.57.0
+// build.gradle.kts
 dependencies {
     // Ktor server
-    implementation("io.ktor:ktor-server-core-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-netty-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktor_version")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-config-yaml:$ktor_version")
-
-    // Ktor client (for adapters - add when needed)
-    // implementation("io.ktor:ktor-client-core-jvm:$ktor_version")
-    // implementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
-
-    // Database (Exposed + PostgreSQL)
-    implementation("org.jetbrains.exposed:exposed-core:$exposed_version")
-    implementation("org.jetbrains.exposed:exposed-jdbc:$exposed_version")
-    implementation("org.jetbrains.exposed:exposed-java-time:$exposed_version")
-    implementation("org.jetbrains.exposed:exposed-json:$exposed_version")
-    implementation("org.postgresql:postgresql:42.7.4")
-
-    // Kubernetes (add when needed)
-    // implementation("io.fabric8:kubernetes-client:6.10.0")
-
-    // AWS (add when needed)
-    // implementation("aws.sdk.kotlin:cloudwatch:1.0.30")
-    // implementation("aws.sdk.kotlin:xray:1.0.30")
-
-    // CLI (add when needed)
-    // implementation("com.github.ajalt.clikt:clikt:4.2.1")
-
+    implementation("io.ktor:ktor-server-core-jvm:2.3.7")
+    implementation("io.ktor:ktor-server-netty-jvm:2.3.7")
+    implementation("io.ktor:ktor-server-content-negotiation-jvm:2.3.7")
+    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:2.3.7")
+    
+    // Ktor client (for replay engine and adapters)
+    implementation("io.ktor:ktor-client-core-jvm:2.3.7")
+    implementation("io.ktor:ktor-client-cio-jvm:2.3.7")
+    implementation("io.ktor:ktor-client-content-negotiation-jvm:2.3.7")
+    
+    // Database
+    implementation("org.jetbrains.exposed:exposed-core:0.45.0")
+    implementation("org.jetbrains.exposed:exposed-jdbc:0.45.0")
+    implementation("org.xerial:sqlite-jdbc:3.44.1.0")
+    
+    // Kubernetes (services, metrics, deployments)
+    implementation("io.fabric8:kubernetes-client:6.10.0")
+    
+    // AWS (optional, for AWS adapter)
+    implementation("aws.sdk.kotlin:cloudwatch:1.0.30")
+    implementation("aws.sdk.kotlin:xray:1.0.30")
+    
+    // CLI
+    implementation("com.github.ajalt.clikt:clikt:4.2.1")
+    
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    
     // Logging
     implementation("ch.qos.logback:logback-classic:1.4.14")
-
+    
     // Testing
-    testImplementation("io.ktor:ktor-server-test-host-jvm:$ktor_version")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:$kotlin_version")
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
-    testImplementation("org.testcontainers:testcontainers:1.20.4")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-    testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("io.ktor:ktor-server-tests-jvm:2.3.7")
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
+    testImplementation("io.mockk:mockk:1.13.8")
 }
 ```
 
@@ -147,24 +201,15 @@ dependencies {
 ### Core Entities
 
 ```kotlin
-// Organization - a tenant in the platform
-data class Organization(
-    val id: String,                   // UUID
-    val name: String,
-    val createdAt: Instant
-)
-
 // Service - a deployable unit (container, function, etc.)
-// Uniquely identified by: organizationId + cluster + namespace + name
 data class Service(
-    val id: String,                   // UUID (surrogate key)
-    val organizationId: String,       // FK to Organization
-    val cluster: String,              // K8s cluster name
-    val namespace: String,            // K8s namespace
-    val name: String,                 // service name
-    val provider: String? = null,     // AWS, GCP, Azure, on-prem
+    val id: String,
+    val name: String,
+    val environmentId: String,
+    val discoveredVia: String,        // "kubernetes", "pixie", "manual"
     val discoveredAt: Instant,
-    val metadata: Map<String, String>? = null  // JSONB
+    val lastSeenAt: Instant,
+    val metadata: Map<String, String>? = null
 )
 
 // Dependency - a connection between services
@@ -202,7 +247,155 @@ data class Endpoint(
     val firstSeenAt: Instant,
     val lastSeenAt: Instant
 )
+```
 
+### Traffic Capture Entities
+
+```kotlin
+// CapturedRequest - a captured HTTP request with body (from Pixie)
+data class CapturedRequest(
+    val id: String,
+    val serviceId: String,
+    val endpointId: String?,
+    val capturedAt: Instant,
+    
+    // Request
+    val method: String,
+    val path: String,                  // Full path with query params
+    val headers: Map<String, String>,  // Filtered (no auth tokens)
+    val requestBody: ByteArray?,
+    
+    // Response (as observed in production)
+    val responseStatus: Int,
+    val responseHeaders: Map<String, String>,
+    val responseBody: ByteArray?,
+    val responseLatencyMs: Long,
+    
+    // Correlation
+    val traceId: String?
+)
+
+// ReplayRun - a traffic replay validation experiment
+data class ReplayRun(
+    val id: String,
+    val serviceId: String,
+    val createdAt: Instant,
+    val status: ReplayStatus,
+    
+    // What triggered this
+    val triggerType: String,           // "cli", "api", "pr"
+    val triggerRef: String?,           // PR number, etc.
+    
+    // Configuration
+    val requestCount: Int,             // How many requests to replay
+    val trafficSourceStart: Instant,   // Sample requests from this range
+    val trafficSourceEnd: Instant,
+    val replayDuration: Duration,      // How long to run the test
+    
+    // Targets
+    val controlImage: String,          // Current version image
+    val candidateImage: String,        // PR/candidate image
+    
+    // Results (populated after completion)
+    val completedAt: Instant?,
+    val verdict: ValidationVerdict?,
+    val results: ReplayResults?
+)
+
+enum class ReplayStatus {
+    PENDING,
+    DEPLOYING,
+    RUNNING,
+    ANALYZING,
+    COMPLETED,
+    FAILED
+}
+
+// ReplayResults - aggregate results of a replay run
+data class ReplayResults(
+    val totalRequests: Int,
+    val successfulReplays: Int,
+    
+    // Latency comparison
+    val controlLatencyP50: Double,
+    val controlLatencyP99: Double,
+    val candidateLatencyP50: Double,
+    val candidateLatencyP99: Double,
+    val latencyPValue: Double,         // Statistical significance
+    
+    // Error comparison
+    val controlErrorRate: Double,
+    val candidateErrorRate: Double,
+    val errorRatePValue: Double,
+    
+    // Response comparison
+    val responseMismatchRate: Double,  // % of responses that differ
+    
+    // Resource metrics
+    val controlMemoryStart: Long,
+    val controlMemoryEnd: Long,
+    val candidateMemoryStart: Long,
+    val candidateMemoryEnd: Long,
+    val candidateMemoryGrowthPercent: Double,
+    val memoryLeakDetected: Boolean,
+    
+    val controlCpuAvg: Double,
+    val candidateCpuAvg: Double,
+    
+    // Regressions detected
+    val regressions: List<Regression>
+)
+
+data class Regression(
+    val metric: String,                // "latency_p99", "memory", "error_rate"
+    val controlValue: Double,
+    val candidateValue: Double,
+    val changePercent: Double,
+    val pValue: Double,
+    val severity: RegressionSeverity
+)
+
+enum class RegressionSeverity { LOW, MEDIUM, HIGH, CRITICAL }
+
+data class ValidationVerdict(
+    val passed: Boolean,
+    val confidence: Double,            // 0.0 to 1.0
+    val summary: String,
+    val regressionCount: Int,
+    val recommendation: String         // "safe to merge", "review recommended", "do not merge"
+)
+```
+
+### Resource Monitoring Entities
+
+```kotlin
+// ResourceSample - point-in-time resource usage (from K8s Metrics API)
+data class ResourceSample(
+    val id: String,
+    val replayRunId: String,
+    val pod: String,                   // "control" or "candidate"
+    val timestamp: Instant,
+    val cpuCores: Double,              // e.g., 0.25 = 250m
+    val memoryBytes: Long
+)
+
+// ResourceAnalysis - computed from ResourceSamples
+data class ResourceAnalysis(
+    val startMemoryBytes: Long,
+    val endMemoryBytes: Long,
+    val peakMemoryBytes: Long,
+    val memoryGrowthPercent: Double,
+    val memoryGrowthBytesPerMinute: Double,
+    val isLeaking: Boolean,            // Heuristic: >20% growth with positive trend
+    
+    val avgCpuCores: Double,
+    val peakCpuCores: Double
+)
+```
+
+### Metrics & Baseline Entities
+
+```kotlin
 // MetricSample - time-series metrics for an endpoint
 data class MetricSample(
     val id: String,
@@ -263,102 +456,6 @@ data class BlastRadius(
 enum class RiskLevel { LOW, MEDIUM, HIGH }
 ```
 
-### Database Schema (Exposed + PostgreSQL)
-
-```kotlin
-object Organizations : Table("organizations") {
-    val id = uuid("id")
-    val name = varchar("name", 255)
-    val createdAt = timestamp("created_at")
-    override val primaryKey = PrimaryKey(id)
-}
-
-object Services : Table("services") {
-    val id = uuid("id")
-    val organizationId = uuid("organization_id").references(Organizations.id)
-    val cluster = varchar("cluster", 255)
-    val namespace = varchar("namespace", 255)
-    val name = varchar("name", 255)
-    val provider = varchar("provider", 50).nullable()
-    val discoveredAt = timestamp("discovered_at")
-    val metadata = jsonb<Map<String, String>>("metadata", Json.Default).nullable()
-    override val primaryKey = PrimaryKey(id)
-
-    init {
-        uniqueIndex("uq_service_identity", organizationId, cluster, namespace, name)
-    }
-}
-
-object Dependencies : Table("dependencies") {
-    val id = varchar("id", 255)
-    val sourceServiceId = varchar("source_service_id", 255)
-    val targetServiceId = varchar("target_service_id", 255).nullable()
-    val targetExternal = varchar("target_external", 255).nullable()
-    val dependencyType = varchar("dependency_type", 50)
-    val topicOrQueue = varchar("topic_or_queue", 255).nullable()
-    val observedRequestCount = integer("observed_request_count").default(0)
-    val firstObservedAt = varchar("first_observed_at", 50)
-    val lastObservedAt = varchar("last_observed_at", 50)
-    val discoveredVia = text("discovered_via")
-    override val primaryKey = PrimaryKey(id)
-}
-
-object Endpoints : Table("endpoints") {
-    val id = varchar("id", 255)
-    val serviceId = varchar("service_id", 255)
-    val method = varchar("method", 10)
-    val pathPattern = varchar("path_pattern", 500)
-    val firstSeenAt = varchar("first_seen_at", 50)
-    val lastSeenAt = varchar("last_seen_at", 50)
-    override val primaryKey = PrimaryKey(id)
-}
-
-object MetricSamples : Table("metric_samples") {
-    val id = varchar("id", 255)
-    val endpointId = varchar("endpoint_id", 255)
-    val timestamp = varchar("timestamp", 50)
-    val latencyP50Ms = double("latency_p50_ms")
-    val latencyP99Ms = double("latency_p99_ms")
-    val errorRate = double("error_rate")
-    val requestCount = integer("request_count")
-    val periodSeconds = integer("period_seconds")
-    override val primaryKey = PrimaryKey(id)
-}
-
-object Baselines : Table("baselines") {
-    val id = varchar("id", 255)
-    val endpointId = varchar("endpoint_id", 255)
-    val dayOfWeek = integer("day_of_week").nullable()
-    val hourStart = integer("hour_start").nullable()
-    val hourEnd = integer("hour_end").nullable()
-    val latencyP50Mean = double("latency_p50_mean")
-    val latencyP50StdDev = double("latency_p50_stddev")
-    val latencyP99Mean = double("latency_p99_mean")
-    val latencyP99StdDev = double("latency_p99_stddev")
-    val errorRateMean = double("error_rate_mean")
-    val errorRateStdDev = double("error_rate_stddev")
-    val throughputMean = double("throughput_mean")
-    val throughputStdDev = double("throughput_stddev")
-    val sampleCount = integer("sample_count")
-    val computedAt = varchar("computed_at", 50)
-    val windowDays = integer("window_days")
-    override val primaryKey = PrimaryKey(id)
-}
-
-object Anomalies : Table("anomalies") {
-    val id = varchar("id", 255)
-    val endpointId = varchar("endpoint_id", 255)
-    val startedAt = varchar("started_at", 50)
-    val endedAt = varchar("ended_at", 50).nullable()
-    val metric = varchar("metric", 50)
-    val baselineValue = double("baseline_value")
-    val anomalousValue = double("anomalous_value")
-    val deviationSigma = double("deviation_sigma")
-    val severity = varchar("severity", 20)
-    override val primaryKey = PrimaryKey(id)
-}
-```
-
 ---
 
 ## Project Structure
@@ -368,55 +465,58 @@ platform/
 ├── build.gradle.kts
 ├── settings.gradle.kts
 ├── README.md
-├── CLAUDE.md                        # This file
+├── CLAUDE.md                          # This file
 │
 ├── src/
 │   ├── main/
 │   │   ├── kotlin/
 │   │   │   └── com/platform/
-│   │   │       ├── Application.kt   # Ktor entry point
-│   │   │       ├── Cli.kt           # CLI entry point
+│   │   │       ├── Application.kt     # Ktor entry point
+│   │   │       ├── Cli.kt             # CLI entry point
 │   │   │       │
-│   │   │       ├── models/          # Data classes
-│   │   │       │   ├── InstantSerializer.kt  # kotlinx.serialization for Instant
-│   │   │       │   ├── Organization.kt
+│   │   │       ├── models/            # Data classes
 │   │   │       │   ├── Service.kt
 │   │   │       │   ├── Dependency.kt
 │   │   │       │   ├── Endpoint.kt
+│   │   │       │   ├── CapturedRequest.kt
+│   │   │       │   ├── ReplayRun.kt
+│   │   │       │   ├── ResourceSample.kt
 │   │   │       │   ├── MetricSample.kt
 │   │   │       │   ├── Baseline.kt
 │   │   │       │   ├── Anomaly.kt
 │   │   │       │   └── BlastRadius.kt
 │   │   │       │
-│   │   │       ├── database/        # Persistence layer
-│   │   │       │   ├── Tables.kt    # Exposed table definitions
-│   │   │       │   ├── DatabaseFactory.kt  # DB connection factory
-│   │   │       │   ├── OrganizationRepository.kt
-│   │   │       │   └── ServiceRepository.kt
+│   │   │       ├── database/          # Persistence layer
+│   │   │       │   ├── Tables.kt
+│   │   │       │   └── Database.kt
 │   │   │       │
-│   │   │       ├── adapters/        # Data source integrations
-│   │   │       │   ├── Adapter.kt   # Interface
+│   │   │       ├── adapters/          # Data source integrations
+│   │   │       │   ├── Adapter.kt
 │   │   │       │   ├── AdapterRunner.kt
-│   │   │       │   ├── KubernetesAdapter.kt
-│   │   │       │   ├── AwsAdapter.kt
-│   │   │       │   ├── PixieAdapter.kt
-│   │   │       │   └── ManualSeedAdapter.kt
+│   │   │       │   ├── PixieAdapter.kt       # Traffic capture + topology
+│   │   │       │   ├── KubernetesAdapter.kt  # Services + resource metrics
+│   │   │       │   ├── AwsAdapter.kt         # Optional
+│   │   │       │   └── ManualSeedAdapter.kt  # Testing
 │   │   │       │
-│   │   │       ├── features/        # Business logic
+│   │   │       ├── features/          # Business logic
 │   │   │       │   ├── TopologyService.kt
 │   │   │       │   ├── BlastRadiusService.kt
+│   │   │       │   ├── TrafficCaptureService.kt
+│   │   │       │   ├── ReplayEngine.kt
+│   │   │       │   ├── ResourceMonitor.kt
+│   │   │       │   ├── ValidationService.kt
 │   │   │       │   ├── BaselineService.kt
 │   │   │       │   └── AnomalyService.kt
 │   │   │       │
-│   │   │       ├── api/             # HTTP endpoints
+│   │   │       ├── api/               # HTTP endpoints
 │   │   │       │   ├── Routes.kt
 │   │   │       │   └── Responses.kt
 │   │   │       │
-│   │   │       └── stats/           # Statistical utilities
+│   │   │       └── stats/             # Statistical utilities
 │   │   │           └── Statistics.kt
 │   │   │
 │   │   └── resources/
-│   │       ├── application.yaml
+│   │       ├── application.conf
 │   │       └── logback.xml
 │   │
 │   └── test/
@@ -425,20 +525,26 @@ platform/
 │               ├── database/
 │               │   └── DatabaseTest.kt
 │               ├── features/
-│               │   ├── TopologyServiceTest.kt
 │               │   ├── BlastRadiusServiceTest.kt
-│               │   └── BaselineServiceTest.kt
+│               │   ├── ReplayEngineTest.kt
+│               │   └── ResourceMonitorTest.kt
 │               └── stats/
 │                   └── StatisticsTest.kt
 │
 ├── deploy/
 │   ├── Dockerfile
-│   └── docker-compose.yml
+│   ├── docker-compose.yml
+│   └── k8s/
+│       ├── platform.yaml
+│       └── validation-namespace.yaml
 │
-└── test-app/                        # Sample microservices for testing
+└── test-app/
     ├── order-service/
+    │   └── Dockerfile
     ├── inventory-service/
+    │   └── Dockerfile
     ├── payment-worker/
+    │   └── Dockerfile
     └── k8s-manifests.yaml
 ```
 
@@ -446,196 +552,304 @@ platform/
 
 ## Feature Specifications
 
-### Feature 1: Topology Mapping
+### Feature 1: Traffic Capture (via Pixie)
 
-**Purpose:** Discover services and their dependencies automatically.
+**Purpose:** Continuously capture HTTP traffic with request/response bodies for later replay.
+
+**How It Works:**
+- Pixie runs as a DaemonSet, uses eBPF to observe traffic
+- PixieAdapter queries Pixie for recent HTTP events
+- Requests are sampled and stored (we don't need every request)
+- Sensitive headers (Authorization, etc.) are filtered
+
+**Implementation:**
+
+```kotlin
+class PixieAdapter(
+    private val clusterId: String,
+    private val apiKey: String
+) : Adapter {
+    
+    override val name = "pixie"
+    
+    suspend fun captureTraffic(
+        namespace: String,
+        since: Duration = Duration.ofMinutes(5),
+        sampleRate: Double = 0.1  // 10% sampling
+    ): List<CapturedRequest> {
+        val query = """
+            import px
+            
+            df = px.DataFrame(table='http_events', start_time='-${since.toMinutes()}m')
+            df = df[df.namespace == '$namespace']
+            df = df[['time_', 'source', 'destination', 'req_method', 'req_path', 
+                     'req_headers', 'req_body', 'resp_status', 'resp_headers', 
+                     'resp_body', 'latency']]
+            px.display(df)
+        """.trimIndent()
+        
+        return executeQuery(query)
+            .filter { random.nextDouble() < sampleRate }
+            .map { row -> row.toCapturedRequest() }
+    }
+    
+    override fun capabilities() = setOf(
+        AdapterCapability.SERVICES,
+        AdapterCapability.DEPENDENCIES,
+        AdapterCapability.ENDPOINTS,
+        AdapterCapability.TRAFFIC_BODIES  // Key capability
+    )
+}
+```
+
+---
+
+### Feature 2: Traffic Replay & Validation
+
+**Purpose:** Replay captured traffic against control and candidate versions, compare results.
 
 **User Stories:**
-- As a developer, I want to see all services in my environment
-- As a developer, I want to see what service A calls
-- As a developer, I want to see what calls service A
+- As a developer, I want to test my changes against real traffic before merging
+- As a developer, I want to know if my changes cause latency regressions
+- As a developer, I want to detect memory leaks before they hit production
+
+**CLI Commands:**
+```bash
+# Start a validation run
+./platform validate \
+  --service order-service \
+  --candidate order-service:pr-1234 \
+  --duration 10m \
+  --traffic-source "1h"
+
+# Check status
+./platform validate status {runId}
+
+# View results
+./platform validate results {runId}
+```
+
+**API Endpoints:**
+```
+POST /api/validate              # Start validation run
+GET  /api/validate/{runId}      # Get run status and results
+GET  /api/validate              # List recent runs
+```
+
+**Implementation:**
+
+```kotlin
+class ReplayEngine(
+    private val kubernetesClient: KubernetesClient,
+    private val resourceMonitor: ResourceMonitor,
+    private val httpClient: HttpClient,
+    private val database: Database
+) {
+    suspend fun runValidation(config: ValidationConfig): ReplayRun {
+        val run = createReplayRun(config)
+        
+        try {
+            // 1. Deploy control and candidate
+            updateStatus(run, ReplayStatus.DEPLOYING)
+            val controlPod = deployVersion(config.serviceId, config.controlImage, "control")
+            val candidatePod = deployVersion(config.serviceId, config.candidateImage, "candidate")
+            waitForPodsReady(controlPod, candidatePod)
+            
+            // 2. Get captured traffic
+            val requests = database.getCapturedRequests(
+                serviceId = config.serviceId,
+                since = config.trafficSourceStart,
+                until = config.trafficSourceEnd,
+                limit = config.requestCount
+            )
+            
+            // 3. Start resource monitoring
+            updateStatus(run, ReplayStatus.RUNNING)
+            val monitorJob = launch {
+                resourceMonitor.monitor(run.id, listOf(controlPod, candidatePod), config.duration)
+            }
+            
+            // 4. Replay traffic
+            val replayResults = replayTraffic(requests, controlPod, candidatePod)
+            
+            // 5. Wait for monitoring to complete
+            monitorJob.join()
+            
+            // 6. Analyze results
+            updateStatus(run, ReplayStatus.ANALYZING)
+            val analysis = analyzeResults(run.id, replayResults)
+            
+            // 7. Generate verdict
+            val verdict = generateVerdict(analysis)
+            
+            return completeRun(run, analysis, verdict)
+            
+        } finally {
+            // Cleanup validation environment
+            cleanupPods(run.id)
+        }
+    }
+    
+    private suspend fun replayTraffic(
+        requests: List<CapturedRequest>,
+        controlPod: String,
+        candidatePod: String
+    ): List<ReplayedRequest> {
+        return requests.map { captured ->
+            // Prepare request (strip sensitive headers, etc.)
+            val prepared = prepareRequest(captured)
+            
+            // Send to both versions in parallel
+            val (controlResponse, candidateResponse) = coroutineScope {
+                val control = async { sendRequest(controlPod, prepared) }
+                val candidate = async { sendRequest(candidatePod, prepared) }
+                control.await() to candidate.await()
+            }
+            
+            ReplayedRequest(
+                capturedRequestId = captured.id,
+                controlStatus = controlResponse.status,
+                controlLatencyMs = controlResponse.latencyMs,
+                controlBodyHash = hash(controlResponse.body),
+                candidateStatus = candidateResponse.status,
+                candidateLatencyMs = candidateResponse.latencyMs,
+                candidateBodyHash = hash(candidateResponse.body),
+                statusMatch = controlResponse.status == candidateResponse.status,
+                bodyMatch = controlResponse.body.contentEquals(candidateResponse.body)
+            )
+        }
+    }
+}
+```
+
+---
+
+### Feature 3: Resource Monitoring
+
+**Purpose:** Track CPU and memory usage during replay to detect leaks and growth.
+
+**Data Source:** Kubernetes Metrics API (requires metrics-server)
+
+**Implementation:**
+
+```kotlin
+class ResourceMonitor(
+    private val kubernetesClient: KubernetesClient,
+    private val database: Database,
+    private val pollInterval: Duration = Duration.ofSeconds(5)
+) {
+    suspend fun monitor(
+        replayRunId: String,
+        pods: List<String>,
+        duration: Duration
+    ) {
+        val endTime = Instant.now() + duration
+        
+        while (Instant.now() < endTime) {
+            for (podName in pods) {
+                try {
+                    val metrics = getPodMetrics(podName)
+                    database.saveResourceSample(ResourceSample(
+                        id = UUID.randomUUID().toString(),
+                        replayRunId = replayRunId,
+                        pod = podName,
+                        timestamp = Instant.now(),
+                        cpuCores = metrics.cpuCores,
+                        memoryBytes = metrics.memoryBytes
+                    ))
+                } catch (e: Exception) {
+                    logger.warn("Failed to get metrics for $podName: ${e.message}")
+                }
+            }
+            delay(pollInterval)
+        }
+    }
+    
+    private fun getPodMetrics(podName: String): PodMetrics {
+        val metrics = kubernetesClient.top()
+            .pods()
+            .inNamespace(VALIDATION_NAMESPACE)
+            .withName(podName)
+            .metric()
+        
+        val container = metrics.containers.first()
+        return PodMetrics(
+            cpuCores = parseCpuQuantity(container.usage["cpu"]),
+            memoryBytes = parseMemoryQuantity(container.usage["memory"])
+        )
+    }
+    
+    fun analyzeResources(replayRunId: String, pod: String): ResourceAnalysis {
+        val samples = database.getResourceSamples(replayRunId, pod)
+        
+        val memoryValues = samples.map { it.memoryBytes.toDouble() }
+        val startMemory = memoryValues.first()
+        val endMemory = memoryValues.last()
+        val growthPercent = (endMemory - startMemory) / startMemory * 100
+        
+        // Linear regression to detect trend
+        val slope = Statistics.linearRegressionSlope(
+            samples.mapIndexed { i, _ -> i.toDouble() },
+            memoryValues
+        )
+        
+        // Heuristic: leak if >20% growth with positive slope
+        val isLeaking = growthPercent > 20 && slope > 0
+        
+        return ResourceAnalysis(
+            startMemoryBytes = startMemory.toLong(),
+            endMemoryBytes = endMemory.toLong(),
+            peakMemoryBytes = memoryValues.max().toLong(),
+            memoryGrowthPercent = growthPercent,
+            memoryGrowthBytesPerMinute = slope * (60.0 / pollInterval.seconds),
+            isLeaking = isLeaking,
+            avgCpuCores = samples.map { it.cpuCores }.average(),
+            peakCpuCores = samples.maxOf { it.cpuCores }
+        )
+    }
+}
+```
+
+---
+
+### Feature 4: Topology & Blast Radius
+
+**Purpose:** Discover services and compute impact of changes.
 
 **API Endpoints:**
 ```
 GET /api/services
-GET /api/services?environment={env}
 GET /api/services/{serviceId}
 GET /api/services/{serviceId}/dependencies
+GET /api/services/{serviceId}/blast-radius?depth=3
 GET /api/topology/{environment}
 ```
 
 **CLI Commands:**
 ```bash
-./platform discover --namespace default
 ./platform topology {environment}
-./platform services list
-```
-
-**Implementation Notes:**
-- Adapters populate Services and Dependencies tables
-- TopologyService provides query methods
-- Support transitive dependency traversal with depth limit
-
----
-
-### Feature 2: Blast Radius Analysis
-
-**Purpose:** Compute the impact of changing a service.
-
-**User Stories:**
-- As a developer, I want to know what services are affected if I change service X
-- As a developer, I want to assess risk before deploying
-
-**API Endpoints:**
-```
-GET /api/services/{serviceId}/blast-radius?depth=3
-```
-
-**CLI Commands:**
-```bash
 ./platform blast-radius {serviceId} --depth 3
 ```
 
-**Algorithm:**
-```kotlin
-fun computeBlastRadius(serviceId: String, depth: Int = 3): BlastRadius {
-    val visited = mutableSetOf<String>()
-    
-    // Upstream: who calls this service?
-    val upstream = traverseUpstream(serviceId, visited, depth)
-    
-    // Downstream sync: what does this service call synchronously?
-    val downstreamSync = traverseDownstreamSync(serviceId, visited, depth)
-    
-    // Downstream async: what consumes topics this service publishes to?
-    val producedTopics = getProducedTopics(serviceId)
-    val downstreamAsync = producedTopics.flatMap { getTopicConsumers(it) }
-    
-    val riskLevel = assessRisk(upstream, downstreamSync, downstreamAsync)
-    
-    return BlastRadius(
-        changedService = serviceId,
-        upstream = upstream,
-        downstreamSync = downstreamSync,
-        downstreamAsync = downstreamAsync,
-        topicsAffected = producedTopics,
-        riskLevel = riskLevel
-    )
-}
-```
-
 ---
 
-### Feature 3: Baseline Learning
+### Feature 5: Baselines & Anomaly Detection
 
-**Purpose:** Learn what "normal" looks like for each endpoint.
-
-**User Stories:**
-- As a developer, I want the system to learn normal latency/error patterns
-- As a developer, I want time-aware baselines (business hours vs nights)
+**Purpose:** Learn normal behavior, detect anomalies in production.
 
 **API Endpoints:**
 ```
-GET /api/services/{serviceId}/baselines
-POST /api/baselines/compute  # Trigger recomputation
+GET  /api/services/{serviceId}/baselines
+POST /api/baselines/compute
+GET  /api/anomalies
+GET  /api/services/{serviceId}/health
 ```
 
 **CLI Commands:**
 ```bash
 ./platform compute-baselines
-./platform baselines show {serviceId}
-```
-
-**Algorithm:**
-```kotlin
-fun computeBaseline(endpointId: String, windowDays: Int = 14): List<Baseline> {
-    val samples = getMetricSamples(endpointId, since = now() - windowDays.days)
-    
-    // Group by time windows
-    val businessHours = samples.filter { isBusinessHours(it) && isWeekday(it) }
-    val offHours = samples.filter { !isBusinessHours(it) && isWeekday(it) }
-    val weekends = samples.filter { isWeekend(it) }
-    
-    return listOfNotNull(
-        computeBaselineForGroup(businessHours, "weekday_business"),
-        computeBaselineForGroup(offHours, "weekday_other"),
-        computeBaselineForGroup(weekends, "weekend")
-    )
-}
-
-fun computeBaselineForGroup(samples: List<MetricSample>, label: String): Baseline? {
-    if (samples.size < 10) return null  // Minimum sample size
-    
-    return Baseline(
-        latencyP50Mean = samples.map { it.latencyP50Ms }.average(),
-        latencyP50StdDev = samples.map { it.latencyP50Ms }.stdDev(),
-        latencyP99Mean = samples.map { it.latencyP99Ms }.average(),
-        latencyP99StdDev = samples.map { it.latencyP99Ms }.stdDev(),
-        errorRateMean = samples.map { it.errorRate }.average(),
-        errorRateStdDev = samples.map { it.errorRate }.stdDev(),
-        // ... etc
-    )
-}
-```
-
----
-
-### Feature 4: Anomaly Detection
-
-**Purpose:** Detect when current metrics deviate from baseline.
-
-**User Stories:**
-- As a developer, I want to be alerted when latency is abnormally high
-- As a developer, I want to see all current anomalies
-
-**API Endpoints:**
-```
-GET /api/anomalies
-GET /api/anomalies?environment={env}
-GET /api/services/{serviceId}/health
-```
-
-**CLI Commands:**
-```bash
 ./platform check-health
 ./platform anomalies list
-```
-
-**Algorithm:**
-```kotlin
-fun detectAnomaly(endpointId: String): List<Anomaly> {
-    val current = getCurrentMetrics(endpointId, windowMinutes = 5)
-    val baseline = getBaselineForCurrentTime(endpointId)
-    
-    if (baseline == null) return emptyList()
-    
-    val anomalies = mutableListOf<Anomaly>()
-    
-    // Check each metric
-    for (metric in listOf("latency_p50", "latency_p99", "error_rate", "throughput")) {
-        val currentVal = current.getValue(metric)
-        val baselineMean = baseline.getMean(metric)
-        val baselineStdDev = baseline.getStdDev(metric)
-        
-        val zScore = (currentVal - baselineMean) / baselineStdDev
-        
-        if (abs(zScore) > 3.0) {  // 3 sigma threshold
-            anomalies.add(Anomaly(
-                metric = metric,
-                baselineValue = baselineMean,
-                anomalousValue = currentVal,
-                deviationSigma = zScore,
-                severity = when {
-                    abs(zScore) > 4.0 -> CRITICAL
-                    abs(zScore) > 3.5 -> HIGH
-                    else -> MEDIUM
-                }
-            ))
-        }
-    }
-    
-    return anomalies
-}
 ```
 
 ---
@@ -659,129 +873,22 @@ enum class AdapterCapability {
     DEPENDENCIES,
     ENDPOINTS,
     METRICS,
-    REQUEST_BODIES  // Only Pixie/mesh provide this
+    TRAFFIC_BODIES    // Only Pixie provides this
 }
 ```
 
-### Kubernetes Adapter
+### Capability Matrix
 
-```kotlin
-class KubernetesAdapter(
-    private val context: String? = null
-) : Adapter {
-    
-    override val name = "kubernetes"
-    
-    private val client by lazy {
-        if (context != null) {
-            Config.fromKubeconfig(context).let { KubernetesClientBuilder().withConfig(it).build() }
-        } else {
-            KubernetesClientBuilder().build()
-        }
-    }
-    
-    override suspend fun discoverServices(): List<Service> {
-        return client.services()
-            .inAnyNamespace()
-            .list()
-            .items
-            .filter { it.metadata.name != "kubernetes" }
-            .map { svc ->
-                Service(
-                    id = "${svc.metadata.namespace}/${svc.metadata.name}",
-                    name = svc.metadata.name,
-                    environmentId = svc.metadata.namespace,
-                    discoveredVia = name,
-                    discoveredAt = Instant.now(),
-                    lastSeenAt = Instant.now(),
-                    metadata = mapOf(
-                        "clusterIp" to svc.spec.clusterIP,
-                        "ports" to svc.spec.ports.joinToString(",") { "${it.port}/${it.protocol}" }
-                    )
-                )
-            }
-    }
-    
-    override suspend fun discoverDependencies(): List<Dependency> {
-        // K8s API doesn't know about runtime dependencies
-        // Return empty - dependencies come from Pixie/AWS/OTel
-        return emptyList()
-    }
-    
-    override fun capabilities() = setOf(AdapterCapability.SERVICES)
-}
-```
-
-### Manual Seed Adapter (for testing)
-
-```kotlin
-class ManualSeedAdapter : Adapter {
-    
-    override val name = "manual_seed"
-    
-    override suspend fun discoverServices(): List<Service> {
-        return listOf(
-            Service("order-service", "order-service", "test-app", name, Instant.now(), Instant.now()),
-            Service("inventory-service", "inventory-service", "test-app", name, Instant.now(), Instant.now()),
-            Service("payment-worker", "payment-worker", "test-app", name, Instant.now(), Instant.now())
-        )
-    }
-    
-    override suspend fun discoverDependencies(): List<Dependency> {
-        return listOf(
-            Dependency(
-                id = "order-to-inventory",
-                sourceServiceId = "order-service",
-                targetServiceId = "inventory-service",
-                targetExternal = null,
-                dependencyType = DependencyType.SYNC_HTTP,
-                topicOrQueue = null,
-                observedRequestCount = 1000,
-                firstObservedAt = Instant.now().minus(7, ChronoUnit.DAYS),
-                lastObservedAt = Instant.now(),
-                discoveredVia = listOf(name)
-            ),
-            Dependency(
-                id = "order-to-kafka",
-                sourceServiceId = "order-service",
-                targetServiceId = null,
-                targetExternal = "kafka:9092",
-                dependencyType = DependencyType.ASYNC_KAFKA,
-                topicOrQueue = "order-created",
-                observedRequestCount = 1000,
-                firstObservedAt = Instant.now().minus(7, ChronoUnit.DAYS),
-                lastObservedAt = Instant.now(),
-                discoveredVia = listOf(name)
-            ),
-            Dependency(
-                id = "payment-from-kafka",
-                sourceServiceId = "payment-worker",
-                targetServiceId = null,
-                targetExternal = "kafka:9092",
-                dependencyType = DependencyType.ASYNC_KAFKA,
-                topicOrQueue = "order-created",
-                observedRequestCount = 1000,
-                firstObservedAt = Instant.now().minus(7, ChronoUnit.DAYS),
-                lastObservedAt = Instant.now(),
-                discoveredVia = listOf(name)
-            )
-        )
-    }
-    
-    override fun capabilities() = setOf(
-        AdapterCapability.SERVICES,
-        AdapterCapability.DEPENDENCIES,
-        AdapterCapability.ENDPOINTS,
-        AdapterCapability.METRICS
-    )
-}
-```
+| Adapter | Services | Dependencies | Endpoints | Metrics | Traffic Bodies |
+|---------|----------|--------------|-----------|---------|----------------|
+| Pixie | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Kubernetes | ✓ | | | ✓ (resources) | |
+| AWS (X-Ray) | ✓ | ✓ | | ✓ | |
+| Manual Seed | ✓ | ✓ | ✓ | ✓ | ✓ (fake) |
 
 ---
 
 ## Statistics Module
-
-Implement these statistical functions (no external library needed):
 
 ```kotlin
 object Statistics {
@@ -810,14 +917,74 @@ object Statistics {
      * Used for replay comparison (control vs candidate).
      */
     fun mannWhitneyU(sample1: List<Double>, sample2: List<Double>): TestResult {
-        // Implementation details in codebase
-        // Returns p-value and significance assessment
+        // Combine and rank
+        data class RankedValue(val value: Double, val group: Int, var rank: Double = 0.0)
+        
+        val combined = sample1.map { RankedValue(it, 1) } + 
+                       sample2.map { RankedValue(it, 2) }
+        val sorted = combined.sortedBy { it.value }
+        
+        // Assign ranks (handle ties)
+        var i = 0
+        while (i < sorted.size) {
+            var j = i
+            while (j < sorted.size && sorted[j].value == sorted[i].value) j++
+            val avgRank = (i + 1 + j) / 2.0
+            for (k in i until j) sorted[k].rank = avgRank
+            i = j
+        }
+        
+        // Calculate U
+        val r1 = sorted.filter { it.group == 1 }.sumOf { it.rank }
+        val n1 = sample1.size
+        val n2 = sample2.size
+        val u1 = r1 - (n1 * (n1 + 1)) / 2.0
+        val u2 = (n1 * n2).toDouble() - u1
+        val u = minOf(u1, u2)
+        
+        // Normal approximation
+        val meanU = (n1 * n2) / 2.0
+        val stdU = sqrt((n1 * n2 * (n1 + n2 + 1)) / 12.0)
+        val z = (u - meanU) / stdU
+        val pValue = 2 * (1 - normalCDF(abs(z)))
+        
+        return TestResult(u, pValue, pValue < 0.05)
+    }
+    
+    /**
+     * Linear regression slope - used for detecting trends (memory leaks).
+     */
+    fun linearRegressionSlope(x: List<Double>, y: List<Double>): Double {
+        require(x.size == y.size)
+        val n = x.size
+        val sumX = x.sum()
+        val sumY = y.sum()
+        val sumXY = x.zip(y).sumOf { it.first * it.second }
+        val sumX2 = x.sumOf { it * it }
+        
+        return (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+    }
+    
+    private fun normalCDF(z: Double): Double {
+        val a1 = 0.254829592
+        val a2 = -0.284496736
+        val a3 = 1.421413741
+        val a4 = -1.453152027
+        val a5 = 1.061405429
+        val p = 0.3275911
+        
+        val sign = if (z < 0) -1 else 1
+        val x = abs(z) / sqrt(2.0)
+        val t = 1.0 / (1.0 + p * x)
+        val y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-x * x)
+        
+        return 0.5 * (1.0 + sign * y)
     }
     
     data class TestResult(
         val uStatistic: Double,
         val pValue: Double,
-        val isSignificant: Boolean  // p < 0.05
+        val isSignificant: Boolean
     )
 }
 ```
@@ -828,197 +995,248 @@ object Statistics {
 
 ### Phase 1: Foundation (Week 1-2)
 
-**Week 1: Project Setup**
+**Week 1: Project Setup + Data Model**
 - [ ] Initialize Gradle project with dependencies
 - [ ] Create package structure
-- [ ] Define data models (Service, Dependency, Endpoint, MetricSample)
+- [ ] Define all data models (including CapturedRequest, ReplayRun, ResourceSample)
 - [ ] Create Exposed table definitions
 - [ ] Implement Database class with CRUD operations
 - [ ] Write database tests
 
-**Week 2: Kubernetes Adapter**
-- [ ] Implement KubernetesAdapter
-- [ ] Create ManualSeedAdapter for testing
-- [ ] Implement AdapterRunner for periodic polling
-- [ ] Create CLI commands: `seed`, `discover`, `topology`
+**Week 2: Kubernetes Integration + Manual Seed**
+- [ ] Implement KubernetesAdapter (services + resource metrics)
+- [ ] Create ManualSeedAdapter with fake traffic data
+- [ ] Implement basic CLI structure
+- [ ] Create CLI commands: `seed`, `services`
 - [ ] Deploy test workloads to kind cluster
 
-**Milestone:** `./platform seed && ./platform topology test-app` works
+**Milestone:** `./platform seed && ./platform services list` works
 
 ---
 
-### Phase 2: Topology & Blast Radius (Week 3-4)
+### Phase 2: Pixie Integration (Week 3-4)
 
-**Week 3: Topology Service + API**
-- [ ] Implement TopologyService with query methods
-- [ ] Set up Ktor application
-- [ ] Create API routes for services and topology
-- [ ] Add error handling and validation
-- [ ] Write API tests
+**Week 3: Pixie Setup + Traffic Capture**
+- [ ] Deploy Pixie to kind cluster
+- [ ] Implement PixieAdapter
+- [ ] Query services and dependencies from Pixie
+- [ ] Query HTTP events with bodies
+- [ ] Store captured requests in database
 
-**Week 4: Blast Radius**
+**Week 4: Traffic Storage + Topology**
+- [ ] Implement TrafficCaptureService
+- [ ] Sampling strategy (don't store everything)
+- [ ] Sensitive header filtering
+- [ ] Implement TopologyService
+- [ ] CLI commands: `discover`, `topology`
+
+**Milestone:** `./platform discover` captures real traffic
+
+---
+
+### Phase 3: Replay Engine (Week 5-6)
+
+**Week 5: Validation Environment + Replay**
+- [ ] Create validation namespace in K8s
+- [ ] Implement pod deployment for control/candidate
+- [ ] Implement ReplayEngine - send traffic to both
+- [ ] Record response timing and status
+
+**Week 6: Resource Monitoring**
+- [ ] Implement ResourceMonitor (poll K8s Metrics API)
+- [ ] Store resource samples during replay
+- [ ] Implement resource analysis (leak detection)
+- [ ] CLI command: `validate`
+
+**Milestone:** `./platform validate --service X --candidate X:pr-123` runs
+
+---
+
+### Phase 4: Analysis & Verdicts (Week 7-8)
+
+**Week 7: Statistical Analysis**
+- [ ] Implement Statistics module (Mann-Whitney U, etc.)
+- [ ] Latency comparison (control vs candidate)
+- [ ] Error rate comparison
+- [ ] Memory trend analysis
+- [ ] Generate regressions list
+
+**Week 8: Verdicts + API**
+- [ ] Implement ValidationService (orchestrates everything)
+- [ ] Generate verdict (pass/fail/inconclusive)
+- [ ] Create API endpoints for validation
+- [ ] Polish CLI output
+- [ ] Documentation
+
+**Milestone:** Full validation with verdict: "FAIL - memory leak detected"
+
+---
+
+### Phase 5: Hardening (Week 9-10)
+
+**Week 9: Blast Radius + Baselines**
 - [ ] Implement BlastRadiusService
-- [ ] Add graph traversal (upstream, downstream, async)
-- [ ] Implement risk assessment heuristic
-- [ ] Add API endpoint and CLI command
-- [ ] Test with complex topology
-
-**Milestone:** `./platform blast-radius order-service` returns accurate results
-
----
-
-### Phase 3: Metrics & Baselines (Week 5-6)
-
-**Week 5: Metrics Collection**
-- [ ] Implement MetricSample storage
-- [ ] Create fake metrics generator for testing
-- [ ] Add metrics API endpoints
-- [ ] Implement metric retention/cleanup
-
-**Week 6: Baselines & Anomaly Detection**
 - [ ] Implement BaselineService
-- [ ] Add time-aware baseline computation
 - [ ] Implement AnomalyService
-- [ ] Add health check API and CLI
-- [ ] Test anomaly detection with injected anomalies
+- [ ] CLI commands: `blast-radius`, `check-health`
 
-**Milestone:** `./platform check-health` detects anomalies
-
----
-
-### Phase 4: Real Data Sources (Week 7-8)
-
-**Week 7: AWS or Pixie Adapter**
-- [ ] Implement AwsAdapter (X-Ray, CloudWatch) OR PixieAdapter
-- [ ] Test with real infrastructure
-- [ ] Handle adapter-specific edge cases
-
-**Week 8: Stabilization**
+**Week 10: Stabilization**
 - [ ] Error handling and retry logic
 - [ ] Configuration management
 - [ ] Logging and observability
+- [ ] End-to-end tests
 - [ ] Documentation
 
-**Milestone:** Platform running against real infrastructure
+**Milestone:** Production-ready V1
 
 ---
 
-## Future Features (V2+)
-
-### Deployment Correlation
-- Ingest deployment events (CloudTrail, Argo, GitHub)
-- Correlate anomalies with recent deployments
-- "This deployment likely caused this anomaly"
-
-### Traffic Replay
-- Requires body capture (Pixie adapter)
-- Store CapturedRequest with request/response bodies
-- Replay against control vs candidate versions
-- Statistical comparison of results
-
-### PR Integration
-- GitHub/GitLab webhook integration
-- Automatic blast radius on PR
-- Validation status checks
-
-### Automatic Rollback
-- Integration with deployment tools (Argo, Flux)
-- Anomaly-triggered rollback decisions
-
----
-
-## Testing Strategy
-
-### Unit Tests
-- Statistics functions
-- Blast radius computation
-- Baseline learning logic
-
-### Integration Tests
-- Database operations
-- Adapter → Database pipeline
-- API endpoints
-
-### End-to-End Tests
-- Full workflow with kind cluster
-- Deploy test app → discover → analyze
-
-### Test Commands
-```bash
-./gradlew test                    # All tests
-./gradlew test --tests "*Unit*"   # Unit tests only
-./gradlew test --tests "*Api*"    # API tests only
-```
-
----
-
-## Development Commands
+## Example Output
 
 ```bash
-# Build
-./gradlew build
+$ ./platform validate \
+    --service order-service \
+    --candidate order-service:pr-1234 \
+    --duration 10m \
+    --traffic-source "1h"
 
-# Run API server
-./gradlew run
+Validation: order-service (PR #1234)
+════════════════════════════════════════════════════════════════
 
-# Run CLI
-./gradlew installDist
-./build/install/platform/bin/platform --help
+Status: COMPLETED
+Duration: 10m 23s
+Requests Replayed: 2,847 (sampled from last hour)
 
-# Or during development
-./gradlew run --args="seed"
-./gradlew run --args="topology test-app"
+LATENCY
+────────────────────────────────────────────────────────────────
+                  Control      Candidate     Change
+p50               45ms         48ms          +6.7%      ✓
+p99               180ms        312ms         +73.3%     ⚠ REGRESSION
+Statistical significance: p < 0.001
 
-# Test
-./gradlew test
+ERRORS
+────────────────────────────────────────────────────────────────
+                  Control      Candidate     Change
+Error rate        0.3%         0.4%          +33.3%     ✓
+Not statistically significant (p = 0.23)
 
-# Docker
-docker build -t platform .
-docker run -p 8080:8080 platform
+RESOURCES (10 min observation)
+────────────────────────────────────────────────────────────────
+                  Control      Candidate     Change
+Memory start      512 MB       510 MB
+Memory end        520 MB       783 MB        +53.5%     ⚠ LEAK DETECTED
+Memory growth     +1.6 MB/min  +27.3 MB/min
+CPU avg           12%          18%           +50%       ✓
+
+RESPONSE CONSISTENCY
+────────────────────────────────────────────────────────────────
+Status mismatches: 2 / 2847 (0.07%)        ✓
+Body mismatches:   12 / 2847 (0.42%)       ✓
+
+════════════════════════════════════════════════════════════════
+VERDICT: FAIL
+
+Regressions detected:
+  • p99 latency increased by 73% (180ms → 312ms)
+  • Memory leak: +27 MB/min growth rate
+
+Recommendation: DO NOT MERGE - investigate memory leak
+
+[View full report: http://localhost:8080/validate/run-abc123]
 ```
 
 ---
 
 ## Environment Setup
 
+### Prerequisites
+
+```bash
+# Install kind
+brew install kind
+
+# Install kubectl
+brew install kubectl
+
+# Install Pixie CLI
+bash -c "$(curl -fsSL https://work.withpixie.ai/install.sh)"
+```
+
 ### Local Development
 
 ```bash
-# Install kind (Kubernetes in Docker)
-brew install kind
-
 # Create cluster
 kind create cluster --name platform-dev
 
-# Verify
-kubectl cluster-info
-```
+# Install metrics-server (for resource monitoring)
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 
-### Test Workloads
+# Patch for kind (metrics-server needs this)
+kubectl patch deployment metrics-server -n kube-system \
+  --type='json' \
+  -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
 
-Deploy sample services for testing:
+# Install Pixie
+px deploy
 
-```bash
+# Deploy test workloads
 kubectl apply -f test-app/k8s-manifests.yaml
+
+# Verify
 kubectl get pods -n test-app
+px get pods
 ```
+
+---
+
+## Future Features (V2+)
+
+### PR Integration
+- GitHub/GitLab webhook integration
+- Automatic validation on PR
+- Status checks with results summary
+
+### Deployment Correlation
+- Ingest deployment events
+- Correlate anomalies with recent deploys
+- "This deploy likely caused this anomaly"
+
+### Automatic Rollback
+- Integration with Argo/Flux
+- Anomaly-triggered rollback
+
+### Multi-Cluster Support
+- Federated topology across clusters
+- Cross-cluster dependency tracking
 
 ---
 
 ## Notes for Claude
 
-1. **Start small**: Begin with models and database before adapters
-2. **Test first**: Write tests as you implement features
-3. **Manual seed first**: Use ManualSeedAdapter before real adapters
-4. **Iterate**: Get basic version working, then enhance
-5. **Keep it simple**: Avoid over-engineering; this is a solo project
-6. **Type safety**: Leverage Kotlin's type system to catch errors early
-7. **Coroutines**: Use suspend functions for I/O operations
+1. **Pixie is required for V1**: Traffic replay is the core differentiator
+2. **Start with manual seed**: Build replay engine with fake data first
+3. **Test incrementally**: Each phase should produce working functionality
+4. **Resource monitoring uses K8s Metrics API**: Not Pixie
+5. **Statistics are simple**: Mean, stddev, percentiles, Mann-Whitney U, linear regression
+6. **Type safety**: Leverage Kotlin's type system
+7. **Coroutines everywhere**: All I/O operations should be suspend functions
 
-When implementing features, follow this order:
+### Implementation Order
+
+For each feature:
 1. Data model (models/)
 2. Database operations (database/)
 3. Business logic (features/)
 4. API endpoint (api/)
 5. CLI command (Cli.kt)
 6. Tests
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Traffic capture | Pixie (eBPF) | Zero instrumentation, captures bodies |
+| Resource metrics | K8s Metrics API | Simple, always available |
+| Statistical tests | Mann-Whitney U | Non-parametric, handles skewed latency distributions |
+| Leak detection | Linear regression | Detect growth trend over time |
+| Comparison approach | Control vs candidate simultaneously | Eliminates infrastructure noise |

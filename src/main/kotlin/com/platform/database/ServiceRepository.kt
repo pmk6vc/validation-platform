@@ -1,9 +1,12 @@
 package com.platform.database
 
+import com.platform.models.Page
 import com.platform.models.Service
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
@@ -16,6 +19,9 @@ import java.util.UUID
  * Repository for Service CRUD operations.
  */
 object ServiceRepository {
+    const val DEFAULT_PAGE_SIZE = 20
+    const val MAX_PAGE_SIZE = 100
+
     fun create(service: Service): Service =
         transaction {
             Services.insert {
@@ -26,6 +32,7 @@ object ServiceRepository {
                 it[name] = service.name
                 it[provider] = service.provider
                 it[discoveredAt] = service.discoveredAt
+                it[lastSeenAt] = service.lastSeenAt
                 it[metadata] = service.metadata
             }
             service
@@ -47,12 +54,25 @@ object ServiceRepository {
                 .map { it.toService() }
         }
 
+    /**
+     * Find services with optional filters and cursor-based pagination.
+     *
+     * @param organizationId Filter by organization
+     * @param cluster Filter by cluster
+     * @param namespace Filter by namespace
+     * @param limit Maximum number of items to return (default 20, max 100)
+     * @param cursor Cursor from previous page's nextCursor, null for first page
+     * @return Page containing services and nextCursor for pagination
+     */
     fun find(
         organizationId: String? = null,
         cluster: String? = null,
         namespace: String? = null,
-    ): List<Service> =
+        limit: Int = DEFAULT_PAGE_SIZE,
+        cursor: String? = null,
+    ): Page<Service> =
         transaction {
+            val pageLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
             val conditions = mutableListOf<Op<Boolean>>()
 
             organizationId?.let {
@@ -64,12 +84,29 @@ object ServiceRepository {
             namespace?.let {
                 conditions.add(Services.namespace eq it)
             }
+            cursor?.let {
+                conditions.add(Services.id greater UUID.fromString(it))
+            }
 
-            if (conditions.isEmpty()) {
-                Services.selectAll()
-            } else {
-                Services.selectAll().where { conditions.reduce { acc, op -> acc and op } }
-            }.map { it.toService() }
+            val query =
+                if (conditions.isEmpty()) {
+                    Services.selectAll()
+                } else {
+                    Services.selectAll().where { conditions.reduce { acc, op -> acc and op } }
+                }
+
+            // Fetch one extra to determine if there's a next page
+            val results =
+                query
+                    .orderBy(Services.id, SortOrder.ASC)
+                    .limit(pageLimit + 1)
+                    .map { it.toService() }
+
+            val hasMore = results.size > pageLimit
+            val items = if (hasMore) results.dropLast(1) else results
+            val nextCursor = if (hasMore) items.last().id else null
+
+            Page(items = items, nextCursor = nextCursor)
         }
 
     fun upsert(service: Service): Service =
@@ -88,6 +125,7 @@ object ServiceRepository {
             if (existingId != null) {
                 Services.update({ Services.id eq existingId }) {
                     it[provider] = service.provider
+                    it[lastSeenAt] = service.lastSeenAt
                     it[metadata] = service.metadata
                 }
                 service.copy(id = existingId.toString())
@@ -110,6 +148,7 @@ object ServiceRepository {
             name = this[Services.name],
             provider = this[Services.provider],
             discoveredAt = this[Services.discoveredAt],
+            lastSeenAt = this[Services.lastSeenAt],
             metadata = this[Services.metadata],
         )
 }

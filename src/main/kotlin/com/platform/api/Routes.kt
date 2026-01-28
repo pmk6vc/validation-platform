@@ -24,8 +24,13 @@ fun Application.configureRouting() {
         route("/api") {
             route("/organizations") {
                 get {
-                    val organizations = OrganizationRepository.findAll()
-                    call.respond(organizations)
+                    val limit =
+                        call.request.queryParameters["limit"]?.toIntOrNull()
+                            ?: OrganizationRepository.DEFAULT_PAGE_SIZE
+                    val cursor = call.request.queryParameters["cursor"]
+
+                    val page = OrganizationRepository.find(limit = limit, cursor = cursor)
+                    call.respond(page)
                 }
 
                 get("/{id}") {
@@ -44,13 +49,20 @@ fun Application.configureRouting() {
 
             route("/services") {
                 get {
-                    val services =
+                    val limit =
+                        call.request.queryParameters["limit"]?.toIntOrNull()
+                            ?: ServiceRepository.DEFAULT_PAGE_SIZE
+                    val cursor = call.request.queryParameters["cursor"]
+
+                    val page =
                         ServiceRepository.find(
                             organizationId = call.request.queryParameters["organizationId"],
                             cluster = call.request.queryParameters["cluster"],
                             namespace = call.request.queryParameters["namespace"],
+                            limit = limit,
+                            cursor = cursor,
                         )
-                    call.respond(services)
+                    call.respond(page)
                 }
 
                 get("/{id}") {

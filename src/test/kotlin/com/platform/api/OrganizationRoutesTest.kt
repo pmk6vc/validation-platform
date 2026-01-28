@@ -32,14 +32,17 @@ class OrganizationRoutesTest : DatabaseTestBase() {
     }
 
     @Test
-    fun `GET organizations should return empty list when no organizations`() =
+    fun `GET organizations should return empty page when no organizations`() =
         testApplication {
             application { configureTestApplication() }
 
             val response = client.get("/api/organizations")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals("[]", response.bodyAsText().trim())
+            val body = response.bodyAsText()
+            assertTrue(body.contains("\"items\""))
+            assertTrue(body.contains("[]"))
+            assertTrue(body.contains("\"nextCursor\""))
         }
 
     @Test
