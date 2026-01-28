@@ -43,8 +43,7 @@ dependencies {
     implementation("org.postgresql:postgresql:42.7.4")
 
     // Database migrations
-    implementation("org.flywaydb:flyway-core:10.15.0")
-    implementation("org.flywaydb:flyway-database-postgresql:10.15.0")
+    implementation("org.flywaydb:flyway-core:9.22.3")
 
     // Logging
     implementation("ch.qos.logback:logback-classic:$logback_version")
