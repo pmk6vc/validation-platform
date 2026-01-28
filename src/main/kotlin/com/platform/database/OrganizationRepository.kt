@@ -9,7 +9,7 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import java.util.UUID
 
 /**
@@ -19,8 +19,8 @@ object OrganizationRepository {
     const val DEFAULT_PAGE_SIZE = 20
     const val MAX_PAGE_SIZE = 100
 
-    fun create(organization: Organization): Organization =
-        transaction {
+    suspend fun create(organization: Organization): Organization =
+        newSuspendedTransaction {
             Organizations.insert {
                 it[id] = UUID.fromString(organization.id)
                 it[name] = organization.name
@@ -29,8 +29,8 @@ object OrganizationRepository {
             organization
         }
 
-    fun findById(id: String): Organization? =
-        transaction {
+    suspend fun findById(id: String): Organization? =
+        newSuspendedTransaction {
             Organizations
                 .selectAll()
                 .where { Organizations.id eq UUID.fromString(id) }
@@ -45,11 +45,11 @@ object OrganizationRepository {
      * @param cursor Cursor from previous page's nextCursor, null for first page
      * @return Page containing organizations and nextCursor for pagination
      */
-    fun find(
+    suspend fun find(
         limit: Int = DEFAULT_PAGE_SIZE,
         cursor: String? = null,
     ): Page<Organization> =
-        transaction {
+        newSuspendedTransaction {
             val pageLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
 
             val query =
@@ -72,19 +72,8 @@ object OrganizationRepository {
             Page(items = items, nextCursor = nextCursor)
         }
 
-    /**
-     * Find all organizations without pagination.
-     * Prefer using find() with pagination for large datasets.
-     */
-    fun findAll(): List<Organization> =
-        transaction {
-            Organizations
-                .selectAll()
-                .map { it.toOrganization() }
-        }
-
-    fun delete(id: String): Boolean =
-        transaction {
+    suspend fun delete(id: String): Boolean =
+        newSuspendedTransaction {
             Organizations.deleteWhere { Organizations.id eq UUID.fromString(id) } > 0
         }
 

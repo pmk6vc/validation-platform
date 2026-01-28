@@ -11,7 +11,7 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.jetbrains.exposed.sql.update
 import java.util.UUID
 
@@ -22,8 +22,8 @@ object ServiceRepository {
     const val DEFAULT_PAGE_SIZE = 20
     const val MAX_PAGE_SIZE = 100
 
-    fun create(service: Service): Service =
-        transaction {
+    suspend fun create(service: Service): Service =
+        newSuspendedTransaction {
             Services.insert {
                 it[id] = UUID.fromString(service.id)
                 it[organizationId] = UUID.fromString(service.organizationId)
@@ -38,20 +38,13 @@ object ServiceRepository {
             service
         }
 
-    fun findById(id: String): Service? =
-        transaction {
+    suspend fun findById(id: String): Service? =
+        newSuspendedTransaction {
             Services
                 .selectAll()
                 .where { Services.id eq UUID.fromString(id) }
                 .map { it.toService() }
                 .singleOrNull()
-        }
-
-    fun findAll(): List<Service> =
-        transaction {
-            Services
-                .selectAll()
-                .map { it.toService() }
         }
 
     /**
@@ -64,14 +57,14 @@ object ServiceRepository {
      * @param cursor Cursor from previous page's nextCursor, null for first page
      * @return Page containing services and nextCursor for pagination
      */
-    fun find(
+    suspend fun find(
         organizationId: String? = null,
         cluster: String? = null,
         namespace: String? = null,
         limit: Int = DEFAULT_PAGE_SIZE,
         cursor: String? = null,
     ): Page<Service> =
-        transaction {
+        newSuspendedTransaction {
             val pageLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
             val conditions = mutableListOf<Op<Boolean>>()
 
@@ -109,8 +102,8 @@ object ServiceRepository {
             Page(items = items, nextCursor = nextCursor)
         }
 
-    fun upsert(service: Service): Service =
-        transaction {
+    suspend fun upsert(service: Service): Service =
+        newSuspendedTransaction {
             val existingId =
                 Services
                     .selectAll()
@@ -134,8 +127,8 @@ object ServiceRepository {
             }
         }
 
-    fun delete(id: String): Boolean =
-        transaction {
+    suspend fun delete(id: String): Boolean =
+        newSuspendedTransaction {
             Services.deleteWhere { Services.id eq UUID.fromString(id) } > 0
         }
 
