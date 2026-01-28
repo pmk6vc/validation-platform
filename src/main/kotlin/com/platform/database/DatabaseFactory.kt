@@ -1,8 +1,7 @@
 package com.platform.database
 
+import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SchemaUtils
-import org.jetbrains.exposed.sql.transactions.transaction
 
 /**
  * Database configuration and initialization.
@@ -13,15 +12,26 @@ object DatabaseFactory {
         username: String,
         password: String,
     ) {
+        runMigrations(jdbcUrl, username, password)
+
         Database.connect(
             url = jdbcUrl,
             driver = "org.postgresql.Driver",
             user = username,
             password = password,
         )
+    }
 
-        transaction {
-            SchemaUtils.create(Organizations, Services)
-        }
+    private fun runMigrations(
+        jdbcUrl: String,
+        username: String,
+        password: String,
+    ) {
+        Flyway
+            .configure()
+            .dataSource(jdbcUrl, username, password)
+            .locations("classpath:db/migration")
+            .load()
+            .migrate()
     }
 }
