@@ -14,6 +14,7 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -29,8 +30,10 @@ class ServiceRoutesTest : DatabaseTestBase() {
 
     @BeforeEach
     fun setupOrg() {
-        testOrg = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
-        OrganizationRepository.create(testOrg)
+        runBlocking {
+            testOrg = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
+            OrganizationRepository.create(testOrg)
+        }
     }
 
     private fun Application.configureTestApplication() {
