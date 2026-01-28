@@ -127,10 +127,10 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val orgServices = ServiceRepository.find(organizationId = testOrg.id)
+        val page = ServiceRepository.find(organizationId = testOrg.id)
 
-        assertEquals(2, orgServices.size)
-        assertTrue(orgServices.all { it.organizationId == testOrg.id })
+        assertEquals(2, page.items.size)
+        assertTrue(page.items.all { it.organizationId == testOrg.id })
     }
 
     @Test
@@ -143,10 +143,10 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val clusterServices = ServiceRepository.find(cluster = "prod-us-east")
+        val page = ServiceRepository.find(cluster = "prod-us-east")
 
-        assertEquals(2, clusterServices.size)
-        assertTrue(clusterServices.all { it.cluster == "prod-us-east" })
+        assertEquals(2, page.items.size)
+        assertTrue(page.items.all { it.cluster == "prod-us-east" })
     }
 
     @Test
@@ -159,10 +159,10 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val nsServices = ServiceRepository.find(namespace = "payments")
+        val page = ServiceRepository.find(namespace = "payments")
 
-        assertEquals(2, nsServices.size)
-        assertTrue(nsServices.all { it.namespace == "payments" })
+        assertEquals(2, page.items.size)
+        assertTrue(page.items.all { it.namespace == "payments" })
     }
 
     @Test
@@ -175,10 +175,80 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         ServiceRepository.create(service2)
         ServiceRepository.create(service3)
 
-        val filtered = ServiceRepository.find(cluster = "prod", namespace = "payments")
+        val page = ServiceRepository.find(cluster = "prod", namespace = "payments")
 
-        assertEquals(1, filtered.size)
-        assertEquals("service-1", filtered[0].name)
+        assertEquals(1, page.items.size)
+        assertEquals("service-1", page.items[0].name)
+    }
+
+    @Test
+    fun `find with limit should return at most limit items`() {
+        repeat(5) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 3)
+
+        assertEquals(3, page.items.size)
+    }
+
+    @Test
+    fun `find should return nextCursor when more items exist`() {
+        repeat(5) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 3)
+
+        assertEquals(3, page.items.size)
+        assertNotNull(page.nextCursor)
+    }
+
+    @Test
+    fun `find should return null nextCursor when no more items`() {
+        repeat(3) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 5)
+
+        assertEquals(3, page.items.size)
+        assertNull(page.nextCursor)
+    }
+
+    @Test
+    fun `find with cursor should return items after cursor`() {
+        repeat(5) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val firstPage = ServiceRepository.find(limit = 2)
+        assertEquals(2, firstPage.items.size)
+        assertNotNull(firstPage.nextCursor)
+
+        val secondPage = ServiceRepository.find(limit = 2, cursor = firstPage.nextCursor)
+        assertEquals(2, secondPage.items.size)
+        assertNotNull(secondPage.nextCursor)
+
+        // Verify no overlap between pages
+        val firstPageIds = firstPage.items.map { it.id }.toSet()
+        val secondPageIds = secondPage.items.map { it.id }.toSet()
+        assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
+
+        val thirdPage = ServiceRepository.find(limit = 2, cursor = secondPage.nextCursor)
+        assertEquals(1, thirdPage.items.size)
+        assertNull(thirdPage.nextCursor)
+    }
+
+    @Test
+    fun `find should enforce max page size`() {
+        repeat(150) { i ->
+            ServiceRepository.create(createTestService(name = "service-$i"))
+        }
+
+        val page = ServiceRepository.find(limit = 200)
+
+        assertEquals(ServiceRepository.MAX_PAGE_SIZE, page.items.size)
     }
 
     @Test
