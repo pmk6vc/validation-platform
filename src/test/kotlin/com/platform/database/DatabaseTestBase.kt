@@ -1,6 +1,6 @@
 package com.platform.database
-
-import org.jetbrains.exposed.sql.SchemaUtils
+import org.flywaydb.core.Flyway
+import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -17,9 +17,13 @@ import org.testcontainers.utility.DockerImageName
  *
  * ## Test Isolation
  * All tests share a single PostgreSQL instance. To prevent interference:
- * - `@BeforeEach cleanTables()` drops and recreates all tables before each test
+ * - `@BeforeEach cleanTables()` truncates all tables before each test
  * - Gradle is configured with `maxParallelForks = 1` to run tests sequentially
  * - This ensures each test starts with a clean, empty database
+ *
+ * ## Migrations
+ * Flyway migrations are run once when the database is initialized. Between tests,
+ * only data is cleared (not schema), which is faster than dropping/recreating tables.
  *
  * ## CI vs Local Development
  *
@@ -49,11 +53,16 @@ abstract class DatabaseTestBase {
 
             val externalUrl = System.getenv("TEST_DATABASE_URL")
             if (externalUrl != null) {
-                // Use external database (for local dev when Testcontainers doesn't work)
+                val username = System.getenv("TEST_DATABASE_USER") ?: "postgres"
+                val password = System.getenv("TEST_DATABASE_PASSWORD") ?: "postgres"
+
+                // Clean and migrate for external database
+                cleanAndMigrate(externalUrl, username, password)
+
                 DatabaseFactory.init(
                     jdbcUrl = externalUrl,
-                    username = System.getenv("TEST_DATABASE_USER") ?: "postgres",
-                    password = System.getenv("TEST_DATABASE_PASSWORD") ?: "postgres",
+                    username = username,
+                    password = password,
                 )
             } else {
                 // Use testcontainers (works in CI)
@@ -72,19 +81,33 @@ abstract class DatabaseTestBase {
                 )
             }
         }
+
+        private fun cleanAndMigrate(
+            jdbcUrl: String,
+            username: String,
+            password: String,
+        ) {
+            Flyway
+                .configure()
+                .dataSource(jdbcUrl, username, password)
+                .locations("classpath:db/migration")
+                .cleanDisabled(false)
+                .load()
+                .also { it.clean() }
+                .migrate()
+        }
     }
 
     /**
      * Resets the database to a clean state before each test.
-     * Drops and recreates all tables to ensure complete isolation between tests.
-     * Tables are dropped in reverse dependency order (Services before Organizations)
+     * Truncates all tables in reverse dependency order (Services before Organizations)
      * to respect foreign key constraints.
      */
     @BeforeEach
     fun cleanTables() {
         transaction {
-            SchemaUtils.drop(Services, Organizations)
-            SchemaUtils.create(Organizations, Services)
+            Services.deleteAll()
+            Organizations.deleteAll()
         }
     }
 }
