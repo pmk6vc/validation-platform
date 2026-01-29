@@ -14,9 +14,9 @@ import org.testcontainers.utility.DockerImageName
  * Base class for Kubernetes integration tests.
  *
  * ## How it works
- * This class sets up a lightweight k3s cluster via Testcontainers that is shared across
- * all tests. The cluster is populated with sample services representing a typical
- * microservices environment.
+ * This class manages a lightweight k3s cluster via Testcontainers that is shared across
+ * all tests. The cluster is lazily initialized and populated with sample services
+ * representing a typical microservices environment.
  *
  * ## Cluster Configuration
  * - **Distribution**: k3s (lightweight Kubernetes)
@@ -29,11 +29,34 @@ import org.testcontainers.utility.DockerImageName
  * - `production/frontend-service` - LoadBalancer service with HTTP port
  * - `production/api-gateway` - ClusterIP service with HTTP and gRPC ports
  * - `infrastructure/redis` - ClusterIP service for Redis
+ * - `infrastructure/postgresql` - ClusterIP service for PostgreSQL
  *
  * ## Usage
- * Extend this class to get access to:
- * - `k3s`: The Testcontainers k3s instance
- * - `createKubernetesClient()`: Helper to create a client connected to the test cluster
+ * There are two ways to use this class:
+ *
+ * **Option 1: Extend the class** (when you only need K8s)
+ * ```kotlin
+ * class MyK8sTest : KubernetesTestBase() {
+ *     @Test
+ *     fun `test something`() {
+ *         val client = createKubernetesClient()
+ *         // ...
+ *     }
+ * }
+ * ```
+ *
+ * **Option 2: Call companion object directly** (when you need multiple test bases)
+ * ```kotlin
+ * class MyIntegrationTest : DatabaseTestBase() {
+ *     @Test
+ *     fun `test with both K8s and database`() {
+ *         val client = KubernetesTestBase.createKubernetesClient()
+ *         // ...
+ *     }
+ * }
+ * ```
+ *
+ * The cluster is lazily initialized on first use, so both patterns work correctly.
  *
  * ## Test Isolation
  * Unlike database tests, Kubernetes resources are NOT cleaned between tests.
@@ -41,22 +64,7 @@ import org.testcontainers.utility.DockerImageName
  *
  * ## CI vs Local Development
  * Works the same in both environments - Testcontainers will handle Docker connectivity.
- * The k3s image is lightweight (~100MB) and starts quickly.
- *
- * Example usage:
- * ```kotlin
- * class MyK8sTest : KubernetesTestBase() {
- *     @Test
- *     fun `test something with k8s`() {
- *         val client = createKubernetesClient()
- *         try {
- *             // Your test code here
- *         } finally {
- *             client.close()
- *         }
- *     }
- * }
- * ```
+ * On macOS, use Colima instead of Docker Desktop (see build.gradle.kts).
  */
 abstract class KubernetesTestBase {
     companion object {
