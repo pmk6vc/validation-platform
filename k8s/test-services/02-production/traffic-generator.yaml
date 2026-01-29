@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traffic-generator
+  template:
+    metadata:
+      labels:
+        app: traffic-generator
+    spec:
+      containers:
+        - name: traffic-gen
+          image: curlimages/curl:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for API Gateway to be ready..."
+              sleep 30
+              echo "Starting traffic generation..."
+              while true; do
+                # Health check
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/health
+
+                # List all users (cache miss then hit)
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users
+
+                # Get individual users
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/1
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/2
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/3
+
+                # List all orders (database join)
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders
+
+                # Get orders by user
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders/1
+                curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders/2
+
+                # Sleep between rounds
+                sleep 2
+              done
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"

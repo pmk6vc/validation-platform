@@ -1,9 +1,5 @@
 package com.platform.kubernetes
 
-import io.fabric8.kubernetes.api.model.ConfigMapBuilder
-import io.fabric8.kubernetes.api.model.IntOrString
-import io.fabric8.kubernetes.api.model.ServiceBuilder
-import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
 import org.junit.jupiter.api.BeforeAll
 import org.slf4j.LoggerFactory
@@ -12,6 +8,7 @@ import org.testcontainers.k3s.K3sContainer
 import org.testcontainers.utility.DockerImageName
 import org.testcontainers.utility.MountableFile
 import java.io.File
+import java.nio.file.Paths
 import java.time.Duration
 
 /**
@@ -31,6 +28,13 @@ import java.time.Duration
  * ```
  * traffic-generator --> api-gateway --> postgresql
  *                                   --> redis
+ * ```
+ *
+ * ## Manifests
+ * All Kubernetes resources are defined in YAML files under `k8s/test-services/`.
+ * These same manifests can be used for local development with kind/minikube:
+ * ```
+ * kubectl apply -R -f k8s/test-services/
  * ```
  *
  * ## Usage
@@ -64,6 +68,9 @@ abstract class KubernetesWorkloadTestBase {
         // Image name for the test API Gateway
         const val API_GATEWAY_IMAGE = "test-api-gateway:latest"
 
+        // Path to K8s manifests (relative to project root)
+        private const val MANIFESTS_PATH = "k8s/test-services"
+
         @BeforeAll
         @JvmStatic
         fun setupClusterWithWorkloads() {
@@ -83,27 +90,17 @@ abstract class KubernetesWorkloadTestBase {
                     )
             k3s!!.start()
 
+            // Load API Gateway image into k3s (must happen before applying manifests)
+            loadApiGatewayImage()
+
+            // Copy manifests into k3s container and apply them
+            applyManifests()
+
+            // Wait for all deployments to be ready
             val client = createKubernetesClient()
             try {
-                // Create namespaces
-                createNamespaces(client)
-
-                // Deploy infrastructure
-                deployPostgreSQL(client)
-                deployRedis(client)
-
-                // Wait for infrastructure to be ready
                 waitForDeployment(client, "infrastructure", "postgresql", Duration.ofMinutes(2))
                 waitForDeployment(client, "infrastructure", "redis", Duration.ofMinutes(1))
-
-                // Load API Gateway image into k3s and deploy
-                loadApiGatewayImage()
-                deployApiGateway(client)
-
-                // Deploy traffic generator
-                deployTrafficGenerator(client)
-
-                // Wait for application pods
                 waitForDeployment(client, "production", "api-gateway", Duration.ofMinutes(2))
                 waitForDeployment(client, "production", "traffic-generator", Duration.ofMinutes(1))
 
@@ -146,260 +143,59 @@ abstract class KubernetesWorkloadTestBase {
             return k3s!!
         }
 
-        private fun createNamespaces(client: KubernetesClient) {
-            listOf("production", "infrastructure").forEach { ns ->
-                client
-                    .namespaces()
-                    .resource(
-                        io.fabric8.kubernetes.api.model
-                            .NamespaceBuilder()
-                            .withNewMetadata()
-                            .withName(ns)
-                            .endMetadata()
-                            .build(),
-                    ).serverSideApply()
-                logger.info("Created namespace: $ns")
+        /**
+         * Copy K8s manifests into the k3s container and apply them.
+         * Manifests are the single source of truth, used by both tests and local development.
+         */
+        private fun applyManifests() {
+            logger.info("Applying Kubernetes manifests from $MANIFESTS_PATH...")
+
+            // Find the manifests directory (handle running from different working directories)
+            val manifestsDir = findManifestsDirectory()
+            if (!manifestsDir.exists()) {
+                throw RuntimeException(
+                    "Manifests directory not found at ${manifestsDir.absolutePath}. " +
+                        "Make sure k8s/test-services/ exists in the project root.",
+                )
             }
+
+            // Copy manifests into k3s container
+            k3s!!.copyFileToContainer(
+                MountableFile.forHostPath(manifestsDir.toPath()),
+                "/manifests",
+            )
+
+            // Apply all manifests recursively
+            val result =
+                k3s!!.execInContainer(
+                    "kubectl",
+                    "apply",
+                    "-R",
+                    "-f",
+                    "/manifests",
+                )
+            if (result.exitCode != 0) {
+                logger.error("Failed to apply manifests: ${result.stderr}")
+                throw RuntimeException("Failed to apply manifests: ${result.stderr}")
+            }
+            logger.info("Applied all manifests")
         }
 
         /**
-         * Deploy PostgreSQL with initial data.
+         * Find the manifests directory, handling different working directories.
          */
-        private fun deployPostgreSQL(client: KubernetesClient) {
-            val namespace = "infrastructure"
+        private fun findManifestsDirectory(): File {
+            // Try current directory first
+            val direct = File(MANIFESTS_PATH)
+            if (direct.exists()) return direct
 
-            // ConfigMap with init SQL
-            client
-                .configMaps()
-                .inNamespace(namespace)
-                .resource(
-                    ConfigMapBuilder()
-                        .withNewMetadata()
-                        .withName("postgres-init")
-                        .withNamespace(namespace)
-                        .endMetadata()
-                        .addToData(
-                            "init.sql",
-                            """
-                            -- Users table
-                            CREATE TABLE IF NOT EXISTS users (
-                                id SERIAL PRIMARY KEY,
-                                name VARCHAR(100) NOT NULL,
-                                email VARCHAR(100) NOT NULL
-                            );
+            // Try from project root (when running via Gradle)
+            val projectRoot = System.getProperty("user.dir")
+            val fromRoot = Paths.get(projectRoot, MANIFESTS_PATH).toFile()
+            if (fromRoot.exists()) return fromRoot
 
-                            -- Orders table
-                            CREATE TABLE IF NOT EXISTS orders (
-                                id SERIAL PRIMARY KEY,
-                                user_id INTEGER REFERENCES users(id),
-                                total DECIMAL(10, 2) NOT NULL,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            );
-
-                            -- Seed data
-                            INSERT INTO users (name, email) VALUES
-                                ('Alice Johnson', 'alice@example.com'),
-                                ('Bob Smith', 'bob@example.com'),
-                                ('Charlie Brown', 'charlie@example.com'),
-                                ('Diana Prince', 'diana@example.com'),
-                                ('Eve Wilson', 'eve@example.com');
-
-                            INSERT INTO orders (user_id, total) VALUES
-                                (1, 99.99),
-                                (1, 149.50),
-                                (2, 75.00),
-                                (2, 200.00),
-                                (3, 50.25),
-                                (4, 300.00),
-                                (5, 125.75);
-                            """.trimIndent(),
-                        ).build(),
-                ).serverSideApply()
-
-            // Deployment
-            client
-                .apps()
-                .deployments()
-                .inNamespace(namespace)
-                .resource(
-                    DeploymentBuilder()
-                        .withNewMetadata()
-                        .withName("postgresql")
-                        .withNamespace(namespace)
-                        .endMetadata()
-                        .withNewSpec()
-                        .withReplicas(1)
-                        .withNewSelector()
-                        .addToMatchLabels("app", "postgresql")
-                        .endSelector()
-                        .withNewTemplate()
-                        .withNewMetadata()
-                        .addToLabels("app", "postgresql")
-                        .endMetadata()
-                        .withNewSpec()
-                        .addNewContainer()
-                        .withName("postgresql")
-                        .withImage("postgres:16-alpine")
-                        .addNewEnv()
-                        .withName("POSTGRES_PASSWORD")
-                        .withValue("testpass")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("POSTGRES_DB")
-                        .withValue("testdb")
-                        .endEnv()
-                        .addNewPort()
-                        .withContainerPort(5432)
-                        .endPort()
-                        .addNewVolumeMount()
-                        .withName("init-scripts")
-                        .withMountPath("/docker-entrypoint-initdb.d")
-                        .endVolumeMount()
-                        .withNewResources()
-                        .addToRequests(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("128Mi"),
-                        ).addToRequests(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("100m"),
-                        ).addToLimits(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("256Mi"),
-                        ).addToLimits(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("500m"),
-                        ).endResources()
-                        .endContainer()
-                        .addNewVolume()
-                        .withName("init-scripts")
-                        .withNewConfigMap()
-                        .withName("postgres-init")
-                        .endConfigMap()
-                        .endVolume()
-                        .endSpec()
-                        .endTemplate()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            // Service with rich metadata for adapter tests
-            client
-                .services()
-                .inNamespace(namespace)
-                .resource(
-                    ServiceBuilder()
-                        .withNewMetadata()
-                        .withName("postgresql")
-                        .withNamespace(namespace)
-                        .addToLabels("app", "postgresql")
-                        .addToLabels("app.kubernetes.io/name", "postgresql")
-                        .addToLabels("app.kubernetes.io/version", "16.1")
-                        .addToLabels("app.kubernetes.io/component", "database")
-                        .endMetadata()
-                        .withNewSpec()
-                        .withType("ClusterIP")
-                        .addToSelector("app", "postgresql")
-                        .addNewPort()
-                        .withName("postgresql")
-                        .withPort(5432)
-                        .withTargetPort(IntOrString(5432))
-                        .endPort()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            logger.info("Deployed PostgreSQL")
-        }
-
-        /**
-         * Deploy Redis cache.
-         */
-        private fun deployRedis(client: KubernetesClient) {
-            val namespace = "infrastructure"
-
-            // Deployment
-            client
-                .apps()
-                .deployments()
-                .inNamespace(namespace)
-                .resource(
-                    DeploymentBuilder()
-                        .withNewMetadata()
-                        .withName("redis")
-                        .withNamespace(namespace)
-                        .endMetadata()
-                        .withNewSpec()
-                        .withReplicas(1)
-                        .withNewSelector()
-                        .addToMatchLabels("app", "redis")
-                        .endSelector()
-                        .withNewTemplate()
-                        .withNewMetadata()
-                        .addToLabels("app", "redis")
-                        .endMetadata()
-                        .withNewSpec()
-                        .addNewContainer()
-                        .withName("redis")
-                        .withImage("redis:7-alpine")
-                        .addNewPort()
-                        .withContainerPort(6379)
-                        .endPort()
-                        .withNewResources()
-                        .addToRequests(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("64Mi"),
-                        ).addToRequests(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("50m"),
-                        ).addToLimits(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("128Mi"),
-                        ).addToLimits(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("200m"),
-                        ).endResources()
-                        .endContainer()
-                        .endSpec()
-                        .endTemplate()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            // Service with rich metadata for adapter tests
-            client
-                .services()
-                .inNamespace(namespace)
-                .resource(
-                    ServiceBuilder()
-                        .withNewMetadata()
-                        .withName("redis")
-                        .withNamespace(namespace)
-                        .addToLabels("app", "redis")
-                        .addToLabels("app.kubernetes.io/name", "redis")
-                        .addToLabels("app.kubernetes.io/version", "7.2")
-                        .addToLabels("app.kubernetes.io/component", "cache")
-                        .endMetadata()
-                        .withNewSpec()
-                        .withType("ClusterIP")
-                        .addToSelector("app", "redis")
-                        .addNewPort()
-                        .withName("redis")
-                        .withPort(6379)
-                        .withTargetPort(IntOrString(6379))
-                        .endPort()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            logger.info("Deployed Redis")
+            // Return the direct path and let the caller handle the error
+            return direct
         }
 
         /**
@@ -453,227 +249,6 @@ abstract class KubernetesWorkloadTestBase {
             } finally {
                 tarFile.delete()
             }
-        }
-
-        /**
-         * Deploy the API Gateway service.
-         */
-        private fun deployApiGateway(client: KubernetesClient) {
-            val namespace = "production"
-
-            // Deployment
-            client
-                .apps()
-                .deployments()
-                .inNamespace(namespace)
-                .resource(
-                    DeploymentBuilder()
-                        .withNewMetadata()
-                        .withName("api-gateway")
-                        .withNamespace(namespace)
-                        .endMetadata()
-                        .withNewSpec()
-                        .withReplicas(1)
-                        .withNewSelector()
-                        .addToMatchLabels("app", "api-gateway")
-                        .endSelector()
-                        .withNewTemplate()
-                        .withNewMetadata()
-                        .addToLabels("app", "api-gateway")
-                        .addToLabels("version", "v1")
-                        .endMetadata()
-                        .withNewSpec()
-                        .addNewContainer()
-                        .withName("api-gateway")
-                        .withImage("docker.io/library/$API_GATEWAY_IMAGE")
-                        .withImagePullPolicy("Never") // Use local image
-                        .addNewEnv()
-                        .withName(
-                            "POSTGRES_HOST",
-                        ).withValue("postgresql.infrastructure.svc.cluster.local")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("POSTGRES_PORT")
-                        .withValue("5432")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("POSTGRES_DB")
-                        .withValue("testdb")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("POSTGRES_USER")
-                        .withValue("postgres")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("POSTGRES_PASSWORD")
-                        .withValue("testpass")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("REDIS_HOST")
-                        .withValue("redis.infrastructure.svc.cluster.local")
-                        .endEnv()
-                        .addNewEnv()
-                        .withName("REDIS_PORT")
-                        .withValue("6379")
-                        .endEnv()
-                        .addNewPort()
-                        .withContainerPort(8080)
-                        .endPort()
-                        .withNewResources()
-                        .addToRequests(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("256Mi"),
-                        ).addToRequests(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("100m"),
-                        ).addToLimits(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("512Mi"),
-                        ).addToLimits(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("500m"),
-                        ).endResources()
-                        .withNewReadinessProbe()
-                        .withNewHttpGet()
-                        .withPath("/api/health")
-                        .withPort(IntOrString(8080))
-                        .endHttpGet()
-                        .withInitialDelaySeconds(10)
-                        .withPeriodSeconds(5)
-                        .endReadinessProbe()
-                        .endContainer()
-                        .endSpec()
-                        .endTemplate()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            // Service with rich metadata for adapter tests
-            client
-                .services()
-                .inNamespace(namespace)
-                .resource(
-                    ServiceBuilder()
-                        .withNewMetadata()
-                        .withName("api-gateway")
-                        .withNamespace(namespace)
-                        .addToLabels("app", "api-gateway")
-                        .addToLabels("app.kubernetes.io/name", "api-gateway")
-                        .addToLabels("app.kubernetes.io/version", "1.5.0")
-                        .addToLabels("app.kubernetes.io/component", "gateway")
-                        .addToLabels("team", "backend")
-                        .addToAnnotations("description", "API Gateway service")
-                        .addToAnnotations("owner", "backend-team@company.com")
-                        .endMetadata()
-                        .withNewSpec()
-                        .withType("ClusterIP")
-                        .addToSelector("app", "api-gateway")
-                        .addToSelector("version", "v1")
-                        .addNewPort()
-                        .withName("http")
-                        .withPort(8080)
-                        .withTargetPort(IntOrString(8080))
-                        .endPort()
-                        .addNewPort()
-                        .withName("grpc")
-                        .withPort(9090)
-                        .withTargetPort(IntOrString(9090))
-                        .endPort()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            logger.info("Deployed API Gateway")
-        }
-
-        /**
-         * Deploy traffic generator that continuously hits the API Gateway.
-         */
-        private fun deployTrafficGenerator(client: KubernetesClient) {
-            val namespace = "production"
-
-            client
-                .apps()
-                .deployments()
-                .inNamespace(namespace)
-                .resource(
-                    DeploymentBuilder()
-                        .withNewMetadata()
-                        .withName("traffic-generator")
-                        .withNamespace(namespace)
-                        .endMetadata()
-                        .withNewSpec()
-                        .withReplicas(1)
-                        .withNewSelector()
-                        .addToMatchLabels("app", "traffic-generator")
-                        .endSelector()
-                        .withNewTemplate()
-                        .withNewMetadata()
-                        .addToLabels("app", "traffic-generator")
-                        .endMetadata()
-                        .withNewSpec()
-                        .addNewContainer()
-                        .withName("traffic-gen")
-                        .withImage("curlimages/curl:latest")
-                        .withCommand("/bin/sh", "-c")
-                        .withArgs(
-                            """
-                            echo "Waiting for API Gateway to be ready..."
-                            sleep 30
-                            echo "Starting traffic generation..."
-                            while true; do
-                              # Health check
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/health
-
-                              # List all users (cache miss then hit)
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/users
-
-                              # Get individual users
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/1
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/2
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/3
-
-                              # List all orders (database join)
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders
-
-                              # Get orders by user
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders/1
-                              curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders/2
-
-                              # Sleep between rounds
-                              sleep 2
-                            done
-                            """.trimIndent(),
-                        ).withNewResources()
-                        .addToRequests(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("32Mi"),
-                        ).addToRequests(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("10m"),
-                        ).addToLimits(
-                            "memory",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("64Mi"),
-                        ).addToLimits(
-                            "cpu",
-                            io.fabric8.kubernetes.api.model
-                                .Quantity("100m"),
-                        ).endResources()
-                        .endContainer()
-                        .endSpec()
-                        .endTemplate()
-                        .endSpec()
-                        .build(),
-                ).serverSideApply()
-
-            logger.info("Deployed Traffic Generator")
         }
 
         /**
