@@ -45,6 +45,9 @@ dependencies {
     // Database migrations
     implementation("org.flywaydb:flyway-core:9.22.3")
 
+    // Kubernetes
+    implementation("io.fabric8:kubernetes-client:6.10.0")
+
     // Logging
     implementation("ch.qos.logback:logback-classic:$logback_version")
 
@@ -55,6 +58,8 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers:1.20.4")
     testImplementation("org.testcontainers:junit-jupiter:1.20.4")
     testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("org.testcontainers:k3s:1.20.4")
+    testImplementation("io.mockk:mockk:1.13.9")
 }
 
 tasks.test {

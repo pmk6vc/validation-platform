@@ -15,7 +15,7 @@ data class Service(
     val cluster: String,
     val namespace: String,
     val name: String,
-    val provider: String? = null,
+    val provider: Provider = Provider.UNKNOWN,
     @Serializable(with = InstantSerializer::class)
     val discoveredAt: Instant,
     @Serializable(with = InstantSerializer::class)

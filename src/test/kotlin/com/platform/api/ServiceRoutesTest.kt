@@ -5,6 +5,7 @@ import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Page
+import com.platform.models.Provider
 import com.platform.models.Service
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -52,7 +53,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
         name: String = "test-service",
         cluster: String = "prod",
         namespace: String = "default",
-        provider: String? = "AWS",
+        provider: Provider = Provider.KUBERNETES,
         metadata: Map<String, String>? = null,
     ) = Service(
         id = UUID.randomUUID().toString(),
@@ -114,7 +115,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     cluster = "prod",
                     namespace = "default",
                     name = "other-service",
-                    provider = "AWS",
+                    provider = Provider.KUBERNETES,
                     discoveredAt = Instant.now(),
                     lastSeenAt = Instant.now(),
                     metadata = null,
@@ -246,7 +247,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     name = "full-service",
                     cluster = "production",
                     namespace = "backend",
-                    provider = "GCP",
+                    provider = Provider.PIXIE,
                     metadata = mapOf("team" to "platform", "tier" to "critical"),
                 )
             ServiceRepository.create(svc)
@@ -258,7 +259,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
             assertTrue(body.contains("full-service"))
             assertTrue(body.contains("production"))
             assertTrue(body.contains("backend"))
-            assertTrue(body.contains("GCP"))
+            assertTrue(body.contains("PIXIE"))
             assertTrue(body.contains("platform"))
             assertTrue(body.contains("critical"))
             assertTrue(body.contains(testOrg.id))

@@ -1,5 +1,6 @@
 package com.platform.database
 
+import com.platform.models.Provider
 import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.javatime.timestamp
@@ -27,7 +28,7 @@ object Services : Table("services") {
     val cluster = varchar("cluster", 255)
     val namespace = varchar("namespace", 255)
     val name = varchar("name", 255)
-    val provider = varchar("provider", 50).nullable()
+    val provider = enumerationByName<Provider>("provider", 50).default(Provider.UNKNOWN)
     val discoveredAt = timestamp("discovered_at")
     val lastSeenAt = timestamp("last_seen_at")
     val metadata = jsonb<Map<String, String>>("metadata", Json.Default).nullable()

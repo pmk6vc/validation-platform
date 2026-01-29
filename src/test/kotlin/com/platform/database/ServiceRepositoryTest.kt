@@ -1,6 +1,7 @@
 package com.platform.database
 
 import com.platform.models.Organization
+import com.platform.models.Provider
 import com.platform.models.Service
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
@@ -43,7 +44,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         cluster: String = "prod-cluster",
         namespace: String = "default",
         name: String = "test-service",
-        provider: String? = "AWS",
+        provider: Provider = Provider.KUBERNETES,
         discoveredAt: Instant = Instant.now(),
         lastSeenAt: Instant = Instant.now(),
         metadata: Map<String, String>? = null,
@@ -293,7 +294,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
                     name = "my-service",
                     cluster = "prod",
                     namespace = "default",
-                    provider = "AWS",
+                    provider = Provider.KUBERNETES,
                     discoveredAt = originalTime,
                     lastSeenAt = originalTime,
                     metadata = mapOf("version" to "1.0", "team" to "platform"),
@@ -304,7 +305,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             val updated =
                 original.copy(
                     id = UUID.randomUUID().toString(), // Different ID but same identity
-                    provider = "GCP",
+                    provider = Provider.PIXIE,
                     lastSeenAt = laterTime,
                     metadata = mapOf("version" to "2.0", "region" to "us-east"),
                 )
@@ -325,7 +326,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             assertEquals(originalTime, found.discoveredAt)
 
             // Mutable fields should be updated
-            assertEquals("GCP", found.provider)
+            assertEquals(Provider.PIXIE, found.provider)
             assertEquals(laterTime, found.lastSeenAt)
             assertEquals(mapOf("version" to "2.0", "region" to "us-east"), found.metadata)
         }
@@ -422,15 +423,15 @@ class ServiceRepositoryTest : DatabaseTestBase() {
         }
 
     @Test
-    fun `service with null provider should be persisted`() =
+    fun `service with UNKNOWN provider should be persisted`() =
         runBlocking {
-            val service = createTestService(name = "no-provider-service", provider = null)
+            val service = createTestService(name = "unknown-provider-service", provider = Provider.UNKNOWN)
 
             ServiceRepository.create(service)
             val found = ServiceRepository.findById(service.id)
 
             assertNotNull(found)
-            assertNull(found.provider)
+            assertEquals(Provider.UNKNOWN, found.provider)
         }
 
     @Test
