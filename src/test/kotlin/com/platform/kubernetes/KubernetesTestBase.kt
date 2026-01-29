@@ -60,11 +60,23 @@ import org.testcontainers.utility.DockerImageName
  */
 abstract class KubernetesTestBase {
     companion object {
-        protected lateinit var k3s: K3sContainer
+        private var k3s: K3sContainer? = null
+        private var initialized = false
 
         @BeforeAll
         @JvmStatic
         fun setupK3sCluster() {
+            ensureClusterInitialized()
+        }
+
+        /**
+         * Ensures the k3s cluster is initialized. Can be called directly
+         * by tests that don't extend KubernetesTestBase but need k3s access.
+         */
+        fun ensureClusterInitialized() {
+            if (initialized) return
+            initialized = true
+
             // Start k3s cluster (lightweight Kubernetes distribution)
             k3s =
                 K3sContainer(DockerImageName.parse("rancher/k3s:v1.27.9-k3s1")).apply {
@@ -84,9 +96,11 @@ abstract class KubernetesTestBase {
         /**
          * Creates a Kubernetes client connected to the test k3s cluster.
          * Caller is responsible for closing the client after use.
+         * Automatically initializes the cluster if not already running.
          */
         fun createKubernetesClient(): KubernetesClient {
-            val config = Config.fromKubeconfig(k3s.kubeConfigYaml)
+            ensureClusterInitialized()
+            val config = Config.fromKubeconfig(k3s!!.kubeConfigYaml)
             return KubernetesClientBuilder().withConfig(config).build()
         }
 
