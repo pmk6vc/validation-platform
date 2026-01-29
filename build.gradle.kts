@@ -62,6 +62,10 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.9")
     // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.77")
+
+    // Ktor client for integration tests
+    testImplementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
+    testImplementation("io.ktor:ktor-client-content-negotiation-jvm:$ktor_version")
 }
 
 tasks.test {
