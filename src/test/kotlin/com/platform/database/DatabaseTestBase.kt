@@ -1,6 +1,6 @@
 package com.platform.database
+
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.junit.jupiter.api.BeforeAll
@@ -39,9 +39,6 @@ import org.testcontainers.utility.DockerImageName
  * colima start
  * ./gradlew test
  * ```
- *
- * Environment variables (TEST_DATABASE_URL, TEST_DATABASE_USER, TEST_DATABASE_PASSWORD)
- * are still supported as a fallback if you prefer to manage the database manually.
  */
 abstract class DatabaseTestBase {
     companion object {
@@ -54,50 +51,19 @@ abstract class DatabaseTestBase {
             if (initialized) return
             initialized = true
 
-            val externalUrl = System.getenv("TEST_DATABASE_URL")
-            if (externalUrl != null) {
-                val username = System.getenv("TEST_DATABASE_USER") ?: "postgres"
-                val password = System.getenv("TEST_DATABASE_PASSWORD") ?: "postgres"
+            postgres =
+                PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
+                    withDatabaseName("platform_test")
+                    withUsername("test")
+                    withPassword("test")
+                    start()
+                }
 
-                // Clean and migrate for external database
-                cleanAndMigrate(externalUrl, username, password)
-
-                DatabaseFactory.init(
-                    jdbcUrl = externalUrl,
-                    username = username,
-                    password = password,
-                )
-            } else {
-                // Use testcontainers (works in CI)
-                postgres =
-                    PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
-                        withDatabaseName("platform_test")
-                        withUsername("test")
-                        withPassword("test")
-                        start()
-                    }
-
-                DatabaseFactory.init(
-                    jdbcUrl = postgres!!.jdbcUrl,
-                    username = postgres!!.username,
-                    password = postgres!!.password,
-                )
-            }
-        }
-
-        private fun cleanAndMigrate(
-            jdbcUrl: String,
-            username: String,
-            password: String,
-        ) {
-            Flyway
-                .configure()
-                .dataSource(jdbcUrl, username, password)
-                .locations("classpath:db/migration")
-                .cleanDisabled(false)
-                .load()
-                .also { it.clean() }
-                .migrate()
+            DatabaseFactory.init(
+                jdbcUrl = postgres!!.jdbcUrl,
+                username = postgres!!.username,
+                password = postgres!!.password,
+            )
         }
     }
 
