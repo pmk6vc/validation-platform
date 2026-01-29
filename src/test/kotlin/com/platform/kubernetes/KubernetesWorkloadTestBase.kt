@@ -18,9 +18,8 @@ import java.time.Duration
  * Base class for Kubernetes integration tests with actual running workloads.
  *
  * ## Overview
- * Unlike [KubernetesTestBase] which only creates Service objects, this class deploys
- * actual pods that communicate with each other. This enables testing with realistic
- * traffic patterns suitable for Pixie integration.
+ * This class deploys actual pods that communicate with each other, enabling testing
+ * with realistic traffic patterns suitable for Pixie integration.
  *
  * ## Deployed Workloads
  * - **PostgreSQL** (infrastructure namespace): Database with sample data
@@ -116,11 +115,10 @@ abstract class KubernetesWorkloadTestBase {
 
         /**
          * Creates a Kubernetes client connected to the test k3s cluster.
+         * Automatically initializes the cluster if not already running.
          */
         fun createKubernetesClient(): KubernetesClient {
-            if (k3s == null) {
-                throw IllegalStateException("k3s container not initialized")
-            }
+            ensureClusterInitialized()
             val config =
                 io.fabric8.kubernetes.client.Config
                     .fromKubeconfig(k3s!!.kubeConfigYaml)
@@ -131,9 +129,22 @@ abstract class KubernetesWorkloadTestBase {
         }
 
         /**
-         * Get the k3s container for direct access if needed.
+         * Ensures the k3s cluster is initialized with workloads.
+         * Can be called directly by tests that don't extend KubernetesWorkloadTestBase.
          */
-        fun getK3sContainer(): K3sContainer = k3s ?: throw IllegalStateException("k3s container not initialized")
+        fun ensureClusterInitialized() {
+            if (initialized) return
+            setupClusterWithWorkloads()
+        }
+
+        /**
+         * Get the k3s container for direct access if needed.
+         * Automatically initializes the cluster if not already running.
+         */
+        fun getK3sContainer(): K3sContainer {
+            ensureClusterInitialized()
+            return k3s!!
+        }
 
         private fun createNamespaces(client: KubernetesClient) {
             listOf("production", "infrastructure").forEach { ns ->
@@ -275,7 +286,7 @@ abstract class KubernetesWorkloadTestBase {
                         .build(),
                 ).serverSideApply()
 
-            // Service
+            // Service with rich metadata for adapter tests
             client
                 .services()
                 .inNamespace(namespace)
@@ -284,6 +295,10 @@ abstract class KubernetesWorkloadTestBase {
                         .withNewMetadata()
                         .withName("postgresql")
                         .withNamespace(namespace)
+                        .addToLabels("app", "postgresql")
+                        .addToLabels("app.kubernetes.io/name", "postgresql")
+                        .addToLabels("app.kubernetes.io/version", "16.1")
+                        .addToLabels("app.kubernetes.io/component", "database")
                         .endMetadata()
                         .withNewSpec()
                         .withType("ClusterIP")
@@ -358,7 +373,7 @@ abstract class KubernetesWorkloadTestBase {
                         .build(),
                 ).serverSideApply()
 
-            // Service
+            // Service with rich metadata for adapter tests
             client
                 .services()
                 .inNamespace(namespace)
@@ -367,6 +382,10 @@ abstract class KubernetesWorkloadTestBase {
                         .withNewMetadata()
                         .withName("redis")
                         .withNamespace(namespace)
+                        .addToLabels("app", "redis")
+                        .addToLabels("app.kubernetes.io/name", "redis")
+                        .addToLabels("app.kubernetes.io/version", "7.2")
+                        .addToLabels("app.kubernetes.io/component", "cache")
                         .endMetadata()
                         .withNewSpec()
                         .withType("ClusterIP")
@@ -461,6 +480,7 @@ abstract class KubernetesWorkloadTestBase {
                         .withNewTemplate()
                         .withNewMetadata()
                         .addToLabels("app", "api-gateway")
+                        .addToLabels("version", "v1")
                         .endMetadata()
                         .withNewSpec()
                         .addNewContainer()
@@ -532,7 +552,7 @@ abstract class KubernetesWorkloadTestBase {
                         .build(),
                 ).serverSideApply()
 
-            // Service
+            // Service with rich metadata for adapter tests
             client
                 .services()
                 .inNamespace(namespace)
@@ -541,14 +561,27 @@ abstract class KubernetesWorkloadTestBase {
                         .withNewMetadata()
                         .withName("api-gateway")
                         .withNamespace(namespace)
+                        .addToLabels("app", "api-gateway")
+                        .addToLabels("app.kubernetes.io/name", "api-gateway")
+                        .addToLabels("app.kubernetes.io/version", "1.5.0")
+                        .addToLabels("app.kubernetes.io/component", "gateway")
+                        .addToLabels("team", "backend")
+                        .addToAnnotations("description", "API Gateway service")
+                        .addToAnnotations("owner", "backend-team@company.com")
                         .endMetadata()
                         .withNewSpec()
                         .withType("ClusterIP")
                         .addToSelector("app", "api-gateway")
+                        .addToSelector("version", "v1")
                         .addNewPort()
                         .withName("http")
                         .withPort(8080)
                         .withTargetPort(IntOrString(8080))
+                        .endPort()
+                        .addNewPort()
+                        .withName("grpc")
+                        .withPort(9090)
+                        .withTargetPort(IntOrString(9090))
                         .endPort()
                         .endSpec()
                         .build(),

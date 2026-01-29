@@ -3,7 +3,7 @@ package com.platform.adapters
 import com.platform.database.DatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
-import com.platform.kubernetes.KubernetesTestBase
+import com.platform.kubernetes.KubernetesWorkloadTestBase
 import com.platform.models.Organization
 import com.platform.models.Provider
 import kotlinx.coroutines.runBlocking
@@ -17,13 +17,12 @@ import kotlin.test.assertTrue
 
 /**
  * Integration test demonstrating the full Kubernetes adapter workflow with a real cluster:
- * 1. Spin up a lightweight k3s cluster via Testcontainers (handled by KubernetesTestBase)
+ * 1. Spin up a k3s cluster with running workloads (handled by KubernetesWorkloadTestBase)
  * 2. Adapter discovers services from the real cluster
  * 3. Services are persisted to the database via repository
  * 4. Services can be queried back from the database with proper filtering
  *
- * This test is closer to a production replica and validates that the adapter
- * correctly interacts with a real Kubernetes API.
+ * The cluster has actual running workloads: PostgreSQL, Redis, API Gateway, and Traffic Generator.
  */
 class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     private lateinit var testOrg: Organization
@@ -45,7 +44,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     fun `should discover and persist real Kubernetes services to database`() =
         runBlocking {
             // Create adapter connected to real k3s cluster
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
 
             val adapter =
                 KubernetesAdapter(
@@ -57,10 +56,10 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                 // Discover services from real Kubernetes cluster
                 val discoveredServices = adapter.discoverServices(testOrg.id)
 
-                // We should discover our 4 services (frontend, api-gateway, redis, postgresql)
+                // We should discover our 3 services (api-gateway, redis, postgresql)
                 assertTrue(
-                    discoveredServices.size >= 4,
-                    "Expected at least 4 services, found ${discoveredServices.size}",
+                    discoveredServices.size >= 3,
+                    "Expected at least 3 services, found ${discoveredServices.size}",
                 )
 
                 // Persist all discovered services
@@ -70,7 +69,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
 
                 // Verify services were persisted
                 val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertTrue(page.items.size >= 4)
+                assertTrue(page.items.size >= 3)
             } finally {
                 adapter.close()
             }
@@ -79,7 +78,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should preserve provider information when persisting`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -99,7 +98,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should preserve Kubernetes metadata when persisting`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -109,21 +108,21 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                     ServiceRepository.create(service)
                 }
 
-                // Find the frontend service and verify metadata
+                // Find the api-gateway service and verify metadata
                 val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                val frontendService = page.items.find { it.name == "frontend-service" }
+                val apiGateway = page.items.find { it.name == "api-gateway" }
 
-                assertNotNull(frontendService)
-                assertEquals("production", frontendService.namespace)
-                assertNotNull(frontendService.metadata)
-                assertEquals("LoadBalancer", frontendService.metadata!!["k8s.service.type"])
-                assertEquals("frontend", frontendService.metadata!!["app"])
-                assertEquals("frontend", frontendService.metadata!!["app.name"])
-                assertEquals("2.1.0", frontendService.metadata!!["version"])
-                assertEquals("web", frontendService.metadata!!["component"])
-                assertEquals("ui", frontendService.metadata!!["team"])
-                assertEquals("Frontend web service", frontendService.metadata!!["description"])
-                assertEquals("ui-team@company.com", frontendService.metadata!!["owner"])
+                assertNotNull(apiGateway)
+                assertEquals("production", apiGateway.namespace)
+                assertNotNull(apiGateway.metadata)
+                assertEquals("ClusterIP", apiGateway.metadata!!["k8s.service.type"])
+                assertEquals("api-gateway", apiGateway.metadata!!["app"])
+                assertEquals("api-gateway", apiGateway.metadata!!["app.name"])
+                assertEquals("1.5.0", apiGateway.metadata!!["version"])
+                assertEquals("gateway", apiGateway.metadata!!["component"])
+                assertEquals("backend", apiGateway.metadata!!["team"])
+                assertEquals("API Gateway service", apiGateway.metadata!!["description"])
+                assertEquals("backend-team@company.com", apiGateway.metadata!!["owner"])
             } finally {
                 adapter.close()
             }
@@ -132,7 +131,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should support filtering persisted services by namespace`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -150,9 +149,8 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                         limit = 100,
                     )
 
-                assertEquals(2, productionServices.items.size)
+                assertEquals(1, productionServices.items.size)
                 assertTrue(productionServices.items.all { it.namespace == "production" })
-                assertTrue(productionServices.items.any { it.name == "frontend-service" })
                 assertTrue(productionServices.items.any { it.name == "api-gateway" })
             } finally {
                 adapter.close()
@@ -162,7 +160,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should support filtering persisted services by cluster`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -180,7 +178,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                         limit = 100,
                     )
 
-                assertTrue(clusterServices.items.size >= 4)
+                assertTrue(clusterServices.items.size >= 3)
                 assertTrue(clusterServices.items.all { it.cluster == "k3s-test-cluster" })
             } finally {
                 adapter.close()
@@ -190,7 +188,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should handle upsert for re-discovering existing services`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -221,7 +219,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should query specific service by name after persisting`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -250,7 +248,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should extract port information from real Kubernetes services`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -278,7 +276,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should extract selector information from services`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -306,7 +304,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should discover services from infrastructure namespace`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -336,7 +334,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should discover only from specified namespaces when configured`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
 
             // Adapter configured to only discover from production namespace
             val adapter =
@@ -351,8 +349,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
 
                 // Should only find services from production namespace
                 assertTrue(discoveredServices.all { it.namespace == "production" })
-                assertEquals(2, discoveredServices.size)
-                assertTrue(discoveredServices.any { it.name == "frontend-service" })
+                assertEquals(1, discoveredServices.size)
                 assertTrue(discoveredServices.any { it.name == "api-gateway" })
             } finally {
                 adapter.close()
@@ -362,7 +359,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should extract Kubernetes UID for correlation`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -387,7 +384,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should extract creation timestamp`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -412,7 +409,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should persist services with unique IDs`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
@@ -434,7 +431,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     @Test
     fun `should set discoveredAt and lastSeenAt timestamps`() =
         runBlocking {
-            val client = KubernetesTestBase.createKubernetesClient()
+            val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
