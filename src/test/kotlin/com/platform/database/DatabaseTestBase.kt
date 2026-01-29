@@ -28,18 +28,20 @@ import org.testcontainers.utility.DockerImageName
  *
  * ## CI vs Local Development
  *
- * **In CI (GitHub Actions):** Testcontainers works out of the box. No environment variables
- * needed - it will automatically spin up a PostgreSQL container.
+ * **In CI (GitHub Actions):** Testcontainers works out of the box with standard Docker.
  *
- * **Local Development:** Testcontainers may fail to connect to Docker Desktop on macOS due to
- * a known compatibility issue between the docker-java library and certain Docker Desktop
- * configurations (returns HTTP 400 with empty response). As a workaround, you can:
+ * **Local Development (macOS):** Use Colima instead of Docker Desktop for reliable
+ * Testcontainers support. The build.gradle.kts is configured to automatically detect
+ * and use Colima's Docker socket when available:
  *
- * 1. Use the helper script: `./scripts/test-local.sh`
- * 2. Or manually set environment variables:
- *    - TEST_DATABASE_URL: JDBC URL (e.g., jdbc:postgresql://localhost:5433/platform_test)
- *    - TEST_DATABASE_USER: Database username
- *    - TEST_DATABASE_PASSWORD: Database password
+ * ```bash
+ * brew install colima docker
+ * colima start
+ * ./gradlew test
+ * ```
+ *
+ * Environment variables (TEST_DATABASE_URL, TEST_DATABASE_USER, TEST_DATABASE_PASSWORD)
+ * are still supported as a fallback if you prefer to manage the database manually.
  */
 abstract class DatabaseTestBase {
     companion object {
