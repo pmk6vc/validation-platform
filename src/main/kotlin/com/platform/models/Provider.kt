@@ -24,9 +24,4 @@ enum class Provider {
      * Service was discovered via Kubernetes API.
      */
     KUBERNETES,
-
-    /**
-     * Service was discovered via Pixie (eBPF-based observability).
-     */
-    PIXIE,
 }

@@ -305,7 +305,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             val updated =
                 original.copy(
                     id = UUID.randomUUID().toString(), // Different ID but same identity
-                    provider = Provider.PIXIE,
+                    provider = Provider.KUBERNETES,
                     lastSeenAt = laterTime,
                     metadata = mapOf("version" to "2.0", "region" to "us-east"),
                 )
@@ -326,7 +326,7 @@ class ServiceRepositoryTest : DatabaseTestBase() {
             assertEquals(originalTime, found.discoveredAt)
 
             // Mutable fields should be updated
-            assertEquals(Provider.PIXIE, found.provider)
+            assertEquals(Provider.KUBERNETES, found.provider)
             assertEquals(laterTime, found.lastSeenAt)
             assertEquals(mapOf("version" to "2.0", "region" to "us-east"), found.metadata)
         }

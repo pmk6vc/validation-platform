@@ -247,7 +247,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
                     name = "full-service",
                     cluster = "production",
                     namespace = "backend",
-                    provider = Provider.PIXIE,
+                    provider = Provider.KUBERNETES,
                     metadata = mapOf("team" to "platform", "tier" to "critical"),
                 )
             ServiceRepository.create(svc)
@@ -259,7 +259,7 @@ class ServiceRoutesTest : DatabaseTestBase() {
             assertTrue(body.contains("full-service"))
             assertTrue(body.contains("production"))
             assertTrue(body.contains("backend"))
-            assertTrue(body.contains("PIXIE"))
+            assertTrue(body.contains("KUBERNETES"))
             assertTrue(body.contains("platform"))
             assertTrue(body.contains("critical"))
             assertTrue(body.contains(testOrg.id))
