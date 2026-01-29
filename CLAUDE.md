@@ -246,7 +246,6 @@ dependencies {
 ### Planned Dependencies (Not Yet Added)
 
 - `io.fabric8:kubernetes-client` - Kubernetes integration for service discovery and metrics
-- `com.github.ajalt.clikt:clikt` - CLI framework
 - AWS SDK (optional) - X-Ray and CloudWatch integration
 
 ---
@@ -323,11 +322,10 @@ Adapters normalize data from different sources into the unified model.
 **Week 2: Kubernetes Integration + Manual Seed** - NOT STARTED
 - [ ] Implement KubernetesAdapter (services + resource metrics)
 - [ ] Create ManualSeedAdapter with fake traffic data
-- [ ] Implement basic CLI structure with Clikt
-- [ ] Create CLI commands: `seed`, `services`
+- [ ] Create API endpoints: `POST /api/seed`, `GET /api/topology`
 - [ ] Deploy test workloads to kind cluster
 
-**Milestone:** `./platform seed && ./platform services list` works
+**Milestone:** `POST /api/seed` populates database, `GET /api/services` returns discovered services
 
 ---
 
@@ -345,9 +343,9 @@ Adapters normalize data from different sources into the unified model.
 - [ ] Sampling strategy (don't store everything)
 - [ ] Sensitive header filtering
 - [ ] Implement TopologyService
-- [ ] CLI commands: `discover`, `topology`
+- [ ] API endpoints: `POST /api/discover`, `GET /api/topology/{serviceId}`
 
-**Milestone:** `./platform discover` captures real traffic
+**Milestone:** `POST /api/discover` triggers traffic capture, topology visible via API
 
 ---
 
@@ -363,9 +361,9 @@ Adapters normalize data from different sources into the unified model.
 - [ ] Implement ResourceMonitor (poll K8s Metrics API)
 - [ ] Store resource samples during replay
 - [ ] Implement resource analysis (leak detection)
-- [ ] CLI command: `validate`
+- [ ] API endpoint: `POST /api/validations`, `GET /api/validations/{id}`
 
-**Milestone:** `./platform validate --service X --candidate X:pr-123` runs
+**Milestone:** `POST /api/validations` triggers validation run, results queryable via API
 
 ---
 
@@ -381,10 +379,10 @@ Adapters normalize data from different sources into the unified model.
 **Week 8: Verdicts + API**
 - [ ] Implement ValidationService (orchestrates everything)
 - [ ] Generate verdict (pass/fail/inconclusive)
-- [ ] Create API endpoints for validation
-- [ ] Polish CLI output
+- [ ] Complete validation API endpoints
+- [ ] API endpoint: `GET /api/validations/{id}/verdict`
 
-**Milestone:** Full validation with verdict: "FAIL - memory leak detected"
+**Milestone:** Full validation with verdict via API: `{"verdict": "FAIL", "reason": "memory leak detected"}`
 
 ---
 
@@ -394,7 +392,7 @@ Adapters normalize data from different sources into the unified model.
 - [ ] Implement BlastRadiusService
 - [ ] Implement BaselineService
 - [ ] Implement AnomalyService
-- [ ] CLI commands: `blast-radius`, `check-health`
+- [ ] API endpoints: `GET /api/blast-radius/{serviceId}`, `GET /api/health`
 
 **Week 10: Stabilization**
 - [ ] Error handling and retry logic
@@ -402,12 +400,14 @@ Adapters normalize data from different sources into the unified model.
 - [ ] Logging and observability
 - [ ] End-to-end tests
 
-**Milestone:** Production-ready V1
+**Milestone:** Production-ready V1 API
 
 ---
 
 ## Future Features (V2+)
 
+- **CLI**: Optional command-line interface wrapping the API for terminal workflows
+- **Web UI**: Dashboard for visualizing topology, validation results, and anomalies
 - **PR Integration**: GitHub/GitLab webhook integration, automatic validation on PR
 - **Deployment Correlation**: Correlate anomalies with recent deploys
 - **Automatic Rollback**: Integration with Argo/Flux, anomaly-triggered rollback
@@ -424,6 +424,7 @@ Adapters normalize data from different sources into the unified model.
 | Statistical tests | Mann-Whitney U | Non-parametric, handles skewed latency distributions |
 | Leak detection | Linear regression | Detect growth trend over time |
 | Comparison approach | Control vs candidate simultaneously | Eliminates infrastructure noise |
+| Interface | API-first (CLI deferred) | Enables UI/webhook integration without binary distribution; CLI can wrap API later if needed |
 
 ## Implementation Guidelines
 
@@ -432,5 +433,4 @@ For each feature, implement in this order:
 2. Database operations (database/)
 3. Business logic (features/)
 4. API endpoint (api/)
-5. CLI command (Cli.kt)
-6. Tests
+5. Tests

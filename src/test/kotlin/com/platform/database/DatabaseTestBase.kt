@@ -1,6 +1,6 @@
 package com.platform.database
+
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.junit.jupiter.api.BeforeAll
@@ -28,18 +28,17 @@ import org.testcontainers.utility.DockerImageName
  *
  * ## CI vs Local Development
  *
- * **In CI (GitHub Actions):** Testcontainers works out of the box. No environment variables
- * needed - it will automatically spin up a PostgreSQL container.
+ * **In CI (GitHub Actions):** Testcontainers works out of the box with standard Docker.
  *
- * **Local Development:** Testcontainers may fail to connect to Docker Desktop on macOS due to
- * a known compatibility issue between the docker-java library and certain Docker Desktop
- * configurations (returns HTTP 400 with empty response). As a workaround, you can:
+ * **Local Development (macOS):** Use Colima instead of Docker Desktop for reliable
+ * Testcontainers support. The build.gradle.kts is configured to automatically detect
+ * and use Colima's Docker socket when available:
  *
- * 1. Use the helper script: `./scripts/test-local.sh`
- * 2. Or manually set environment variables:
- *    - TEST_DATABASE_URL: JDBC URL (e.g., jdbc:postgresql://localhost:5433/platform_test)
- *    - TEST_DATABASE_USER: Database username
- *    - TEST_DATABASE_PASSWORD: Database password
+ * ```bash
+ * brew install colima docker
+ * colima start
+ * ./gradlew test
+ * ```
  */
 abstract class DatabaseTestBase {
     companion object {
@@ -52,50 +51,19 @@ abstract class DatabaseTestBase {
             if (initialized) return
             initialized = true
 
-            val externalUrl = System.getenv("TEST_DATABASE_URL")
-            if (externalUrl != null) {
-                val username = System.getenv("TEST_DATABASE_USER") ?: "postgres"
-                val password = System.getenv("TEST_DATABASE_PASSWORD") ?: "postgres"
+            postgres =
+                PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
+                    withDatabaseName("platform_test")
+                    withUsername("test")
+                    withPassword("test")
+                    start()
+                }
 
-                // Clean and migrate for external database
-                cleanAndMigrate(externalUrl, username, password)
-
-                DatabaseFactory.init(
-                    jdbcUrl = externalUrl,
-                    username = username,
-                    password = password,
-                )
-            } else {
-                // Use testcontainers (works in CI)
-                postgres =
-                    PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
-                        withDatabaseName("platform_test")
-                        withUsername("test")
-                        withPassword("test")
-                        start()
-                    }
-
-                DatabaseFactory.init(
-                    jdbcUrl = postgres!!.jdbcUrl,
-                    username = postgres!!.username,
-                    password = postgres!!.password,
-                )
-            }
-        }
-
-        private fun cleanAndMigrate(
-            jdbcUrl: String,
-            username: String,
-            password: String,
-        ) {
-            Flyway
-                .configure()
-                .dataSource(jdbcUrl, username, password)
-                .locations("classpath:db/migration")
-                .cleanDisabled(false)
-                .load()
-                .also { it.clean() }
-                .migrate()
+            DatabaseFactory.init(
+                jdbcUrl = postgres!!.jdbcUrl,
+                username = postgres!!.username,
+                password = postgres!!.password,
+            )
         }
     }
 

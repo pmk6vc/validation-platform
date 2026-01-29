@@ -45,6 +45,9 @@ dependencies {
     // Database migrations
     implementation("org.flywaydb:flyway-core:9.22.3")
 
+    // Kubernetes
+    implementation("io.fabric8:kubernetes-client:6.10.0")
+
     // Logging
     implementation("ch.qos.logback:logback-classic:$logback_version")
 
@@ -55,6 +58,10 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers:1.20.4")
     testImplementation("org.testcontainers:junit-jupiter:1.20.4")
     testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("org.testcontainers:k3s:1.20.4")
+    testImplementation("io.mockk:mockk:1.13.9")
+    // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.77")
 }
 
 tasks.test {
@@ -64,6 +71,15 @@ tasks.test {
     // All tests use the same PostgreSQL instance, so parallel execution
     // could cause race conditions even with @BeforeEach cleanup
     maxParallelForks = 1
+
+    // Testcontainers configuration for Colima on macOS
+    // This tells Testcontainers to use Colima's Docker socket on the host,
+    // but mount /var/run/docker.sock inside containers (the path inside Colima's VM)
+    val colimaSocket = file("${System.getProperty("user.home")}/.colima/docker.sock")
+    if (colimaSocket.exists()) {
+        environment("DOCKER_HOST", "unix://${colimaSocket.absolutePath}")
+        environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
+    }
 }
 
 tasks.register<Exec>("dockerUp") {
