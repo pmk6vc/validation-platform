@@ -116,7 +116,8 @@ tasks.register<Exec>("testServicesUp") {
     dependsOn("testServicesBuild")
     commandLine("kubectl", "apply", "-R", "-f", "k8s/test-services/")
     doLast {
-        println("""
+        println(
+            """
             |
             |Test services deployed! To check status:
             |  ./gradlew testServicesStatus
@@ -128,7 +129,8 @@ tasks.register<Exec>("testServicesUp") {
             |To view logs:
             |  kubectl logs -n production -l app=api-gateway -f
             |  kubectl logs -n production -l app=traffic-generator -f
-        """.trimMargin())
+            """.trimMargin(),
+        )
     }
 }
 
@@ -142,14 +144,15 @@ tasks.register<Exec>("testServicesStatus") {
     group = "test-services"
     description = "Show status of test services in local Kubernetes cluster"
     commandLine(
-        "sh", "-c",
+        "sh",
+        "-c",
         """
         echo "=== Pods ===" &&
         kubectl get pods -n infrastructure -n production 2>/dev/null || echo "No pods found" &&
         echo "" &&
         echo "=== Services ===" &&
         kubectl get svc -n infrastructure -n production 2>/dev/null || echo "No services found"
-        """.trimIndent()
+        """.trimIndent(),
     )
 }
 

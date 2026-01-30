@@ -23,6 +23,9 @@ import redis.clients.jedis.JedisPool
 import redis.clients.jedis.JedisPoolConfig
 import java.sql.Connection
 import java.sql.DriverManager
+import java.util.Timer
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.fixedRateTimer
 
 /**
  * Test API Gateway service for k3s integration testing.
@@ -39,6 +42,14 @@ import java.sql.DriverManager
  */
 
 private val logger = LoggerFactory.getLogger("ApiGateway")
+
+// Request counters for periodic summary
+private val totalRequests = AtomicLong(0)
+private val cacheHits = AtomicLong(0)
+private val cacheMisses = AtomicLong(0)
+private val errorCount = AtomicLong(0)
+
+private const val SUMMARY_INTERVAL_MS = 30_000L
 
 // Environment configuration
 private val pgHost = System.getenv("POSTGRES_HOST") ?: "localhost"
@@ -83,6 +94,9 @@ fun main() {
     // Wait for dependencies to be ready
     waitForDependencies()
 
+    // Start background summary logger
+    startSummaryLogger()
+
     embeddedServer(Netty, port = 8080) {
         install(ContentNegotiation) {
             json(Json { prettyPrint = true })
@@ -94,6 +108,28 @@ fun main() {
             orderRoutes()
         }
     }.start(wait = true)
+}
+
+/**
+ * Starts a background timer that logs request summary every 30 seconds.
+ */
+private fun startSummaryLogger(): Timer {
+    return fixedRateTimer("summary-logger", daemon = true, initialDelay = SUMMARY_INTERVAL_MS, period = SUMMARY_INTERVAL_MS) {
+        val total = totalRequests.getAndSet(0)
+        val hits = cacheHits.getAndSet(0)
+        val misses = cacheMisses.getAndSet(0)
+        val errors = errorCount.getAndSet(0)
+
+        if (total > 0) {
+            logger.info(
+                "Request summary (last 30s): {} served, cache hits={}, misses={}, errors={}",
+                total,
+                hits,
+                misses,
+                errors
+            )
+        }
+    }
 }
 
 /**
@@ -144,6 +180,7 @@ private fun getConnection(): Connection {
  */
 private fun Routing.healthRoutes() {
     get("/api/health") {
+        totalRequests.incrementAndGet()
         val (dbStatus, cacheStatus) = withContext(Dispatchers.IO) {
             val db = try {
                 getConnection().use { it.createStatement().execute("SELECT 1") }
@@ -178,6 +215,7 @@ private fun Routing.healthRoutes() {
  */
 private fun Routing.userRoutes() {
     get("/api/users") {
+        totalRequests.incrementAndGet()
         // Check Redis cache first
         val cacheKey = "users:all"
         val cached = withContext(Dispatchers.IO) {
@@ -192,6 +230,7 @@ private fun Routing.userRoutes() {
         }
 
         if (cached != null) {
+            cacheHits.incrementAndGet()
             logger.debug("Cache HIT for $cacheKey")
             call.response.headers.append("X-Cache", "HIT")
             call.respondText(cached, ContentType.Application.Json)
@@ -199,6 +238,7 @@ private fun Routing.userRoutes() {
         }
 
         // Cache miss - query PostgreSQL
+        cacheMisses.incrementAndGet()
         logger.debug("Cache MISS for $cacheKey")
         call.response.headers.append("X-Cache", "MISS")
 
@@ -236,8 +276,10 @@ private fun Routing.userRoutes() {
     }
 
     get("/api/users/{id}") {
+        totalRequests.incrementAndGet()
         val userId = call.parameters["id"]?.toIntOrNull()
         if (userId == null) {
+            errorCount.incrementAndGet()
             call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID", 400))
             return@get
         }
@@ -256,11 +298,13 @@ private fun Routing.userRoutes() {
         }
 
         if (cached != null) {
+            cacheHits.incrementAndGet()
             call.response.headers.append("X-Cache", "HIT")
             call.respondText(cached, ContentType.Application.Json)
             return@get
         }
 
+        cacheMisses.incrementAndGet()
         call.response.headers.append("X-Cache", "MISS")
 
         val user = withContext(Dispatchers.IO) {
@@ -308,6 +352,7 @@ private fun Routing.userRoutes() {
  */
 private fun Routing.orderRoutes() {
     get("/api/orders") {
+        totalRequests.incrementAndGet()
         val orders = withContext(Dispatchers.IO) {
             val result = mutableListOf<Order>()
             getConnection().use { conn ->
@@ -338,8 +383,10 @@ private fun Routing.orderRoutes() {
     }
 
     get("/api/orders/{userId}") {
+        totalRequests.incrementAndGet()
         val userId = call.parameters["userId"]?.toIntOrNull()
         if (userId == null) {
+            errorCount.incrementAndGet()
             call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID", 400))
             return@get
         }
@@ -358,11 +405,13 @@ private fun Routing.orderRoutes() {
         }
 
         if (cached != null) {
+            cacheHits.incrementAndGet()
             call.response.headers.append("X-Cache", "HIT")
             call.respondText(cached, ContentType.Application.Json)
             return@get
         }
 
+        cacheMisses.incrementAndGet()
         call.response.headers.append("X-Cache", "MISS")
 
         val orders = withContext(Dispatchers.IO) {
