@@ -23,7 +23,7 @@ spec:
             - name: API_GATEWAY_PORT
               value: "8080"
             - name: INITIAL_DELAY_MS
-              value: "30000"
+              value: "10000"
             - name: DELAY_BETWEEN_ROUNDS_MS
               value: "2000"
           resources:

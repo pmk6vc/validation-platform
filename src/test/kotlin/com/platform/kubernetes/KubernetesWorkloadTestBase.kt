@@ -293,8 +293,20 @@ abstract class KubernetesWorkloadTestBase {
         /**
          * Load a Docker image into k3s.
          *
-         * k3s runs in a container, so we need to transfer the image into its containerd.
-         * We do this by saving the image to a tar file and importing it via ctr.
+         * ## Why This Is Complex
+         * k3s runs inside a Testcontainers Docker container, which has its own containerd
+         * runtime isolated from the host's Docker daemon. Images built by Jib exist in
+         * the host's Docker daemon but not in k3s's containerd. We bridge this gap by:
+         * 1. Saving the image from host Docker to a tar file
+         * 2. Copying the tar into the k3s container
+         * 3. Importing the tar into k3s's containerd via `ctr`
+         *
+         * ## DOCKER_HOST Handling
+         * Testcontainers may set DOCKER_HOST to point to its own socket (e.g., for Colima
+         * or remote Docker setups). However, Jib builds images using the system's default
+         * Docker context, not Testcontainers' context. We must remove DOCKER_HOST from
+         * the environment when running `docker save` to ensure we read from the same
+         * Docker daemon where Jib wrote the image.
          *
          * @param imageName The full image name (e.g., "test-api-gateway:latest")
          * @param label A short label for logging and temp file naming
@@ -305,16 +317,13 @@ abstract class KubernetesWorkloadTestBase {
         ) {
             logger.info("Loading $label image into k3s...")
 
-            // Save the Docker image to a tar file
             val tarFile = File.createTempFile(label, ".tar")
             try {
-                // Don't use DOCKER_HOST from test environment - use default Docker context
-                // The image was built with Jib which uses the default Docker daemon
+                // Use ProcessBuilder to run docker save, explicitly removing DOCKER_HOST
+                // to ensure we access the same Docker daemon where Jib built the image
                 val processBuilder =
                     ProcessBuilder("docker", "save", imageName, "-o", tarFile.absolutePath)
                         .redirectErrorStream(true)
-
-                // Remove DOCKER_HOST to use default Docker context (where Jib built the image)
                 processBuilder.environment().remove("DOCKER_HOST")
 
                 val saveProcess = processBuilder.start()

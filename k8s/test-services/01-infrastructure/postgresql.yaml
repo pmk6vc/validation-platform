@@ -87,6 +87,10 @@ metadata:
     app.kubernetes.io/name: postgresql
     app.kubernetes.io/version: "16.1"
     app.kubernetes.io/component: database
+    team: platform
+  annotations:
+    description: PostgreSQL database for test workloads
+    owner: platform-team@company.com
 spec:
   type: ClusterIP
   selector:
