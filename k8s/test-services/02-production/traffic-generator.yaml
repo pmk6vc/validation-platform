@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traffic-generator
+  template:
+    metadata:
+      labels:
+        app: traffic-generator
+    spec:
+      containers:
+        - name: traffic-generator
+          image: docker.io/library/test-traffic-generator:latest
+          imagePullPolicy: Never  # Use local image
+          env:
+            - name: API_GATEWAY_HOST
+              value: api-gateway.production.svc.cluster.local
+            - name: API_GATEWAY_PORT
+              value: "8080"
+            - name: INITIAL_DELAY_MS
+              value: "10000"
+            - name: DELAY_BETWEEN_ROUNDS_MS
+              value: "2000"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "10m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"

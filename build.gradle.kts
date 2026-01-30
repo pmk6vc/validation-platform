@@ -62,6 +62,10 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.9")
     // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.77")
+
+    // Ktor client for integration tests
+    testImplementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
+    testImplementation("io.ktor:ktor-client-content-negotiation-jvm:$ktor_version")
 }
 
 tasks.test {
@@ -80,6 +84,10 @@ tasks.test {
         environment("DOCKER_HOST", "unix://${colimaSocket.absolutePath}")
         environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
     }
+
+    // Build test service Docker images before running integration tests
+    dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:traffic-generator:jibDockerBuild")
 }
 
 tasks.register<Exec>("dockerUp") {
@@ -92,6 +100,60 @@ tasks.register<Exec>("dockerDown") {
     group = "docker"
     description = "Stop and remove all containers"
     commandLine("sh", "-c", "docker compose -f deploy/docker-compose.yaml --env-file .env down")
+}
+
+// Test services deployment to local Kubernetes cluster
+tasks.register("testServicesBuild") {
+    group = "test-services"
+    description = "Build test service Docker images"
+    dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:traffic-generator:jibDockerBuild")
+}
+
+tasks.register<Exec>("testServicesUp") {
+    group = "test-services"
+    description = "Deploy test services to local Kubernetes cluster"
+    dependsOn("testServicesBuild")
+    commandLine("kubectl", "apply", "-R", "-f", "k8s/test-services/")
+    doLast {
+        println(
+            """
+            |
+            |Test services deployed! To check status:
+            |  ./gradlew testServicesStatus
+            |
+            |To access the API Gateway:
+            |  kubectl port-forward -n production svc/api-gateway 8080:8080
+            |  curl http://localhost:8080/api/health
+            |
+            |To view logs:
+            |  kubectl logs -n production -l app=api-gateway -f
+            |  kubectl logs -n production -l app=traffic-generator -f
+            """.trimMargin(),
+        )
+    }
+}
+
+tasks.register<Exec>("testServicesDown") {
+    group = "test-services"
+    description = "Remove test services from local Kubernetes cluster"
+    commandLine("kubectl", "delete", "-R", "-f", "k8s/test-services/", "--ignore-not-found")
+}
+
+tasks.register<Exec>("testServicesStatus") {
+    group = "test-services"
+    description = "Show status of test services in local Kubernetes cluster"
+    commandLine(
+        "sh",
+        "-c",
+        """
+        echo "=== Pods ===" &&
+        kubectl get pods -n infrastructure -n production 2>/dev/null || echo "No pods found" &&
+        echo "" &&
+        echo "=== Services ===" &&
+        kubectl get svc -n infrastructure -n production 2>/dev/null || echo "No services found"
+        """.trimIndent(),
+    )
 }
 
 ktlint {

@@ -48,8 +48,11 @@ This is a **validation and release platform** that helps engineering teams valid
 - **Multi-tenant data model** with Organizations and Services
 - **Pagination and filtering** on list endpoints
 - **Docker deployment** (docker-compose with PostgreSQL)
-- **Test infrastructure** with TestContainers
+- **Test infrastructure** with TestContainers (PostgreSQL + k3s Kubernetes)
 - **Code quality** with ktlint
+- **Adapter pattern** with ServiceAdapter interface
+- **Service discovery** via ManualSeedAdapter and KubernetesAdapter
+- **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES)
 
 ### Implemented API Endpoints
 
@@ -72,32 +75,56 @@ data class Organization(
     val updatedAt: Instant
 )
 
-// Service - a deployable unit belonging to an organization
+// Service - a deployable unit discovered from various providers
+// Uniquely identified by: organizationId + cluster + namespace + name
 data class Service(
     val id: String,
     val organizationId: String,
-    val name: String,
     val cluster: String,
     val namespace: String,
-    val createdAt: Instant,
-    val updatedAt: Instant
+    val name: String,
+    val provider: Provider = Provider.UNKNOWN,
+    val discoveredAt: Instant,
+    val lastSeenAt: Instant,
+    val metadata: Map<String, String>? = null
 )
+
+// Provider - tracks where a service was discovered
+enum class Provider {
+    UNKNOWN,        // Provider unknown or not specified
+    MANUAL_SEED,    // Manually seeded test data
+    KUBERNETES      // Discovered via Kubernetes API
+    // PIXIE - Reserved for future Pixie integration
+}
 ```
 
 ### Development Setup
 
 ```bash
+# Prerequisites (macOS): Install Colima for TestContainers
+# Why Colima? Docker Desktop has socket compatibility issues with TestContainers.
+# Colima provides a lightweight Docker runtime that works reliably with both
+# TestContainers and Jib. build.gradle.kts auto-detects Colima's socket.
+brew install colima docker && colima start
+
 # Start PostgreSQL
 ./gradlew dockerUp
 
 # Run application
 ./gradlew run
 
-# Run tests
+# Run tests (includes k3s Kubernetes integration tests)
 ./gradlew test
 
 # Lint code
 ./gradlew ktlintCheck
+```
+
+**Optional:** Deploy test workloads to local Kubernetes (kind/minikube) for manual testing:
+```bash
+./gradlew testServicesUp              # Deploy test services
+./gradlew testServicesStatus          # Check status
+./gradlew testServicesDown            # Remove test services
 ```
 
 ---
@@ -177,6 +204,29 @@ data class Service(
 4. **Graceful degradation**: Topology/baselines work even without Pixie; replay requires Pixie
 5. **Statistical rigor**: Use proper statistical tests, not arbitrary thresholds
 
+### Adapter Implementation Status
+
+**ServiceAdapter Interface** (`src/main/kotlin/com/platform/adapters/ServiceAdapter.kt`):
+```kotlin
+interface ServiceAdapter {
+    suspend fun discoverServices(organizationId: String): List<Service>
+}
+```
+
+**Implemented Adapters:**
+
+1. **ManualSeedAdapter** - Provides 8 hardcoded services (frontend, backend, messaging, data layers) for testing and development without external dependencies.
+
+2. **KubernetesAdapter** - Discovers services from Kubernetes clusters via the Kubernetes API. Supports in-cluster config, KUBECONFIG, and ~/.kube/config. Filters system namespaces by default. Extracts metadata from labels and annotations.
+
+3. **PixieAdapter** - Planned for future implementation (traffic capture and dependency discovery).
+
+**Test Infrastructure:**
+
+- `KubernetesWorkloadTestBase` - Spins up k3s cluster with test workloads (PostgreSQL, Redis, API Gateway, traffic generator) using TestContainers
+- Manifests in `k8s/test-services/` used for both automated tests and local development
+- Handles Colima socket complexities for image loading
+
 ---
 
 ## Tech Stack
@@ -201,52 +251,13 @@ data class Service(
 - Exposed ORM for type-safe queries
 - Flyway for schema migrations
 
-### Current Dependencies
+### Key Libraries
 
-```kotlin
-// build.gradle.kts
-plugins {
-    kotlin("jvm") version "2.2.21"
-    kotlin("plugin.serialization") version "2.2.21"
-    id("io.ktor.plugin") version "3.3.3"
-    id("org.jlleitschuh.gradle.ktlint") version "12.1.2"
-}
-
-dependencies {
-    // Ktor server
-    implementation("io.ktor:ktor-server-core-jvm")
-    implementation("io.ktor:ktor-server-netty-jvm")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm")
-    implementation("io.ktor:ktor-server-config-yaml")
-
-    // Database (Exposed + PostgreSQL)
-    implementation("org.jetbrains.exposed:exposed-core:0.57.0")
-    implementation("org.jetbrains.exposed:exposed-jdbc:0.57.0")
-    implementation("org.jetbrains.exposed:exposed-java-time:0.57.0")
-    implementation("org.jetbrains.exposed:exposed-json:0.57.0")
-    implementation("org.postgresql:postgresql:42.7.4")
-
-    // Database migrations
-    implementation("org.flywaydb:flyway-core:9.22.3")
-
-    // Logging
-    implementation("ch.qos.logback:logback-classic")
-
-    // Testing
-    testImplementation("io.ktor:ktor-server-test-host-jvm")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
-    testImplementation("org.testcontainers:testcontainers:1.20.4")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-    testImplementation("org.testcontainers:postgresql:1.20.4")
-}
-```
-
-### Planned Dependencies (Not Yet Added)
-
-- `io.fabric8:kubernetes-client` - Kubernetes integration for service discovery and metrics
-- AWS SDK (optional) - X-Ray and CloudWatch integration
+- **Ktor**: Kotlin-native web framework
+- **Exposed + PostgreSQL**: Type-safe database access
+- **Fabric8 Kubernetes Client**: Service discovery from K8s clusters
+- **TestContainers**: Integration testing with PostgreSQL and k3s
+- See `build.gradle.kts` for complete dependency list
 
 ---
 
@@ -291,16 +302,16 @@ Learn normal behavior patterns, detect anomalies in production metrics.
 
 ---
 
-## Adapter Interface
+## Adapter Implementation Matrix
 
 Adapters normalize data from different sources into the unified model.
 
-| Adapter | Services | Dependencies | Endpoints | Metrics | Traffic Bodies |
-|---------|----------|--------------|-----------|---------|----------------|
-| Pixie | Yes | Yes | Yes | Yes | Yes |
-| Kubernetes | Yes | | | Yes (resources) | |
-| AWS (X-Ray) | Yes | Yes | | Yes | |
-| Manual Seed | Yes | Yes | Yes | Yes | Yes (fake) |
+| Adapter | Status | Services | Dependencies | Endpoints | Metrics | Traffic Bodies |
+|---------|--------|----------|--------------|-----------|---------|----------------|
+| **Manual Seed** | Implemented | Yes | Planned | Planned | Planned | Planned |
+| **Kubernetes** | Implemented | Yes | Planned | Planned | Planned | No |
+| **Pixie** | Planned | Yes | Yes | Yes | Yes | Yes |
+| **AWS X-Ray** | Planned | Yes | Yes | No | Yes | No |
 
 ---
 
@@ -319,13 +330,16 @@ Adapters normalize data from different sources into the unified model.
 - [x] Configure Flyway migrations
 - [x] Set up ktlint for code quality
 
-**Week 2: Kubernetes Integration + Manual Seed** - NOT STARTED
-- [ ] Implement KubernetesAdapter (services + resource metrics)
-- [ ] Create ManualSeedAdapter with fake traffic data
-- [ ] Create API endpoints: `POST /api/seed`, `GET /api/topology`
-- [ ] Deploy test workloads to kind cluster
+**Week 2: Kubernetes Integration + Manual Seed** - COMPLETE
+- [x] Implement ServiceAdapter interface
+- [x] Implement KubernetesAdapter with service discovery
+- [x] Create ManualSeedAdapter with hardcoded test data
+- [x] Set up KubernetesWorkloadTestBase with k3s integration tests
+- [x] Create test workloads (PostgreSQL, Redis, API Gateway, traffic generator)
+- [x] Configure Colima for TestContainers on macOS
+- [ ] Create API endpoints: `POST /api/seed`, `GET /api/topology` (deferred)
 
-**Milestone:** `POST /api/seed` populates database, `GET /api/services` returns discovered services
+**Milestone:** Adapter pattern implemented, services discoverable from Kubernetes and manual seed data
 
 ---
 
