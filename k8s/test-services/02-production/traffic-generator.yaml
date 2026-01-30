@@ -14,40 +14,22 @@ spec:
         app: traffic-generator
     spec:
       containers:
-        - name: traffic-gen
-          image: curlimages/curl:latest
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              echo "Waiting for API Gateway to be ready..."
-              sleep 30
-              echo "Starting traffic generation..."
-              while true; do
-                # Health check
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/health
-
-                # List all users (cache miss then hit)
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users
-
-                # Get individual users
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/1
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/2
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/users/3
-
-                # List all orders (database join)
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders
-
-                # Get orders by user
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders/1
-                curl -s http://api-gateway.production.svc.cluster.local:8080/api/orders/2
-
-                # Sleep between rounds
-                sleep 2
-              done
+        - name: traffic-generator
+          image: docker.io/library/test-traffic-generator:latest
+          imagePullPolicy: Never  # Use local image
+          env:
+            - name: API_GATEWAY_HOST
+              value: api-gateway.production.svc.cluster.local
+            - name: API_GATEWAY_PORT
+              value: "8080"
+            - name: INITIAL_DELAY_MS
+              value: "30000"
+            - name: DELAY_BETWEEN_ROUNDS_MS
+              value: "2000"
           resources:
             requests:
-              memory: "32Mi"
+              memory: "64Mi"
               cpu: "10m"
             limits:
-              memory: "64Mi"
+              memory: "128Mi"
               cpu: "100m"

@@ -39,10 +39,22 @@ ktor {
     }
 }
 
+// Detect current architecture for Jib
+val jibArch = when (System.getProperty("os.arch")) {
+    "aarch64", "arm64" -> "arm64"
+    else -> "amd64"
+}
+
 // Jib configuration to build Docker image
 jib {
     from {
         image = "eclipse-temurin:21-jre-alpine"
+        platforms {
+            platform {
+                architecture = jibArch
+                os = "linux"
+            }
+        }
     }
     to {
         image = "test-api-gateway"

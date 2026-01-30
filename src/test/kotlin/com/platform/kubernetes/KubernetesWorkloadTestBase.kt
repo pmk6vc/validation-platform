@@ -49,9 +49,10 @@ import java.time.Duration
  * ```
  *
  * ## Prerequisites
- * Before running tests, build the API Gateway image:
+ * Before running tests, build the test service images:
  * ```
  * ./gradlew :test-services:api-gateway:jibDockerBuild
+ * ./gradlew :test-services:traffic-generator:jibDockerBuild
  * ```
  *
  * ## Resource Requirements
@@ -65,8 +66,12 @@ abstract class KubernetesWorkloadTestBase {
         private var k3s: K3sContainer? = null
         private var initialized = false
 
-        // Image name for the test API Gateway
-        const val API_GATEWAY_IMAGE = "test-api-gateway:latest"
+        // Image names for test services
+        private const val API_GATEWAY_IMAGE = "test-api-gateway:latest"
+        private const val TRAFFIC_GENERATOR_IMAGE = "test-traffic-generator:latest"
+
+        // NodePort for API Gateway (must match k8s/test-services/02-production/api-gateway.yaml)
+        private const val API_GATEWAY_NODE_PORT = 30080
 
         // Path to K8s manifests (relative to project root)
         private const val MANIFESTS_PATH = "k8s/test-services"
@@ -79,10 +84,12 @@ abstract class KubernetesWorkloadTestBase {
 
             logger.info("Starting k3s cluster with workloads...")
 
-            // Start k3s cluster
+            // Start k3s cluster with API Gateway NodePort exposed
+            // Note: K3sContainer requires port 6443 for K8s API, so we add our NodePort alongside it
             k3s =
                 K3sContainer(DockerImageName.parse("rancher/k3s:v1.27.9-k3s1"))
                     .withLogConsumer(Slf4jLogConsumer(logger).withPrefix("k3s"))
+                    .withExposedPorts(6443, API_GATEWAY_NODE_PORT)
                     .withCommand(
                         "server",
                         "--disable=traefik", // We don't need ingress for tests
@@ -90,8 +97,9 @@ abstract class KubernetesWorkloadTestBase {
                     )
             k3s!!.start()
 
-            // Load API Gateway image into k3s (must happen before applying manifests)
-            loadApiGatewayImage()
+            // Load test service images into k3s (must happen before applying manifests)
+            loadDockerImage(API_GATEWAY_IMAGE, "api-gateway")
+            loadDockerImage(TRAFFIC_GENERATOR_IMAGE, "traffic-generator")
 
             // Copy manifests into k3s container and apply them
             applyManifests()
@@ -141,6 +149,17 @@ abstract class KubernetesWorkloadTestBase {
         fun getK3sContainer(): K3sContainer {
             ensureClusterInitialized()
             return k3s!!
+        }
+
+        /**
+         * Get the base URL for the API Gateway service.
+         * This URL is accessible from the test JVM via the exposed NodePort.
+         */
+        fun getApiGatewayBaseUrl(): String {
+            ensureClusterInitialized()
+            val host = k3s!!.host
+            val port = k3s!!.getMappedPort(API_GATEWAY_NODE_PORT)
+            return "http://$host:$port"
         }
 
         /**
@@ -199,21 +218,27 @@ abstract class KubernetesWorkloadTestBase {
         }
 
         /**
-         * Load the API Gateway Docker image into k3s.
+         * Load a Docker image into k3s.
          *
          * k3s runs in a container, so we need to transfer the image into its containerd.
          * We do this by saving the image to a tar file and importing it via ctr.
+         *
+         * @param imageName The full image name (e.g., "test-api-gateway:latest")
+         * @param label A short label for logging and temp file naming
          */
-        private fun loadApiGatewayImage() {
-            logger.info("Loading API Gateway image into k3s...")
+        private fun loadDockerImage(
+            imageName: String,
+            label: String,
+        ) {
+            logger.info("Loading $label image into k3s...")
 
             // Save the Docker image to a tar file
-            val tarFile = File.createTempFile("api-gateway", ".tar")
+            val tarFile = File.createTempFile(label, ".tar")
             try {
                 // Don't use DOCKER_HOST from test environment - use default Docker context
                 // The image was built with Jib which uses the default Docker daemon
                 val processBuilder =
-                    ProcessBuilder("docker", "save", API_GATEWAY_IMAGE, "-o", tarFile.absolutePath)
+                    ProcessBuilder("docker", "save", imageName, "-o", tarFile.absolutePath)
                         .redirectErrorStream(true)
 
                 // Remove DOCKER_HOST to use default Docker context (where Jib built the image)
@@ -225,12 +250,13 @@ abstract class KubernetesWorkloadTestBase {
                 if (saveExitCode != 0) {
                     logger.error("docker save failed: $output")
                     throw RuntimeException(
-                        "Failed to save Docker image. Make sure to run: ./gradlew :test-services:api-gateway:jibDockerBuild\nError: $output",
+                        "Failed to save Docker image $imageName. " +
+                            "Make sure to run: ./gradlew :test-services:$label:jibDockerBuild\nError: $output",
                     )
                 }
 
                 // Copy the tar file into the k3s container
-                k3s!!.copyFileToContainer(MountableFile.forHostPath(tarFile.toPath()), "/tmp/api-gateway.tar")
+                k3s!!.copyFileToContainer(MountableFile.forHostPath(tarFile.toPath()), "/tmp/$label.tar")
 
                 // Import the image using ctr
                 val importResult =
@@ -238,14 +264,14 @@ abstract class KubernetesWorkloadTestBase {
                         "ctr",
                         "images",
                         "import",
-                        "/tmp/api-gateway.tar",
+                        "/tmp/$label.tar",
                     )
                 if (importResult.exitCode != 0) {
                     logger.error("Failed to import image: ${importResult.stderr}")
-                    throw RuntimeException("Failed to import image into k3s: ${importResult.stderr}")
+                    throw RuntimeException("Failed to import $label image into k3s: ${importResult.stderr}")
                 }
 
-                logger.info("Successfully loaded API Gateway image into k3s")
+                logger.info("Successfully loaded $label image into k3s")
             } finally {
                 tarFile.delete()
             }

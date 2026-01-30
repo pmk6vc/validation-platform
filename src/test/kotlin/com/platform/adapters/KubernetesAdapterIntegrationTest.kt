@@ -115,7 +115,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                 assertNotNull(apiGateway)
                 assertEquals("production", apiGateway.namespace)
                 assertNotNull(apiGateway.metadata)
-                assertEquals("ClusterIP", apiGateway.metadata!!["k8s.service.type"])
+                assertEquals("NodePort", apiGateway.metadata!!["k8s.service.type"])
                 assertEquals("api-gateway", apiGateway.metadata!!["app"])
                 assertEquals("api-gateway", apiGateway.metadata!!["app.name"])
                 assertEquals("1.5.0", apiGateway.metadata!!["version"])
@@ -237,7 +237,7 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                 assertEquals("production", apiGateway.namespace)
                 assertEquals(Provider.KUBERNETES, apiGateway.provider)
                 assertNotNull(apiGateway.metadata)
-                assertEquals("ClusterIP", apiGateway.metadata!!["k8s.service.type"])
+                assertEquals("NodePort", apiGateway.metadata!!["k8s.service.type"])
                 assertEquals("backend", apiGateway.metadata!!["team"])
                 assertEquals("gateway", apiGateway.metadata!!["component"])
             } finally {

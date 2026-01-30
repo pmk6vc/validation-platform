@@ -1,5 +1,9 @@
 package com.platform.kubernetes
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -21,18 +25,27 @@ import kotlin.test.assertTrue
  * - Database queries and cache operations are working
  *
  * ## Prerequisites
- * Build the API Gateway image before running:
+ * Build the test service images before running:
  * ```
  * ./gradlew :test-services:api-gateway:jibDockerBuild
+ * ./gradlew :test-services:traffic-generator:jibDockerBuild
  * ```
  *
  * ## Test Strategy
- * We use kubectl port-forward (via k3s exec) to access the API Gateway from the test,
- * since the k3s cluster runs in a Docker container with its own network.
+ * The API Gateway is exposed via NodePort (30080), which is mapped to the host.
+ * Tests use Ktor HTTP client to make requests directly to the API Gateway.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
     private val logger = LoggerFactory.getLogger(WorkloadTrafficIntegrationTest::class.java)
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private val httpClient =
+        HttpClient(CIO) {
+            engine {
+                requestTimeout = 10000
+            }
+        }
 
     @Serializable
     data class HealthResponse(
@@ -61,54 +74,30 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
     @Test
     fun `api gateway health check returns healthy status`() =
         runBlocking {
-            val client = createKubernetesClient()
-            try {
-                // Use kubectl exec to make a request from inside the cluster
-                val result =
-                    getK3sContainer().execInContainer(
-                        "kubectl",
-                        "exec",
-                        "-n",
-                        "production",
-                        "deploy/traffic-generator",
-                        "--",
-                        "curl",
-                        "-s",
-                        "http://api-gateway.production.svc.cluster.local:8080/api/health",
-                    )
+            val baseUrl = getApiGatewayBaseUrl()
+            val response = httpClient.get("$baseUrl/api/health")
+            val body = response.bodyAsText()
 
-                logger.info("Health check response: ${result.stdout}")
-                assertEquals(0, result.exitCode, "curl command failed: ${result.stderr}")
+            logger.info("Health check response: $body")
+            assertEquals(200, response.status.value)
 
-                val health = Json.decodeFromString<HealthResponse>(result.stdout)
-                assertEquals("healthy", health.status)
-                assertEquals("connected", health.database)
-                assertEquals("connected", health.cache)
-            } finally {
-                client.close()
-            }
+            val health = json.decodeFromString<HealthResponse>(body)
+            assertEquals("healthy", health.status)
+            assertEquals("connected", health.database)
+            assertEquals("connected", health.cache)
         }
 
     @Test
     fun `api gateway can query users from postgresql`() =
         runBlocking {
-            val result =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/traffic-generator",
-                    "--",
-                    "curl",
-                    "-s",
-                    "http://api-gateway.production.svc.cluster.local:8080/api/users",
-                )
+            val baseUrl = getApiGatewayBaseUrl()
+            val response = httpClient.get("$baseUrl/api/users")
+            val body = response.bodyAsText()
 
-            logger.info("Users response: ${result.stdout}")
-            assertEquals(0, result.exitCode, "curl command failed: ${result.stderr}")
+            logger.info("Users response: $body")
+            assertEquals(200, response.status.value)
 
-            val users = Json.decodeFromString<List<User>>(result.stdout)
+            val users = json.decodeFromString<List<User>>(body)
             assertTrue(users.isNotEmpty(), "Expected at least one user")
             assertTrue(users.size >= 5, "Expected at least 5 seeded users")
 
@@ -121,71 +110,38 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
     @Test
     fun `api gateway uses redis cache for repeated requests`() =
         runBlocking {
-            // First request - cache miss
-            val result1 =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/traffic-generator",
-                    "--",
-                    "curl",
-                    "-s",
-                    "-i",
-                    "http://api-gateway.production.svc.cluster.local:8080/api/users",
-                )
+            val baseUrl = getApiGatewayBaseUrl()
 
-            logger.info("First request headers: ${result1.stdout.lines().take(10).joinToString("\n")}")
-            assertEquals(0, result1.exitCode)
+            // First request - cache miss
+            val response1 = httpClient.get("$baseUrl/api/users")
+            val cacheHeader1 = response1.headers["X-Cache"]
+            logger.info("First request X-Cache: $cacheHeader1")
+            assertEquals(200, response1.status.value)
 
             // Give Redis time to cache
             delay(100)
 
             // Second request - should be cache hit
-            val result2 =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/traffic-generator",
-                    "--",
-                    "curl",
-                    "-s",
-                    "-i",
-                    "http://api-gateway.production.svc.cluster.local:8080/api/users",
-                )
-
-            logger.info("Second request headers: ${result2.stdout.lines().take(10).joinToString("\n")}")
-            assertEquals(0, result2.exitCode)
+            val response2 = httpClient.get("$baseUrl/api/users")
+            val cacheHeader2 = response2.headers["X-Cache"]
+            logger.info("Second request X-Cache: $cacheHeader2")
+            assertEquals(200, response2.status.value)
 
             // Check for X-Cache header (HIT on second request)
-            // Note: First might be MISS or HIT depending on traffic generator timing
-            val hasXCacheHeader = result2.stdout.contains("X-Cache:")
-            assertTrue(hasXCacheHeader, "Expected X-Cache header in response")
+            assertNotNull(cacheHeader2, "Expected X-Cache header in response")
         }
 
     @Test
     fun `api gateway can query individual user by id`() =
         runBlocking {
-            val result =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/traffic-generator",
-                    "--",
-                    "curl",
-                    "-s",
-                    "http://api-gateway.production.svc.cluster.local:8080/api/users/1",
-                )
+            val baseUrl = getApiGatewayBaseUrl()
+            val response = httpClient.get("$baseUrl/api/users/1")
+            val body = response.bodyAsText()
 
-            logger.info("User 1 response: ${result.stdout}")
-            assertEquals(0, result.exitCode, "curl command failed: ${result.stderr}")
+            logger.info("User 1 response: $body")
+            assertEquals(200, response.status.value)
 
-            val user = Json.decodeFromString<User>(result.stdout)
+            val user = json.decodeFromString<User>(body)
             assertEquals(1, user.id)
             assertTrue(user.name.isNotEmpty())
             assertTrue(user.email.isNotEmpty())
@@ -194,23 +150,14 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
     @Test
     fun `api gateway can query orders with user join`() =
         runBlocking {
-            val result =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/traffic-generator",
-                    "--",
-                    "curl",
-                    "-s",
-                    "http://api-gateway.production.svc.cluster.local:8080/api/orders",
-                )
+            val baseUrl = getApiGatewayBaseUrl()
+            val response = httpClient.get("$baseUrl/api/orders")
+            val body = response.bodyAsText()
 
-            logger.info("Orders response: ${result.stdout}")
-            assertEquals(0, result.exitCode, "curl command failed: ${result.stderr}")
+            logger.info("Orders response: $body")
+            assertEquals(200, response.status.value)
 
-            val orders = Json.decodeFromString<List<Order>>(result.stdout)
+            val orders = json.decodeFromString<List<Order>>(body)
             assertTrue(orders.isNotEmpty(), "Expected at least one order")
             assertTrue(orders.size >= 7, "Expected at least 7 seeded orders")
 
@@ -222,23 +169,14 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
     @Test
     fun `api gateway can query orders by user id`() =
         runBlocking {
-            val result =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/traffic-generator",
-                    "--",
-                    "curl",
-                    "-s",
-                    "http://api-gateway.production.svc.cluster.local:8080/api/orders/1",
-                )
+            val baseUrl = getApiGatewayBaseUrl()
+            val response = httpClient.get("$baseUrl/api/orders/1")
+            val body = response.bodyAsText()
 
-            logger.info("Orders for user 1: ${result.stdout}")
-            assertEquals(0, result.exitCode, "curl command failed: ${result.stderr}")
+            logger.info("Orders for user 1: $body")
+            assertEquals(200, response.status.value)
 
-            val orders = Json.decodeFromString<List<Order>>(result.stdout)
+            val orders = json.decodeFromString<List<Order>>(body)
             assertTrue(orders.isNotEmpty(), "Expected at least one order for user 1")
 
             // All orders should belong to user 1
@@ -273,19 +211,31 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
                     "-n",
                     "production",
                     "deploy/traffic-generator",
-                    "--tail=20",
+                    "-c",
+                    "traffic-generator",
+                    "--tail=50",
                 )
 
-            logger.info("Traffic generator logs:\n${logsResult.stdout}")
-            assertEquals(0, logsResult.exitCode)
+            logger.info("Traffic generator logs (stdout):\n${logsResult.stdout}")
+            logger.info("Traffic generator logs (stderr):\n${logsResult.stderr}")
+            assertEquals(0, logsResult.exitCode, "kubectl logs failed: ${logsResult.stderr}")
 
-            // Logs should show curl activity or our echo messages
+            // Logs should show traffic activity from our Kotlin traffic generator
+            // Check both stdout and stderr as logback may output to either
+            val allLogs = logsResult.stdout + logsResult.stderr
             val hasTrafficIndicator =
-                logsResult.stdout.contains("Starting traffic") ||
-                    logsResult.stdout.contains("healthy") ||
-                    logsResult.stdout.contains("{")
+                allLogs.contains("Traffic Generator") ||
+                    allLogs.contains("TrafficGenerator") ||
+                    allLogs.contains("Starting traffic") ||
+                    allLogs.contains("Target:") ||
+                    allLogs.contains("Waiting for API Gateway")
 
-            assertTrue(hasTrafficIndicator, "Expected to see traffic activity in logs")
+            assertTrue(
+                hasTrafficIndicator,
+                "Expected to see traffic activity in logs. Got stdout: ${logsResult.stdout.take(
+                    300,
+                )}, stderr: ${logsResult.stderr.take(300)}",
+            )
         }
 
     @Test
