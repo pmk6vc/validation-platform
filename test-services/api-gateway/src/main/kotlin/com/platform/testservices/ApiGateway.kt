@@ -1,13 +1,20 @@
 package com.platform.testservices
 
-import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
-import io.ktor.server.netty.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.call
+import io.ktor.server.application.install
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.Routing
+import io.ktor.server.routing.get
+import io.ktor.server.routing.routing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -16,7 +23,6 @@ import redis.clients.jedis.JedisPool
 import redis.clients.jedis.JedisPoolConfig
 import java.sql.Connection
 import java.sql.DriverManager
-import java.sql.ResultSet
 
 /**
  * Test API Gateway service for k3s integration testing.
@@ -138,18 +144,22 @@ private fun getConnection(): Connection {
  */
 private fun Routing.healthRoutes() {
     get("/api/health") {
-        val dbStatus = try {
-            getConnection().use { it.createStatement().execute("SELECT 1") }
-            "connected"
-        } catch (e: Exception) {
-            "error: ${e.message}"
-        }
+        val (dbStatus, cacheStatus) = withContext(Dispatchers.IO) {
+            val db = try {
+                getConnection().use { it.createStatement().execute("SELECT 1") }
+                "connected"
+            } catch (e: Exception) {
+                "error: ${e.message}"
+            }
 
-        val cacheStatus = try {
-            jedisPool.resource.use { it.ping() }
-            "connected"
-        } catch (e: Exception) {
-            "error: ${e.message}"
+            val cache = try {
+                jedisPool.resource.use { it.ping() }
+                "connected"
+            } catch (e: Exception) {
+                "error: ${e.message}"
+            }
+
+            db to cache
         }
 
         call.respond(
@@ -170,47 +180,56 @@ private fun Routing.userRoutes() {
     get("/api/users") {
         // Check Redis cache first
         val cacheKey = "users:all"
-        try {
-            jedisPool.resource.use { jedis ->
-                val cached = jedis.get(cacheKey)
-                if (cached != null) {
-                    logger.debug("Cache HIT for $cacheKey")
-                    call.response.headers.append("X-Cache", "HIT")
-                    call.respondText(cached, ContentType.Application.Json)
-                    return@get
+        val cached = withContext(Dispatchers.IO) {
+            try {
+                jedisPool.resource.use { jedis ->
+                    jedis.get(cacheKey)
                 }
+            } catch (e: Exception) {
+                logger.warn("Redis cache error: ${e.message}")
+                null
             }
-        } catch (e: Exception) {
-            logger.warn("Redis cache error: ${e.message}")
+        }
+
+        if (cached != null) {
+            logger.debug("Cache HIT for $cacheKey")
+            call.response.headers.append("X-Cache", "HIT")
+            call.respondText(cached, ContentType.Application.Json)
+            return@get
         }
 
         // Cache miss - query PostgreSQL
         logger.debug("Cache MISS for $cacheKey")
         call.response.headers.append("X-Cache", "MISS")
 
-        val users = mutableListOf<User>()
-        getConnection().use { conn ->
-            conn.createStatement().executeQuery("SELECT id, name, email FROM users ORDER BY id").use { rs ->
-                while (rs.next()) {
-                    users.add(
-                        User(
-                            id = rs.getInt("id"),
-                            name = rs.getString("name"),
-                            email = rs.getString("email")
+        val users = withContext(Dispatchers.IO) {
+            val result = mutableListOf<User>()
+            getConnection().use { conn ->
+                conn.createStatement().executeQuery("SELECT id, name, email FROM users ORDER BY id").use { rs ->
+                    while (rs.next()) {
+                        result.add(
+                            User(
+                                id = rs.getInt("id"),
+                                name = rs.getString("name"),
+                                email = rs.getString("email")
+                            )
                         )
-                    )
+                    }
                 }
             }
+            result
         }
 
         // Cache the result
         val json = Json.encodeToString(users)
-        try {
-            jedisPool.resource.use { jedis ->
-                jedis.setex(cacheKey, 60, json)
+        withContext(Dispatchers.IO) {
+            try {
+                jedisPool.resource.use { jedis ->
+                    jedis.setex(cacheKey, 60, json)
+                }
+            } catch (e: Exception) {
+                logger.warn("Failed to cache result: ${e.message}")
             }
-        } catch (e: Exception) {
-            logger.warn("Failed to cache result: ${e.message}")
         }
 
         call.respond(users)
@@ -225,49 +244,62 @@ private fun Routing.userRoutes() {
 
         // Check cache
         val cacheKey = "users:$userId"
-        try {
-            jedisPool.resource.use { jedis ->
-                val cached = jedis.get(cacheKey)
-                if (cached != null) {
-                    call.response.headers.append("X-Cache", "HIT")
-                    call.respondText(cached, ContentType.Application.Json)
-                    return@get
+        val cached = withContext(Dispatchers.IO) {
+            try {
+                jedisPool.resource.use { jedis ->
+                    jedis.get(cacheKey)
                 }
+            } catch (e: Exception) {
+                logger.warn("Redis cache error: ${e.message}")
+                null
             }
-        } catch (e: Exception) {
-            logger.warn("Redis cache error: ${e.message}")
+        }
+
+        if (cached != null) {
+            call.response.headers.append("X-Cache", "HIT")
+            call.respondText(cached, ContentType.Application.Json)
+            return@get
         }
 
         call.response.headers.append("X-Cache", "MISS")
 
-        getConnection().use { conn ->
-            conn.prepareStatement("SELECT id, name, email FROM users WHERE id = ?").use { stmt ->
-                stmt.setInt(1, userId)
-                stmt.executeQuery().use { rs ->
-                    if (rs.next()) {
-                        val user = User(
-                            id = rs.getInt("id"),
-                            name = rs.getString("name"),
-                            email = rs.getString("email")
-                        )
-
-                        // Cache the result
-                        val json = Json.encodeToString(user)
-                        try {
-                            jedisPool.resource.use { jedis ->
-                                jedis.setex(cacheKey, 60, json)
-                            }
-                        } catch (e: Exception) {
-                            logger.warn("Failed to cache result: ${e.message}")
+        val user = withContext(Dispatchers.IO) {
+            getConnection().use { conn ->
+                conn.prepareStatement("SELECT id, name, email FROM users WHERE id = ?").use { stmt ->
+                    stmt.setInt(1, userId)
+                    stmt.executeQuery().use { rs ->
+                        if (rs.next()) {
+                            User(
+                                id = rs.getInt("id"),
+                                name = rs.getString("name"),
+                                email = rs.getString("email")
+                            )
+                        } else {
+                            null
                         }
-
-                        call.respond(user)
-                    } else {
-                        call.respond(HttpStatusCode.NotFound, ErrorResponse("User not found", 404))
                     }
                 }
             }
         }
+
+        if (user == null) {
+            call.respond(HttpStatusCode.NotFound, ErrorResponse("User not found", 404))
+            return@get
+        }
+
+        // Cache the result
+        val json = Json.encodeToString(user)
+        withContext(Dispatchers.IO) {
+            try {
+                jedisPool.resource.use { jedis ->
+                    jedis.setex(cacheKey, 60, json)
+                }
+            } catch (e: Exception) {
+                logger.warn("Failed to cache result: ${e.message}")
+            }
+        }
+
+        call.respond(user)
     }
 }
 
@@ -276,28 +308,31 @@ private fun Routing.userRoutes() {
  */
 private fun Routing.orderRoutes() {
     get("/api/orders") {
-        val orders = mutableListOf<Order>()
-        getConnection().use { conn ->
-            conn.createStatement().executeQuery(
-                """
-                SELECT o.id, o.user_id, o.total, o.created_at, u.name as user_name
-                FROM orders o
-                JOIN users u ON o.user_id = u.id
-                ORDER BY o.created_at DESC
-                """.trimIndent()
-            ).use { rs ->
-                while (rs.next()) {
-                    orders.add(
-                        Order(
-                            id = rs.getInt("id"),
-                            userId = rs.getInt("user_id"),
-                            total = rs.getDouble("total"),
-                            createdAt = rs.getTimestamp("created_at").toString(),
-                            userName = rs.getString("user_name")
+        val orders = withContext(Dispatchers.IO) {
+            val result = mutableListOf<Order>()
+            getConnection().use { conn ->
+                conn.createStatement().executeQuery(
+                    """
+                    SELECT o.id, o.user_id, o.total, o.created_at, u.name as user_name
+                    FROM orders o
+                    JOIN users u ON o.user_id = u.id
+                    ORDER BY o.created_at DESC
+                    """.trimIndent()
+                ).use { rs ->
+                    while (rs.next()) {
+                        result.add(
+                            Order(
+                                id = rs.getInt("id"),
+                                userId = rs.getInt("user_id"),
+                                total = rs.getDouble("total"),
+                                createdAt = rs.getTimestamp("created_at").toString(),
+                                userName = rs.getString("user_name")
+                            )
                         )
-                    )
+                    }
                 }
             }
+            result
         }
         call.respond(orders)
     }
@@ -311,55 +346,64 @@ private fun Routing.orderRoutes() {
 
         // Check cache for user's orders
         val cacheKey = "orders:user:$userId"
-        try {
-            jedisPool.resource.use { jedis ->
-                val cached = jedis.get(cacheKey)
-                if (cached != null) {
-                    call.response.headers.append("X-Cache", "HIT")
-                    call.respondText(cached, ContentType.Application.Json)
-                    return@get
+        val cached = withContext(Dispatchers.IO) {
+            try {
+                jedisPool.resource.use { jedis ->
+                    jedis.get(cacheKey)
                 }
+            } catch (e: Exception) {
+                logger.warn("Redis cache error: ${e.message}")
+                null
             }
-        } catch (e: Exception) {
-            logger.warn("Redis cache error: ${e.message}")
+        }
+
+        if (cached != null) {
+            call.response.headers.append("X-Cache", "HIT")
+            call.respondText(cached, ContentType.Application.Json)
+            return@get
         }
 
         call.response.headers.append("X-Cache", "MISS")
 
-        val orders = mutableListOf<Order>()
-        getConnection().use { conn ->
-            conn.prepareStatement(
-                """
-                SELECT id, user_id, total, created_at
-                FROM orders
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-                """.trimIndent()
-            ).use { stmt ->
-                stmt.setInt(1, userId)
-                stmt.executeQuery().use { rs ->
-                    while (rs.next()) {
-                        orders.add(
-                            Order(
-                                id = rs.getInt("id"),
-                                userId = rs.getInt("user_id"),
-                                total = rs.getDouble("total"),
-                                createdAt = rs.getTimestamp("created_at").toString()
+        val orders = withContext(Dispatchers.IO) {
+            val result = mutableListOf<Order>()
+            getConnection().use { conn ->
+                conn.prepareStatement(
+                    """
+                    SELECT id, user_id, total, created_at
+                    FROM orders
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    """.trimIndent()
+                ).use { stmt ->
+                    stmt.setInt(1, userId)
+                    stmt.executeQuery().use { rs ->
+                        while (rs.next()) {
+                            result.add(
+                                Order(
+                                    id = rs.getInt("id"),
+                                    userId = rs.getInt("user_id"),
+                                    total = rs.getDouble("total"),
+                                    createdAt = rs.getTimestamp("created_at").toString()
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
+            result
         }
 
         // Cache the result
         val json = Json.encodeToString(orders)
-        try {
-            jedisPool.resource.use { jedis ->
-                jedis.setex(cacheKey, 30, json)
+        withContext(Dispatchers.IO) {
+            try {
+                jedisPool.resource.use { jedis ->
+                    jedis.setex(cacheKey, 30, json)
+                }
+            } catch (e: Exception) {
+                logger.warn("Failed to cache result: ${e.message}")
             }
-        } catch (e: Exception) {
-            logger.warn("Failed to cache result: ${e.message}")
         }
 
         call.respond(orders)

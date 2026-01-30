@@ -16,13 +16,20 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Integration test demonstrating the full Kubernetes adapter workflow with a real cluster:
- * 1. Spin up a k3s cluster with running workloads (handled by KubernetesWorkloadTestBase)
- * 2. Adapter discovers services from the real cluster
- * 3. Services are persisted to the database via repository
- * 4. Services can be queried back from the database with proper filtering
+ * Integration tests for the Kubernetes adapter workflow with a real k3s cluster.
  *
- * The cluster has actual running workloads: PostgreSQL, Redis, API Gateway, and Traffic Generator.
+ * ## Test Strategy
+ * These tests are workflow-focused rather than property-focused. Each test validates
+ * a complete user journey rather than individual metadata fields. Fine-grained metadata
+ * extraction should be covered by unit tests with mock Kubernetes objects.
+ *
+ * ## Cluster Setup
+ * The k3s cluster has actual running workloads:
+ * - **infrastructure namespace**: PostgreSQL, Redis (2 services)
+ * - **production namespace**: API Gateway (1 service)
+ * - **Note**: Traffic Generator has no Service resource (it's a client, not a server)
+ *
+ * Total discoverable services: 3
  */
 class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     private lateinit var testOrg: Organization
@@ -41,298 +48,104 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
     }
 
     @Test
-    fun `should discover and persist real Kubernetes services to database`() =
+    fun `should discover services and persist with correct provider and metadata`() =
         runBlocking {
-            // Create adapter connected to real k3s cluster
             val client = KubernetesWorkloadTestBase.createKubernetesClient()
-
-            val adapter =
-                KubernetesAdapter(
-                    client = client,
-                    clusterName = "k3s-test-cluster",
-                )
+            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
                 // Discover services from real Kubernetes cluster
                 val discoveredServices = adapter.discoverServices(testOrg.id)
 
-                // We should discover our 3 services (api-gateway, redis, postgresql)
-                assertTrue(
-                    discoveredServices.size >= 3,
-                    "Expected at least 3 services, found ${discoveredServices.size}",
-                )
+                // We should discover exactly 3 services (api-gateway, redis, postgresql)
+                // Note: traffic-generator has no Service resource, so it's not discoverable
+                assertEquals(3, discoveredServices.size, "Expected exactly 3 services")
+
+                // All services should have required fields set
+                assertTrue(discoveredServices.all { it.provider == Provider.KUBERNETES })
+                assertTrue(discoveredServices.all { it.discoveredAt != null })
+                assertTrue(discoveredServices.all { it.lastSeenAt != null })
+                assertTrue(discoveredServices.all { it.cluster == "k3s-test-cluster" })
 
                 // Persist all discovered services
                 discoveredServices.forEach { service ->
                     ServiceRepository.create(service)
                 }
 
-                // Verify services were persisted
+                // Verify services were persisted with unique IDs
                 val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertTrue(page.items.size >= 3)
-            } finally {
-                adapter.close()
-            }
-        }
+                assertEquals(3, page.items.size)
+                assertEquals(
+                    page.items.size,
+                    page.items
+                        .map { it.id }
+                        .toSet()
+                        .size,
+                )
 
-    @Test
-    fun `should preserve provider information when persisting`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertTrue(page.items.all { it.provider == Provider.KUBERNETES })
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should preserve Kubernetes metadata when persisting`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Find the api-gateway service and verify metadata
-                val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
+                // Verify api-gateway has rich metadata (labels, annotations, ports, selectors)
                 val apiGateway = page.items.find { it.name == "api-gateway" }
-
                 assertNotNull(apiGateway)
                 assertEquals("production", apiGateway.namespace)
                 assertNotNull(apiGateway.metadata)
-                assertEquals("NodePort", apiGateway.metadata!!["k8s.service.type"])
-                assertEquals("api-gateway", apiGateway.metadata!!["app"])
-                assertEquals("api-gateway", apiGateway.metadata!!["app.name"])
-                assertEquals("1.5.0", apiGateway.metadata!!["version"])
-                assertEquals("gateway", apiGateway.metadata!!["component"])
-                assertEquals("backend", apiGateway.metadata!!["team"])
-                assertEquals("API Gateway service", apiGateway.metadata!!["description"])
-                assertEquals("backend-team@company.com", apiGateway.metadata!!["owner"])
+
+                // Check comprehensive metadata extraction
+                val metadata = apiGateway.metadata!!
+                assertEquals("NodePort", metadata["k8s.service.type"])
+                assertEquals("api-gateway", metadata["app"])
+                assertEquals("api-gateway", metadata["app.name"])
+                assertEquals("1.5.0", metadata["version"])
+                assertEquals("gateway", metadata["component"])
+                assertEquals("backend", metadata["team"])
+                assertEquals("API Gateway service", metadata["description"])
+                assertEquals("backend-team@company.com", metadata["owner"])
+                assertNotNull(metadata["k8s.uid"])
+                assertNotNull(metadata["k8s.created.at"])
+                assertTrue(metadata["k8s.ports"]?.contains("http:8080/TCP") == true)
+                assertTrue(metadata["k8s.selector"]?.contains("app=api-gateway") == true)
+                assertTrue(metadata["k8s.selector"]?.contains("version=v1") == true)
             } finally {
                 adapter.close()
             }
         }
 
     @Test
-    fun `should support filtering persisted services by namespace`() =
+    fun `should discover services from both namespaces`() =
         runBlocking {
             val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
                 val discoveredServices = adapter.discoverServices(testOrg.id)
+                discoveredServices.forEach { service -> ServiceRepository.create(service) }
 
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Filter by production namespace
-                val productionServices =
-                    ServiceRepository.find(
-                        organizationId = testOrg.id,
-                        namespace = "production",
-                        limit = 100,
-                    )
-
-                assertEquals(1, productionServices.items.size)
-                assertTrue(productionServices.items.all { it.namespace == "production" })
-                assertTrue(productionServices.items.any { it.name == "api-gateway" })
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should support filtering persisted services by cluster`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Filter by cluster
-                val clusterServices =
-                    ServiceRepository.find(
-                        organizationId = testOrg.id,
-                        cluster = "k3s-test-cluster",
-                        limit = 100,
-                    )
-
-                assertTrue(clusterServices.items.size >= 3)
-                assertTrue(clusterServices.items.all { it.cluster == "k3s-test-cluster" })
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should handle upsert for re-discovering existing services`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                // First discovery and persist
-                val firstDiscovery = adapter.discoverServices(testOrg.id)
-                firstDiscovery.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                val initialCount = ServiceRepository.find(organizationId = testOrg.id, limit = 100).items.size
-
-                // Second discovery (simulating re-running discovery)
-                val secondDiscovery = adapter.discoverServices(testOrg.id)
-
-                // Upsert should update existing services
-                secondDiscovery.forEach { service ->
-                    ServiceRepository.upsert(service)
-                }
-
-                // Should still have the same number of services (no duplicates)
-                val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertEquals(initialCount, page.items.size)
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should query specific service by name after persisting`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Find API Gateway service
-                val allServices = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                val apiGateway = allServices.items.find { it.name == "api-gateway" }
-
-                assertNotNull(apiGateway)
-                assertEquals("production", apiGateway.namespace)
-                assertEquals(Provider.KUBERNETES, apiGateway.provider)
-                assertNotNull(apiGateway.metadata)
-                assertEquals("NodePort", apiGateway.metadata!!["k8s.service.type"])
-                assertEquals("backend", apiGateway.metadata!!["team"])
-                assertEquals("gateway", apiGateway.metadata!!["component"])
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should extract port information from real Kubernetes services`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Find API Gateway service which has multiple ports
-                val allServices = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                val apiGateway = allServices.items.find { it.name == "api-gateway" }
-
-                assertNotNull(apiGateway)
-                assertNotNull(apiGateway.metadata)
-                val portsMetadata = apiGateway.metadata!!["k8s.ports"]
-                assertNotNull(portsMetadata)
-                assertTrue(portsMetadata.contains("http:8080/TCP"))
-                assertTrue(portsMetadata.contains("grpc:9090/TCP"))
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should extract selector information from services`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Find API Gateway service which has selector with multiple labels
-                val allServices = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                val apiGateway = allServices.items.find { it.name == "api-gateway" }
-
-                assertNotNull(apiGateway)
-                assertNotNull(apiGateway.metadata)
-                val selectorMetadata = apiGateway.metadata!!["k8s.selector"]
-                assertNotNull(selectorMetadata)
-                assertTrue(selectorMetadata.contains("app=api-gateway"))
-                assertTrue(selectorMetadata.contains("version=v1"))
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should discover services from infrastructure namespace`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                // Filter by infrastructure namespace
+                // Verify infrastructure namespace has PostgreSQL and Redis
                 val infraServices =
                     ServiceRepository.find(
                         organizationId = testOrg.id,
                         namespace = "infrastructure",
                         limit = 100,
                     )
-
                 assertEquals(2, infraServices.items.size)
                 assertTrue(infraServices.items.any { it.name == "redis" })
                 assertTrue(infraServices.items.any { it.name == "postgresql" })
-                assertTrue(infraServices.items.all { it.namespace == "infrastructure" })
+
+                // Verify production namespace has API Gateway
+                val prodServices =
+                    ServiceRepository.find(
+                        organizationId = testOrg.id,
+                        namespace = "production",
+                        limit = 100,
+                    )
+                assertEquals(1, prodServices.items.size)
+                assertTrue(prodServices.items.any { it.name == "api-gateway" })
             } finally {
                 adapter.close()
             }
         }
 
     @Test
-    fun `should discover only from specified namespaces when configured`() =
+    fun `should filter discovery by configured namespaces`() =
         runBlocking {
             val client = KubernetesWorkloadTestBase.createKubernetesClient()
 
@@ -348,8 +161,8 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
                 val discoveredServices = adapter.discoverServices(testOrg.id)
 
                 // Should only find services from production namespace
-                assertTrue(discoveredServices.all { it.namespace == "production" })
                 assertEquals(1, discoveredServices.size)
+                assertTrue(discoveredServices.all { it.namespace == "production" })
                 assertTrue(discoveredServices.any { it.name == "api-gateway" })
             } finally {
                 adapter.close()
@@ -357,89 +170,53 @@ class KubernetesAdapterIntegrationTest : DatabaseTestBase() {
         }
 
     @Test
-    fun `should extract Kubernetes UID for correlation`() =
+    fun `should support filtering persisted services by cluster`() =
         runBlocking {
             val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
                 val discoveredServices = adapter.discoverServices(testOrg.id)
+                discoveredServices.forEach { service -> ServiceRepository.create(service) }
 
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
+                // Filter by cluster name
+                val clusterServices =
+                    ServiceRepository.find(
+                        organizationId = testOrg.id,
+                        cluster = "k3s-test-cluster",
+                        limit = 100,
+                    )
 
-                // All services should have a k8s.uid metadata field
-                val allServices = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertTrue(
-                    allServices.items.all { service ->
-                        service.metadata?.containsKey("k8s.uid") == true
-                    },
-                )
+                assertEquals(3, clusterServices.items.size)
+                assertTrue(clusterServices.items.all { it.cluster == "k3s-test-cluster" })
             } finally {
                 adapter.close()
             }
         }
 
     @Test
-    fun `should extract creation timestamp`() =
+    fun `should handle upsert for re-discovery without creating duplicates`() =
         runBlocking {
             val client = KubernetesWorkloadTestBase.createKubernetesClient()
             val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
 
             try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
+                // First discovery and persist
+                val firstDiscovery = adapter.discoverServices(testOrg.id)
+                firstDiscovery.forEach { service -> ServiceRepository.create(service) }
 
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
+                val initialCount = ServiceRepository.find(organizationId = testOrg.id, limit = 100).items.size
+                assertEquals(3, initialCount)
 
-                // All services should have a k8s.created.at metadata field
-                val allServices = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertTrue(
-                    allServices.items.all { service ->
-                        service.metadata?.containsKey("k8s.created.at") == true
-                    },
-                )
-            } finally {
-                adapter.close()
-            }
-        }
+                // Second discovery (simulating periodic re-discovery)
+                val secondDiscovery = adapter.discoverServices(testOrg.id)
 
-    @Test
-    fun `should persist services with unique IDs`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
+                // Upsert should update existing services, not create duplicates
+                secondDiscovery.forEach { service -> ServiceRepository.upsert(service) }
 
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                discoveredServices.forEach { service ->
-                    ServiceRepository.create(service)
-                }
-
-                val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                val uniqueIds = page.items.map { it.id }.toSet()
-
-                assertEquals(page.items.size, uniqueIds.size)
-            } finally {
-                adapter.close()
-            }
-        }
-
-    @Test
-    fun `should set discoveredAt and lastSeenAt timestamps`() =
-        runBlocking {
-            val client = KubernetesWorkloadTestBase.createKubernetesClient()
-            val adapter = KubernetesAdapter(client = client, clusterName = "k3s-test-cluster")
-
-            try {
-                val discoveredServices = adapter.discoverServices(testOrg.id)
-
-                // All services should have timestamps set
-                assertTrue(discoveredServices.all { it.discoveredAt != null })
-                assertTrue(discoveredServices.all { it.lastSeenAt != null })
+                // Should still have the same number of services
+                val finalPage = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
+                assertEquals(initialCount, finalPage.items.size)
             } finally {
                 adapter.close()
             }

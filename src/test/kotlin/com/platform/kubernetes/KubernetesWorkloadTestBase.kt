@@ -19,16 +19,33 @@ import java.time.Duration
  * with realistic traffic patterns suitable for Pixie integration.
  *
  * ## Deployed Workloads
- * - **PostgreSQL** (infrastructure namespace): Database with sample data
- * - **Redis** (infrastructure namespace): Cache server
- * - **API Gateway** (production namespace): Custom Ktor service that queries DB and cache
- * - **Traffic Generator** (production namespace): Continuous HTTP traffic to API Gateway
+ *
+ * ### Infrastructure Namespace (2 services)
+ * - **PostgreSQL**: Database with seeded sample data (users, orders tables)
+ * - **Redis**: Cache server for API Gateway
+ *
+ * ### Production Namespace (1 service + 1 deployment)
+ * - **API Gateway**: Custom Ktor service that queries DB and cache (has Service resource)
+ * - **Traffic Generator**: Continuous HTTP traffic to API Gateway (NO Service resource)
+ *
+ * **Note on Traffic Generator**: The traffic generator is intentionally deployed without
+ * a Kubernetes Service resource. It's a client application that makes outbound requests
+ * to the API Gateway but doesn't serve any inbound traffic. This is a realistic pattern
+ * for jobs, workers, and client applications in Kubernetes. It also tests the platform's
+ * ability to distinguish between "things running in the cluster" (Deployments) and
+ * "things discoverable as network services" (Services).
  *
  * ## Traffic Patterns
  * ```
  * traffic-generator --> api-gateway --> postgresql
  *                                   --> redis
  * ```
+ *
+ * ## Service Discovery
+ * The KubernetesAdapter discovers **3 services** (not 4):
+ * - api-gateway (production namespace)
+ * - postgresql (infrastructure namespace)
+ * - redis (infrastructure namespace)
  *
  * ## Manifests
  * All Kubernetes resources are defined in YAML files under `k8s/test-services/`.
@@ -113,9 +130,65 @@ abstract class KubernetesWorkloadTestBase {
                 waitForDeployment(client, "production", "traffic-generator", Duration.ofMinutes(1))
 
                 logger.info("All workloads deployed and running")
+
+                // Validate infrastructure is healthy before tests run
+                validatePostgreSql()
+                validateRedis()
             } finally {
                 client.close()
             }
+        }
+
+        /**
+         * Validate PostgreSQL is healthy and has seeded data.
+         */
+        private fun validatePostgreSql() {
+            val result =
+                k3s!!.execInContainer(
+                    "kubectl",
+                    "exec",
+                    "-n",
+                    "infrastructure",
+                    "deploy/postgresql",
+                    "--",
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    "testdb",
+                    "-t",
+                    "-c",
+                    "SELECT COUNT(*) FROM users;",
+                )
+            if (result.exitCode != 0) {
+                throw RuntimeException("PostgreSQL validation failed: ${result.stderr}")
+            }
+            val userCount = result.stdout.trim().toIntOrNull() ?: 0
+            if (userCount < 5) {
+                throw RuntimeException("PostgreSQL seed data missing: expected >= 5 users, found $userCount")
+            }
+            logger.info("PostgreSQL validated: $userCount users in database")
+        }
+
+        /**
+         * Validate Redis is healthy and responding.
+         */
+        private fun validateRedis() {
+            val result =
+                k3s!!.execInContainer(
+                    "kubectl",
+                    "exec",
+                    "-n",
+                    "infrastructure",
+                    "deploy/redis",
+                    "--",
+                    "redis-cli",
+                    "PING",
+                )
+            if (result.exitCode != 0 || result.stdout.trim() != "PONG") {
+                throw RuntimeException("Redis validation failed: expected PONG, got ${result.stdout}")
+            }
+            logger.info("Redis validated: responding to PING")
         }
 
         /**
