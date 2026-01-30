@@ -40,7 +40,7 @@ dependencies {
     implementation("org.jetbrains.exposed:exposed-jdbc:$exposed_version")
     implementation("org.jetbrains.exposed:exposed-java-time:$exposed_version")
     implementation("org.jetbrains.exposed:exposed-json:$exposed_version")
-    implementation("org.postgresql:postgresql:42.7.4")
+    implementation("org.postgresql:postgresql:42.7.7")
 
     // Database migrations
     implementation("org.flywaydb:flyway-core:9.22.3")
@@ -55,13 +55,13 @@ dependencies {
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktor_version")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:$kotlin_version")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
-    testImplementation("org.testcontainers:testcontainers:1.20.4")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-    testImplementation("org.testcontainers:postgresql:1.20.4")
-    testImplementation("org.testcontainers:k3s:1.20.4")
+    testImplementation("org.testcontainers:testcontainers:2.0.3")
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter:2.0.3")
+    testImplementation("org.testcontainers:testcontainers-postgresql:2.0.3")
+    testImplementation("org.testcontainers:testcontainers-k3s:2.0.3")
     testImplementation("io.mockk:mockk:1.13.9")
     // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
-    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.77")
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.79")
 
     // Ktor client for integration tests
     testImplementation("io.ktor:ktor-client-cio-jvm:$ktor_version")

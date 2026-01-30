@@ -5,7 +5,7 @@ import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
-import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.postgresql.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
 
 /**
@@ -42,7 +42,7 @@ import org.testcontainers.utility.DockerImageName
  */
 abstract class DatabaseTestBase {
     companion object {
-        private var postgres: PostgreSQLContainer<*>? = null
+        private var postgres: PostgreSQLContainer? = null
         private var initialized = false
 
         @BeforeAll
@@ -60,9 +60,9 @@ abstract class DatabaseTestBase {
                 }
 
             DatabaseFactory.init(
-                jdbcUrl = postgres!!.jdbcUrl,
-                username = postgres!!.username,
-                password = postgres!!.password,
+                jdbcUrl = postgres!!.getJdbcUrl(),
+                username = postgres!!.getUsername(),
+                password = postgres!!.getPassword(),
             )
         }
     }
