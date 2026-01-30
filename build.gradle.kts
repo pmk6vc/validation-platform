@@ -84,6 +84,10 @@ tasks.test {
         environment("DOCKER_HOST", "unix://${colimaSocket.absolutePath}")
         environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
     }
+
+    // Build test service Docker images before running integration tests
+    dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:traffic-generator:jibDockerBuild")
 }
 
 tasks.register<Exec>("dockerUp") {
