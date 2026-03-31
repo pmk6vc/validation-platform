@@ -406,9 +406,39 @@ interface ServiceAdapter {
 
 **Test Infrastructure:**
 
-- `KubernetesWorkloadTestBase` - Spins up k3s cluster with test workloads (PostgreSQL, Redis, API Gateway, traffic generator) using TestContainers
+- `KubernetesWorkloadTestBase` - Spins up k3s cluster with test workloads using TestContainers
 - Manifests in `k8s/test-services/` used for both automated tests and local development
 - Handles Colima socket complexities for image loading
+
+**Current test services (insufficient for Pixie validation):**
+```
+traffic-generator → api-gateway → PostgreSQL
+                                → Redis
+```
+One application service, two infra deps, HTTP only. No service-to-service calls, no Kafka, no async patterns, no external API calls, no per-service databases.
+
+**Target test services (exercises every dependency type):**
+```
+traffic-generator → api-gateway → order-service    → orders-db (PostgreSQL)
+                                                    → Kafka (produce: order-events)
+                                → user-service     → users-db (PostgreSQL)
+                                → Redis (cache)
+
+Kafka (consume: order-events)  → notification-service → external HTTP endpoint (webhook stub)
+                                                       → notifications-db (PostgreSQL)
+```
+
+| Dependency type | Exercised by |
+|----------------|-------------|
+| APPLICATION | api-gateway → order-service, api-gateway → user-service |
+| DATASTORE | order-service → orders-db, user-service → users-db, notification-service → notifications-db |
+| MESSAGE_QUEUE | order-service produces to Kafka, notification-service consumes |
+| CACHE | api-gateway → Redis |
+| EXTERNAL | notification-service → webhook stub (simple HTTP server outside the cluster) |
+
+Each application service owns its own database (not a shared Postgres). The external HTTP endpoint is a simple stub — not a real third-party service, just enough to prove the RECORDED proxy works. The Kafka path creates a real async coupling between order-service and notification-service.
+
+This setup must be in place **before** Pixie integration, since Pixie needs representative traffic patterns to observe.
 
 ---
 
@@ -532,12 +562,23 @@ Adapters normalize data from different sources into the unified model.
 
 ---
 
-### Phase 2: Pixie Integration & Traffic Capture
+### Phase 2: Test Services Expansion + Pixie Integration
 
-Pixie is the prerequisite for everything — without observed traffic, there's nothing to replay and no topology to build.
+Pixie is the prerequisite for everything — without observed traffic, there's nothing to replay and no topology to build. But Pixie needs representative traffic patterns to observe, so the test services must be expanded first.
 
-**Week 3: Pixie Setup + Traffic Capture**
-- [ ] Deploy Pixie to kind cluster
+**Week 3: Expand Test Microservices**
+- [ ] Implement order-service (HTTP API, PostgreSQL for orders-db, Kafka producer)
+- [ ] Implement user-service (HTTP API, PostgreSQL for users-db)
+- [ ] Implement notification-service (Kafka consumer, PostgreSQL for notifications-db, external HTTP call)
+- [ ] Add Kafka to k8s/test-services infrastructure
+- [ ] Add per-service PostgreSQL instances (orders-db, users-db, notifications-db)
+- [ ] Add webhook stub (simple HTTP server outside cluster for EXTERNAL dep testing)
+- [ ] Update api-gateway to route to order-service and user-service
+- [ ] Update traffic-generator to exercise all paths (orders, users, async notification flow)
+- [ ] Update KubernetesWorkloadTestBase and integration tests
+
+**Week 4: Pixie Setup + Traffic Capture**
+- [ ] Deploy Pixie to k3s test cluster
 - [ ] Implement PixieAdapter (services, dependencies, HTTP events)
 - [ ] CapturedInput model + database migration + repository
 - [ ] Store captured inputs (HTTP requests with bodies)
