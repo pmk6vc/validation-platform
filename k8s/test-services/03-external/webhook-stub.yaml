@@ -1,0 +1,51 @@
+# Webhook stub: simulates an external third-party API.
+# Deployed in a separate namespace to represent a service outside the production cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-stub
+  namespace: external
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webhook-stub
+  template:
+    metadata:
+      labels:
+        app: webhook-stub
+    spec:
+      containers:
+        - name: webhook-stub
+          image: docker.io/library/test-webhook-stub:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "10m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-stub
+  namespace: external
+  labels:
+    app: webhook-stub
+    app.kubernetes.io/name: webhook-stub
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: external-api
+  annotations:
+    description: Simulates a third-party webhook endpoint
+spec:
+  type: ClusterIP
+  selector:
+    app: webhook-stub
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -19,14 +19,17 @@ repositories {
 val ktor_version = "3.1.3"
 
 dependencies {
-    // Ktor server (minimal)
+    // Ktor server
     implementation("io.ktor:ktor-server-core-jvm:$ktor_version")
     implementation("io.ktor:ktor-server-netty-jvm:$ktor_version")
     implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktor_version")
     implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
 
-    // Database connections
-    implementation("org.postgresql:postgresql:42.7.4")
+    // Ktor client (for proxying to backend services)
+    implementation("io.ktor:ktor-client-core-jvm:$ktor_version")
+    implementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
+
+    // Cache
     implementation("redis.clients:jedis:5.1.0")
 
     // Logging
@@ -63,15 +66,6 @@ jib {
     container {
         mainClass = "com.platform.testservices.ApiGatewayKt"
         ports = listOf("8080")
-        environment = mapOf(
-            "POSTGRES_HOST" to "postgresql.infrastructure.svc.cluster.local",
-            "POSTGRES_PORT" to "5432",
-            "POSTGRES_DB" to "testdb",
-            "POSTGRES_USER" to "postgres",
-            "POSTGRES_PASSWORD" to "testpass",
-            "REDIS_HOST" to "redis.infrastructure.svc.cluster.local",
-            "REDIS_PORT" to "6379"
-        )
         jvmFlags = listOf("-Xms64m", "-Xmx128m")
     }
 }

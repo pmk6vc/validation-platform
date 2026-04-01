@@ -87,6 +87,9 @@ tasks.test {
 
     // Build test service Docker images before running integration tests
     dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:order-service:jibDockerBuild")
+    dependsOn(":test-services:notification-service:jibDockerBuild")
+    dependsOn(":test-services:webhook-stub:jibDockerBuild")
     dependsOn(":test-services:traffic-generator:jibDockerBuild")
 }
 
@@ -107,6 +110,9 @@ tasks.register("testServicesBuild") {
     group = "test-services"
     description = "Build test service Docker images"
     dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:order-service:jibDockerBuild")
+    dependsOn(":test-services:notification-service:jibDockerBuild")
+    dependsOn(":test-services:webhook-stub:jibDockerBuild")
     dependsOn(":test-services:traffic-generator:jibDockerBuild")
 }
 
