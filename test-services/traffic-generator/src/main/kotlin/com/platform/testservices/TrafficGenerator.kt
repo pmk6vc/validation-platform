@@ -3,132 +3,158 @@ package com.platform.testservices
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.random.Random
 
 /**
- * Traffic generator that continuously sends requests to the API Gateway.
+ * Traffic generator that sends concurrent requests to the API Gateway.
  *
- * This creates realistic traffic patterns for Pixie to capture, including:
- * - Health checks
- * - User list queries (triggers PostgreSQL + Redis cache)
- * - Individual user lookups
- * - Order queries with database joins
+ * Launches multiple coroutines that independently:
+ * - GET /api/orders/{random id} (random order lookups, cache hit/miss via LRU)
+ * - POST /api/orders (creates orders, triggers Kafka → notification → webhook)
+ * - GET /api/health (periodic health checks)
  */
 
-// Request counters for periodic summary
-private val healthRequests = AtomicLong(0)
-private val userRequests = AtomicLong(0)
-private val orderRequests = AtomicLong(0)
+private val logger = LoggerFactory.getLogger("TrafficGenerator")
+private val json = Json { ignoreUnknownKeys = true }
+
+private val getRequests = AtomicLong(0)
+private val postRequests = AtomicLong(0)
 private val errorCount = AtomicLong(0)
-private val lastSummaryTime = AtomicLong(System.currentTimeMillis())
+private val maxOrderId = AtomicLong(1)
 
 private const val SUMMARY_INTERVAL_MS = 30_000L
 
-fun main() = runBlocking {
-    val logger = LoggerFactory.getLogger("TrafficGenerator")
+@Serializable
+data class OrderSummary(val id: Int, val total: Double, val status: String, val createdAt: String)
 
+fun main() {
+    runBlocking {
     val apiGatewayHost = System.getenv("API_GATEWAY_HOST") ?: "api-gateway.production.svc.cluster.local"
     val apiGatewayPort = System.getenv("API_GATEWAY_PORT")?.toIntOrNull() ?: 8080
-    val delayBetweenRoundsMs = System.getenv("DELAY_BETWEEN_ROUNDS_MS")?.toLongOrNull() ?: 2000L
     val initialDelayMs = System.getenv("INITIAL_DELAY_MS")?.toLongOrNull() ?: 30000L
+    val concurrency = System.getenv("CONCURRENCY")?.toIntOrNull() ?: 5
 
     val baseUrl = "http://$apiGatewayHost:$apiGatewayPort"
 
     logger.info("Traffic Generator starting")
     logger.info("Target: $baseUrl")
+    logger.info("Concurrency: $concurrency reader coroutines")
     logger.info("Initial delay: ${initialDelayMs}ms")
-    logger.info("Delay between rounds: ${delayBetweenRoundsMs}ms")
 
-    // Wait for API Gateway to be ready
-    logger.info("Waiting for API Gateway to be ready...")
     delay(initialDelayMs)
 
     val client = HttpClient(CIO) {
         engine {
             requestTimeout = 10000
+            maxConnectionsCount = 100
         }
     }
 
-    logger.info("Starting traffic generation...")
+    // Fetch initial order count from the API
+    initMaxOrderId(client, baseUrl)
 
-    var round = 0L
-    while (true) {
-        round++
+    logger.info("Starting traffic generation with maxOrderId=${maxOrderId.get()}...")
+
+    coroutineScope {
+        launch { healthLoop(client, baseUrl) }
+
+        repeat(concurrency) {
+            launch { readerLoop(client, baseUrl) }
+        }
+
+        launch { writerLoop(client, baseUrl) }
+
+        launch { summaryLoop() }
+    }
+    }
+}
+
+private suspend fun initMaxOrderId(client: HttpClient, baseUrl: String) {
+    for (attempt in 1..30) {
         try {
-            // Health check
-            makeRequest(client, logger, "$baseUrl/api/health", "health")
-            healthRequests.incrementAndGet()
-
-            // List all users (cache miss then hit pattern)
-            makeRequest(client, logger, "$baseUrl/api/users", "users")
-            userRequests.incrementAndGet()
-
-            // Get individual users
-            for (userId in 1..3) {
-                makeRequest(client, logger, "$baseUrl/api/users/$userId", "user-$userId")
-                userRequests.incrementAndGet()
-            }
-
-            // List all orders (database join)
-            makeRequest(client, logger, "$baseUrl/api/orders", "orders")
-            orderRequests.incrementAndGet()
-
-            // Get orders by user
-            for (userId in 1..2) {
-                makeRequest(client, logger, "$baseUrl/api/orders/$userId", "orders-user-$userId")
-                orderRequests.incrementAndGet()
+            val response = client.get("$baseUrl/api/orders").bodyAsText()
+            val orders = json.decodeFromString<List<OrderSummary>>(response)
+            if (orders.isNotEmpty()) {
+                maxOrderId.set(orders.maxOf { it.id }.toLong())
+                logger.info("Initialized maxOrderId=${maxOrderId.get()} from ${orders.size} existing orders")
+                return
             }
         } catch (e: Exception) {
-            logger.warn("Error in traffic round $round: ${e.message}")
+            logger.warn("Waiting for API Gateway... (attempt $attempt/30): ${e.message}")
+        }
+        delay(2000)
+    }
+    logger.warn("Could not fetch initial orders, starting with maxOrderId=1")
+}
+
+private suspend fun healthLoop(client: HttpClient, baseUrl: String) {
+    while (true) {
+        try {
+            client.get("$baseUrl/api/health")
+            getRequests.incrementAndGet()
+        } catch (e: Exception) {
             errorCount.incrementAndGet()
         }
-
-        // Log summary periodically
-        logSummaryIfNeeded(logger)
-
-        delay(delayBetweenRoundsMs)
+        delay(5000)
     }
 }
 
-private fun logSummaryIfNeeded(logger: org.slf4j.Logger) {
-    val now = System.currentTimeMillis()
-    val lastTime = lastSummaryTime.get()
-    if (now - lastTime >= SUMMARY_INTERVAL_MS) {
-        if (lastSummaryTime.compareAndSet(lastTime, now)) {
-            val health = healthRequests.getAndSet(0)
-            val users = userRequests.getAndSet(0)
-            val orders = orderRequests.getAndSet(0)
-            val errors = errorCount.getAndSet(0)
-            val total = health + users + orders
-
-            logger.info(
-                "Traffic summary (last 30s): {} requests sent (health={}, users={}, orders={}), errors={}",
-                total,
-                health,
-                users,
-                orders,
-                errors
-            )
+private suspend fun readerLoop(client: HttpClient, baseUrl: String) {
+    while (true) {
+        try {
+            val orderId = Random.nextInt(1, maxOrderId.get().toInt() + 1)
+            client.get("$baseUrl/api/orders/$orderId")
+            getRequests.incrementAndGet()
+        } catch (e: Exception) {
+            errorCount.incrementAndGet()
         }
+        delay(Random.nextLong(200, 800))
     }
 }
 
-private suspend fun makeRequest(
-    client: HttpClient,
-    logger: org.slf4j.Logger,
-    url: String,
-    label: String,
-) {
-    try {
-        val response = client.get(url)
-        val status = response.status.value
-        if (status >= 400) {
-            logger.warn("[$label] $url -> $status")
+private suspend fun writerLoop(client: HttpClient, baseUrl: String) {
+    while (true) {
+        try {
+            val total = 10.0 + (Random.nextDouble() * 490.0)
+            val response = client.post("$baseUrl/api/orders") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"total": ${"%.2f".format(total)}}""")
+            }
+            if (response.status.value < 400) {
+                maxOrderId.incrementAndGet()
+                postRequests.incrementAndGet()
+            } else {
+                errorCount.incrementAndGet()
+            }
+        } catch (e: Exception) {
+            errorCount.incrementAndGet()
         }
-    } catch (e: Exception) {
-        logger.warn("[$label] $url -> ERROR: ${e.message}")
+        delay(Random.nextLong(1000, 3000))
+    }
+}
+
+private suspend fun summaryLoop() {
+    while (true) {
+        delay(SUMMARY_INTERVAL_MS)
+        val gets = getRequests.getAndSet(0)
+        val posts = postRequests.getAndSet(0)
+        val errors = errorCount.getAndSet(0)
+        logger.info(
+            "Traffic summary (last 30s): {} reads, {} writes, {} errors, maxOrderId={}",
+            gets, posts, errors, maxOrderId.get()
+        )
     }
 }

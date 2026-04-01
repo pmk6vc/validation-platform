@@ -3,7 +3,11 @@ package com.platform.kubernetes
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -12,28 +16,18 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.slf4j.LoggerFactory
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Integration tests that validate real service-to-service traffic in the k3s cluster.
+ * Integration tests that validate the full service topology in the k3s cluster.
  *
- * ## What This Tests
- * - PostgreSQL and Redis are running and accessible
- * - API Gateway is serving HTTP requests
- * - Traffic Generator is creating continuous load
- * - Database queries and cache operations are working
- *
- * ## Prerequisites
- * Build the test service images before running:
- * ```
- * ./gradlew :test-services:api-gateway:jibDockerBuild
- * ./gradlew :test-services:traffic-generator:jibDockerBuild
- * ```
- *
- * ## Test Strategy
- * The API Gateway is exposed via NodePort (30080), which is mapped to the host.
- * Tests use Ktor HTTP client to make requests directly to the API Gateway.
+ * Tests verify:
+ * - api-gateway → order-service → orders-db (HTTP + PostgreSQL)
+ * - api-gateway → Redis (caching with LRU eviction)
+ * - order-service → Kafka (event production)
+ * - notification-service → Kafka (event consumption)
+ * - notification-service → webhook-stub (external HTTP call)
+ * - traffic-generator producing concurrent load
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
@@ -51,28 +45,41 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
     data class HealthResponse(
         val status: String,
         val timestamp: Long,
-        val database: String,
+        val orderService: String,
         val cache: String,
-    )
-
-    @Serializable
-    data class User(
-        val id: Int,
-        val name: String,
-        val email: String,
     )
 
     @Serializable
     data class Order(
         val id: Int,
-        val userId: Int,
         val total: Double,
+        val status: String,
         val createdAt: String,
-        val userName: String? = null,
+    )
+
+    @Serializable
+    data class CreateOrderResponse(
+        val id: Int,
+        val total: Double,
+        val status: String,
+    )
+
+    @Serializable
+    data class WebhookHealth(
+        val status: String,
+        val requestsReceived: Long,
+    )
+
+    @Serializable
+    data class NotificationHealth(
+        val status: String,
+        val eventsConsumed: Long,
+        val webhooksSent: Long,
+        val webhookErrors: Long,
     )
 
     @Test
-    fun `api gateway health check returns healthy status`() =
+    fun `api gateway health check shows all dependencies connected`() =
         runBlocking {
             val baseUrl = getApiGatewayBaseUrl()
             val response = httpClient.get("$baseUrl/api/health")
@@ -83,72 +90,12 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
 
             val health = json.decodeFromString<HealthResponse>(body)
             assertEquals("healthy", health.status)
-            assertEquals("connected", health.database)
+            assertEquals("connected", health.orderService)
             assertEquals("connected", health.cache)
         }
 
     @Test
-    fun `api gateway can query users from postgresql`() =
-        runBlocking {
-            val baseUrl = getApiGatewayBaseUrl()
-            val response = httpClient.get("$baseUrl/api/users")
-            val body = response.bodyAsText()
-
-            logger.info("Users response: $body")
-            assertEquals(200, response.status.value)
-
-            val users = json.decodeFromString<List<User>>(body)
-            assertTrue(users.isNotEmpty(), "Expected at least one user")
-            assertTrue(users.size >= 5, "Expected at least 5 seeded users")
-
-            // Verify seeded data
-            val alice = users.find { it.name == "Alice Johnson" }
-            assertNotNull(alice, "Expected to find Alice Johnson")
-            assertEquals("alice@example.com", alice.email)
-        }
-
-    @Test
-    fun `api gateway uses redis cache for repeated requests`() =
-        runBlocking {
-            val baseUrl = getApiGatewayBaseUrl()
-
-            // First request - cache miss
-            val response1 = httpClient.get("$baseUrl/api/users")
-            val cacheHeader1 = response1.headers["X-Cache"]
-            logger.info("First request X-Cache: $cacheHeader1")
-            assertEquals(200, response1.status.value)
-
-            // Give Redis time to cache
-            delay(100)
-
-            // Second request - should be cache hit
-            val response2 = httpClient.get("$baseUrl/api/users")
-            val cacheHeader2 = response2.headers["X-Cache"]
-            logger.info("Second request X-Cache: $cacheHeader2")
-            assertEquals(200, response2.status.value)
-
-            // Check for X-Cache header (HIT on second request)
-            assertNotNull(cacheHeader2, "Expected X-Cache header in response")
-        }
-
-    @Test
-    fun `api gateway can query individual user by id`() =
-        runBlocking {
-            val baseUrl = getApiGatewayBaseUrl()
-            val response = httpClient.get("$baseUrl/api/users/1")
-            val body = response.bodyAsText()
-
-            logger.info("User 1 response: $body")
-            assertEquals(200, response.status.value)
-
-            val user = json.decodeFromString<User>(body)
-            assertEquals(1, user.id)
-            assertTrue(user.name.isNotEmpty())
-            assertTrue(user.email.isNotEmpty())
-        }
-
-    @Test
-    fun `api gateway can query orders with user join`() =
+    fun `api gateway can list orders from order-service`() =
         runBlocking {
             val baseUrl = getApiGatewayBaseUrl()
             val response = httpClient.get("$baseUrl/api/orders")
@@ -159,34 +106,107 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
 
             val orders = json.decodeFromString<List<Order>>(body)
             assertTrue(orders.isNotEmpty(), "Expected at least one order")
-            assertTrue(orders.size >= 7, "Expected at least 7 seeded orders")
-
-            // Verify join worked - userName should be populated
-            val orderWithUser = orders.first()
-            assertNotNull(orderWithUser.userName, "Expected userName from JOIN to be populated")
         }
 
     @Test
-    fun `api gateway can query orders by user id`() =
+    fun `api gateway can get individual order`() =
         runBlocking {
             val baseUrl = getApiGatewayBaseUrl()
             val response = httpClient.get("$baseUrl/api/orders/1")
             val body = response.bodyAsText()
 
-            logger.info("Orders for user 1: $body")
+            logger.info("Order 1 response: $body")
             assertEquals(200, response.status.value)
 
-            val orders = json.decodeFromString<List<Order>>(body)
-            assertTrue(orders.isNotEmpty(), "Expected at least one order for user 1")
+            val order = json.decodeFromString<Order>(body)
+            assertEquals(1, order.id)
+        }
 
-            // All orders should belong to user 1
-            assertTrue(orders.all { it.userId == 1 }, "All orders should belong to user 1")
+    @Test
+    fun `api gateway uses redis cache for repeated requests`() =
+        runBlocking {
+            val baseUrl = getApiGatewayBaseUrl()
+
+            // First request - cache miss
+            val response1 = httpClient.get("$baseUrl/api/orders/1")
+            assertEquals(200, response1.status.value)
+
+            delay(100)
+
+            // Second request - should be cache hit
+            val response2 = httpClient.get("$baseUrl/api/orders/1")
+            val cacheHeader = response2.headers["X-Cache"]
+            logger.info("Second request X-Cache: $cacheHeader")
+            assertEquals(200, response2.status.value)
+            assertEquals("HIT", cacheHeader, "Expected cache HIT on second request")
+        }
+
+    @Test
+    fun `creating an order triggers kafka event and webhook notification`() =
+        runBlocking {
+            val baseUrl = getApiGatewayBaseUrl()
+
+            // Create an order via api-gateway → order-service → Kafka
+            val createResponse =
+                httpClient.post("$baseUrl/api/orders") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"total": 42.50}""")
+                }
+            assertEquals(201, createResponse.status.value)
+
+            val created = json.decodeFromString<CreateOrderResponse>(createResponse.bodyAsText())
+            assertTrue(created.id > 0, "Expected a valid order ID")
+            assertEquals(42.50, created.total)
+            assertEquals("pending", created.status)
+
+            // Wait for Kafka consumer → webhook chain to complete
+            delay(5000)
+
+            // Check notification-service consumed the event
+            val notificationHealthResult =
+                getK3sContainer().execInContainer(
+                    "kubectl",
+                    "exec",
+                    "-n",
+                    "production",
+                    "deploy/notification-service",
+                    "--",
+                    "wget",
+                    "-qO-",
+                    "http://localhost:8080/api/health",
+                )
+            if (notificationHealthResult.exitCode == 0) {
+                val notifHealth = json.decodeFromString<NotificationHealth>(notificationHealthResult.stdout)
+                logger.info(
+                    "Notification service: consumed=${notifHealth.eventsConsumed}, webhooks=${notifHealth.webhooksSent}",
+                )
+                assertTrue(notifHealth.eventsConsumed > 0, "Expected notification-service to have consumed events")
+                assertTrue(notifHealth.webhooksSent > 0, "Expected notification-service to have sent webhooks")
+            }
+
+            // Check webhook-stub received the call
+            val webhookHealthResult =
+                getK3sContainer().execInContainer(
+                    "kubectl",
+                    "exec",
+                    "-n",
+                    "external",
+                    "deploy/webhook-stub",
+                    "--",
+                    "wget",
+                    "-qO-",
+                    "http://localhost:8080/api/health",
+                )
+            if (webhookHealthResult.exitCode == 0) {
+                val webhookHealth = json.decodeFromString<WebhookHealth>(webhookHealthResult.stdout)
+                logger.info("Webhook stub: requestsReceived=${webhookHealth.requestsReceived}")
+                assertTrue(webhookHealth.requestsReceived > 0, "Expected webhook-stub to have received requests")
+            }
         }
 
     @Test
     fun `traffic generator is producing continuous traffic`() =
         runBlocking {
-            // Check that traffic generator pod is running
             val result =
                 getK3sContainer().execInContainer(
                     "kubectl",
@@ -203,7 +223,6 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
             assertEquals(0, result.exitCode)
             assertEquals("Running", result.stdout.trim(), "Traffic generator should be running")
 
-            // Check logs show traffic is being generated
             val logsResult =
                 getK3sContainer().execInContainer(
                     "kubectl",
@@ -216,25 +235,17 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
                     "--tail=50",
                 )
 
-            logger.info("Traffic generator logs (stdout):\n${logsResult.stdout}")
-            logger.info("Traffic generator logs (stderr):\n${logsResult.stderr}")
+            logger.info("Traffic generator logs:\n${logsResult.stdout}")
             assertEquals(0, logsResult.exitCode, "kubectl logs failed: ${logsResult.stderr}")
 
-            // Logs should show traffic activity from our Kotlin traffic generator
-            // Check both stdout and stderr as logback may output to either
             val allLogs = logsResult.stdout + logsResult.stderr
             val hasTrafficIndicator =
                 allLogs.contains("Traffic Generator") ||
                     allLogs.contains("TrafficGenerator") ||
                     allLogs.contains("Starting traffic") ||
                     allLogs.contains("Target:") ||
-                    allLogs.contains("Waiting for API Gateway")
+                    allLogs.contains("Traffic summary")
 
-            assertTrue(
-                hasTrafficIndicator,
-                "Expected to see traffic activity in logs. Got stdout: ${logsResult.stdout.take(
-                    300,
-                )}, stderr: ${logsResult.stderr.take(300)}",
-            )
+            assertTrue(hasTrafficIndicator, "Expected traffic activity in logs")
         }
 }

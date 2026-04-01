@@ -1,0 +1,160 @@
+# orders-db: PostgreSQL instance owned by order-service
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-db-init
+  namespace: infrastructure
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        total DECIMAL(10, 2) NOT NULL,
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO orders (total, status) VALUES
+        (99.99, 'completed'),
+        (149.50, 'completed'),
+        (75.00, 'pending'),
+        (200.00, 'completed'),
+        (50.25, 'completed'),
+        (300.00, 'pending'),
+        (125.75, 'completed');
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-db
+  namespace: infrastructure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orders-db
+  template:
+    metadata:
+      labels:
+        app: orders-db
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_PASSWORD
+              value: testpass
+            - name: POSTGRES_DB
+              value: ordersdb
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: orders-db-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-db
+  namespace: infrastructure
+  labels:
+    app: orders-db
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/version: "16.1"
+    app.kubernetes.io/component: database
+    team: orders
+  annotations:
+    description: PostgreSQL database for order-service
+spec:
+  type: ClusterIP
+  selector:
+    app: orders-db
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+---
+# order-service: HTTP API + Kafka producer
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+        version: v1
+    spec:
+      containers:
+        - name: order-service
+          image: docker.io/library/test-order-service:latest
+          imagePullPolicy: Never
+          env:
+            - name: POSTGRES_HOST
+              value: orders-db.infrastructure.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: ordersdb
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: testpass
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka.infrastructure.svc.cluster.local:9092
+            - name: KAFKA_TOPIC
+              value: order-events
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: production
+  labels:
+    app: order-service
+    app.kubernetes.io/name: order-service
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: backend
+    team: orders
+  annotations:
+    description: Order management service
+spec:
+  type: ClusterIP
+  selector:
+    app: order-service
+    version: v1
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,11 +1,16 @@
 plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
+    id("io.ktor.plugin")
     id("com.google.cloud.tools.jib")
 }
 
 group = "com.platform.testservices"
 version = "1.0.0"
+
+application {
+    mainClass.set("com.platform.testservices.NotificationServiceKt")
+}
 
 repositories {
     mavenCentral()
@@ -14,17 +19,28 @@ repositories {
 val ktor_version = "3.1.3"
 
 dependencies {
-    // Ktor client
+    // Ktor server (for health endpoint)
+    implementation("io.ktor:ktor-server-core-jvm:$ktor_version")
+    implementation("io.ktor:ktor-server-netty-jvm:$ktor_version")
+    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktor_version")
+    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
+
+    // Ktor client (for webhook calls)
     implementation("io.ktor:ktor-client-core-jvm:$ktor_version")
     implementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
     implementation("io.ktor:ktor-client-content-negotiation-jvm:$ktor_version")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
 
-    // Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    // Kafka consumer
+    implementation("org.apache.kafka:kafka-clients:3.6.2")
 
     // Logging
     implementation("ch.qos.logback:logback-classic:1.4.14")
+}
+
+ktor {
+    fatJar {
+        archiveFileName.set("notification-service.jar")
+    }
 }
 
 // Detect current architecture for Jib
@@ -33,7 +49,6 @@ val jibArch = when (System.getProperty("os.arch")) {
     else -> "amd64"
 }
 
-// Jib configuration to build Docker image
 jib {
     from {
         image = "eclipse-temurin:21-jre-alpine"
@@ -45,11 +60,12 @@ jib {
         }
     }
     to {
-        image = "test-traffic-generator"
+        image = "test-notification-service"
         tags = setOf("latest")
     }
     container {
-        mainClass = "com.platform.testservices.TrafficGeneratorKt"
-        jvmFlags = listOf("-Xms32m", "-Xmx64m")
+        mainClass = "com.platform.testservices.NotificationServiceKt"
+        ports = listOf("8080")
+        jvmFlags = listOf("-Xms64m", "-Xmx128m")
     }
 }

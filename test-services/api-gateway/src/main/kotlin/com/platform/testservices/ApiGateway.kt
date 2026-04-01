@@ -1,49 +1,52 @@
 package com.platform.testservices
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Routing
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import redis.clients.jedis.JedisPool
 import redis.clients.jedis.JedisPoolConfig
-import java.sql.Connection
-import java.sql.DriverManager
 import java.util.Timer
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.fixedRateTimer
 
 /**
- * Test API Gateway service for k3s integration testing.
+ * API Gateway - routes requests to order-service with Redis caching.
  *
- * This service provides realistic HTTP endpoints that make actual connections
- * to PostgreSQL and Redis, generating traffic patterns that Pixie can capture.
+ * Redis is configured with maxmemory + allkeys-lru eviction, so we get a
+ * realistic mix of cache hits and misses without manual TTL management.
  *
- * Endpoints:
+ * Routes:
  * - GET /api/health - Health check
- * - GET /api/users - List users (with Redis caching)
- * - GET /api/users/{id} - Get user by ID
- * - GET /api/orders - List orders with user join
- * - GET /api/orders/{userId} - Get orders for a specific user
+ * - GET /api/orders - List orders (cached, proxied to order-service)
+ * - GET /api/orders/{id} - Get order (cached, proxied to order-service)
+ * - POST /api/orders - Create order (proxied to order-service, invalidates list cache)
  */
 
 private val logger = LoggerFactory.getLogger("ApiGateway")
 
-// Request counters for periodic summary
 private val totalRequests = AtomicLong(0)
 private val cacheHits = AtomicLong(0)
 private val cacheMisses = AtomicLong(0)
@@ -51,38 +54,27 @@ private val errorCount = AtomicLong(0)
 
 private const val SUMMARY_INTERVAL_MS = 30_000L
 
-// Environment configuration
-private val pgHost = System.getenv("POSTGRES_HOST") ?: "localhost"
-private val pgPort = System.getenv("POSTGRES_PORT") ?: "5432"
-private val pgDb = System.getenv("POSTGRES_DB") ?: "testdb"
-private val pgUser = System.getenv("POSTGRES_USER") ?: "postgres"
-private val pgPassword = System.getenv("POSTGRES_PASSWORD") ?: "testpass"
+private val orderServiceHost = System.getenv("ORDER_SERVICE_HOST") ?: "localhost"
+private val orderServicePort = System.getenv("ORDER_SERVICE_PORT") ?: "8080"
 private val redisHost = System.getenv("REDIS_HOST") ?: "localhost"
 private val redisPort = (System.getenv("REDIS_PORT") ?: "6379").toInt()
 
-private val dbUrl = "jdbc:postgresql://$pgHost:$pgPort/$pgDb"
+private val orderServiceUrl = "http://$orderServiceHost:$orderServicePort"
 
-// Connection pools
 private lateinit var jedisPool: JedisPool
+private lateinit var httpClient: HttpClient
 
 @Serializable
-data class User(val id: Int, val name: String, val email: String)
-
-@Serializable
-data class Order(val id: Int, val userId: Int, val total: Double, val createdAt: String, val userName: String? = null)
-
-@Serializable
-data class HealthResponse(val status: String, val timestamp: Long, val database: String, val cache: String)
+data class HealthResponse(val status: String, val timestamp: Long, val orderService: String, val cache: String)
 
 @Serializable
 data class ErrorResponse(val error: String, val code: Int)
 
 fun main() {
     logger.info("Starting API Gateway...")
-    logger.info("PostgreSQL: $pgHost:$pgPort/$pgDb")
+    logger.info("Order Service: $orderServiceUrl")
     logger.info("Redis: $redisHost:$redisPort")
 
-    // Initialize Redis connection pool
     val poolConfig = JedisPoolConfig().apply {
         maxTotal = 10
         maxIdle = 5
@@ -91,28 +83,24 @@ fun main() {
     }
     jedisPool = JedisPool(poolConfig, redisHost, redisPort)
 
-    // Wait for dependencies to be ready
-    waitForDependencies()
+    httpClient = HttpClient(CIO) {
+        engine { requestTimeout = 10000 }
+    }
 
-    // Start background summary logger
+    waitForDependencies()
     startSummaryLogger()
 
     embeddedServer(Netty, port = 8080) {
         install(ContentNegotiation) {
             json(Json { prettyPrint = true })
         }
-
         routing {
             healthRoutes()
-            userRoutes()
             orderRoutes()
         }
     }.start(wait = true)
 }
 
-/**
- * Starts a background timer that logs request summary every 30 seconds.
- */
 private fun startSummaryLogger(): Timer {
     return fixedRateTimer("summary-logger", daemon = true, initialDelay = SUMMARY_INTERVAL_MS, period = SUMMARY_INTERVAL_MS) {
         val total = totalRequests.getAndSet(0)
@@ -123,44 +111,19 @@ private fun startSummaryLogger(): Timer {
         if (total > 0) {
             logger.info(
                 "Request summary (last 30s): {} served, cache hits={}, misses={}, errors={}",
-                total,
-                hits,
-                misses,
-                errors
+                total, hits, misses, errors
             )
         }
     }
 }
 
-/**
- * Wait for PostgreSQL and Redis to be available before starting.
- */
 private fun waitForDependencies() {
     val maxRetries = 30
+
     var retries = 0
-
-    // Wait for PostgreSQL
     while (retries < maxRetries) {
         try {
-            getConnection().use { conn ->
-                conn.createStatement().execute("SELECT 1")
-            }
-            logger.info("PostgreSQL is ready")
-            break
-        } catch (e: Exception) {
-            retries++
-            logger.warn("Waiting for PostgreSQL... (attempt $retries/$maxRetries)")
-            Thread.sleep(1000)
-        }
-    }
-
-    // Wait for Redis
-    retries = 0
-    while (retries < maxRetries) {
-        try {
-            jedisPool.resource.use { jedis ->
-                jedis.ping()
-            }
+            jedisPool.resource.use { jedis -> jedis.ping() }
             logger.info("Redis is ready")
             break
         } catch (e: Exception) {
@@ -169,239 +132,59 @@ private fun waitForDependencies() {
             Thread.sleep(1000)
         }
     }
+
+    retries = 0
+    while (retries < maxRetries) {
+        try {
+            java.net.URI("$orderServiceUrl/api/health").toURL().readText()
+            logger.info("Order Service is ready")
+            break
+        } catch (e: Exception) {
+            retries++
+            logger.warn("Waiting for Order Service... (attempt $retries/$maxRetries)")
+            Thread.sleep(1000)
+        }
+    }
 }
 
-private fun getConnection(): Connection {
-    return DriverManager.getConnection(dbUrl, pgUser, pgPassword)
-}
-
-/**
- * Health check routes
- */
 private fun Routing.healthRoutes() {
     get("/api/health") {
         totalRequests.incrementAndGet()
-        val (dbStatus, cacheStatus) = withContext(Dispatchers.IO) {
-            val db = try {
-                getConnection().use { it.createStatement().execute("SELECT 1") }
+        val orderStatus = withContext(Dispatchers.IO) {
+            try {
+                httpClient.get("$orderServiceUrl/api/health")
                 "connected"
             } catch (e: Exception) {
                 "error: ${e.message}"
             }
+        }
 
-            val cache = try {
+        val cacheStatus = withContext(Dispatchers.IO) {
+            try {
                 jedisPool.resource.use { it.ping() }
                 "connected"
             } catch (e: Exception) {
                 "error: ${e.message}"
             }
-
-            db to cache
         }
 
-        call.respond(
-            HealthResponse(
-                status = if (dbStatus == "connected" && cacheStatus == "connected") "healthy" else "degraded",
-                timestamp = System.currentTimeMillis(),
-                database = dbStatus,
-                cache = cacheStatus
-            )
-        )
+        call.respond(HealthResponse(
+            status = if (orderStatus == "connected" && cacheStatus == "connected") "healthy" else "degraded",
+            timestamp = System.currentTimeMillis(),
+            orderService = orderStatus,
+            cache = cacheStatus
+        ))
     }
 }
 
-/**
- * User routes with Redis caching
- */
-private fun Routing.userRoutes() {
-    get("/api/users") {
-        totalRequests.incrementAndGet()
-        // Check Redis cache first
-        val cacheKey = "users:all"
-        val cached = withContext(Dispatchers.IO) {
-            try {
-                jedisPool.resource.use { jedis ->
-                    jedis.get(cacheKey)
-                }
-            } catch (e: Exception) {
-                logger.warn("Redis cache error: ${e.message}")
-                null
-            }
-        }
-
-        if (cached != null) {
-            cacheHits.incrementAndGet()
-            logger.debug("Cache HIT for $cacheKey")
-            call.response.headers.append("X-Cache", "HIT")
-            call.respondText(cached, ContentType.Application.Json)
-            return@get
-        }
-
-        // Cache miss - query PostgreSQL
-        cacheMisses.incrementAndGet()
-        logger.debug("Cache MISS for $cacheKey")
-        call.response.headers.append("X-Cache", "MISS")
-
-        val users = withContext(Dispatchers.IO) {
-            val result = mutableListOf<User>()
-            getConnection().use { conn ->
-                conn.createStatement().executeQuery("SELECT id, name, email FROM users ORDER BY id").use { rs ->
-                    while (rs.next()) {
-                        result.add(
-                            User(
-                                id = rs.getInt("id"),
-                                name = rs.getString("name"),
-                                email = rs.getString("email")
-                            )
-                        )
-                    }
-                }
-            }
-            result
-        }
-
-        // Cache the result
-        val json = Json.encodeToString(users)
-        withContext(Dispatchers.IO) {
-            try {
-                jedisPool.resource.use { jedis ->
-                    jedis.setex(cacheKey, 60, json)
-                }
-            } catch (e: Exception) {
-                logger.warn("Failed to cache result: ${e.message}")
-            }
-        }
-
-        call.respond(users)
-    }
-
-    get("/api/users/{id}") {
-        totalRequests.incrementAndGet()
-        val userId = call.parameters["id"]?.toIntOrNull()
-        if (userId == null) {
-            errorCount.incrementAndGet()
-            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID", 400))
-            return@get
-        }
-
-        // Check cache
-        val cacheKey = "users:$userId"
-        val cached = withContext(Dispatchers.IO) {
-            try {
-                jedisPool.resource.use { jedis ->
-                    jedis.get(cacheKey)
-                }
-            } catch (e: Exception) {
-                logger.warn("Redis cache error: ${e.message}")
-                null
-            }
-        }
-
-        if (cached != null) {
-            cacheHits.incrementAndGet()
-            call.response.headers.append("X-Cache", "HIT")
-            call.respondText(cached, ContentType.Application.Json)
-            return@get
-        }
-
-        cacheMisses.incrementAndGet()
-        call.response.headers.append("X-Cache", "MISS")
-
-        val user = withContext(Dispatchers.IO) {
-            getConnection().use { conn ->
-                conn.prepareStatement("SELECT id, name, email FROM users WHERE id = ?").use { stmt ->
-                    stmt.setInt(1, userId)
-                    stmt.executeQuery().use { rs ->
-                        if (rs.next()) {
-                            User(
-                                id = rs.getInt("id"),
-                                name = rs.getString("name"),
-                                email = rs.getString("email")
-                            )
-                        } else {
-                            null
-                        }
-                    }
-                }
-            }
-        }
-
-        if (user == null) {
-            call.respond(HttpStatusCode.NotFound, ErrorResponse("User not found", 404))
-            return@get
-        }
-
-        // Cache the result
-        val json = Json.encodeToString(user)
-        withContext(Dispatchers.IO) {
-            try {
-                jedisPool.resource.use { jedis ->
-                    jedis.setex(cacheKey, 60, json)
-                }
-            } catch (e: Exception) {
-                logger.warn("Failed to cache result: ${e.message}")
-            }
-        }
-
-        call.respond(user)
-    }
-}
-
-/**
- * Order routes with database joins
- */
 private fun Routing.orderRoutes() {
     get("/api/orders") {
         totalRequests.incrementAndGet()
-        val orders = withContext(Dispatchers.IO) {
-            val result = mutableListOf<Order>()
-            getConnection().use { conn ->
-                conn.createStatement().executeQuery(
-                    """
-                    SELECT o.id, o.user_id, o.total, o.created_at, u.name as user_name
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    ORDER BY o.created_at DESC
-                    """.trimIndent()
-                ).use { rs ->
-                    while (rs.next()) {
-                        result.add(
-                            Order(
-                                id = rs.getInt("id"),
-                                userId = rs.getInt("user_id"),
-                                total = rs.getDouble("total"),
-                                createdAt = rs.getTimestamp("created_at").toString(),
-                                userName = rs.getString("user_name")
-                            )
-                        )
-                    }
-                }
-            }
-            result
-        }
-        call.respond(orders)
-    }
+        val cacheKey = "orders:all"
 
-    get("/api/orders/{userId}") {
-        totalRequests.incrementAndGet()
-        val userId = call.parameters["userId"]?.toIntOrNull()
-        if (userId == null) {
-            errorCount.incrementAndGet()
-            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID", 400))
-            return@get
-        }
-
-        // Check cache for user's orders
-        val cacheKey = "orders:user:$userId"
         val cached = withContext(Dispatchers.IO) {
-            try {
-                jedisPool.resource.use { jedis ->
-                    jedis.get(cacheKey)
-                }
-            } catch (e: Exception) {
-                logger.warn("Redis cache error: ${e.message}")
-                null
-            }
+            try { jedisPool.resource.use { it.get(cacheKey) } }
+            catch (e: Exception) { null }
         }
 
         if (cached != null) {
@@ -414,47 +197,104 @@ private fun Routing.orderRoutes() {
         cacheMisses.incrementAndGet()
         call.response.headers.append("X-Cache", "MISS")
 
-        val orders = withContext(Dispatchers.IO) {
-            val result = mutableListOf<Order>()
-            getConnection().use { conn ->
-                conn.prepareStatement(
-                    """
-                    SELECT id, user_id, total, created_at
-                    FROM orders
-                    WHERE user_id = ?
-                    ORDER BY created_at DESC
-                    """.trimIndent()
-                ).use { stmt ->
-                    stmt.setInt(1, userId)
-                    stmt.executeQuery().use { rs ->
-                        while (rs.next()) {
-                            result.add(
-                                Order(
-                                    id = rs.getInt("id"),
-                                    userId = rs.getInt("user_id"),
-                                    total = rs.getDouble("total"),
-                                    createdAt = rs.getTimestamp("created_at").toString()
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-            result
-        }
-
-        // Cache the result
-        val json = Json.encodeToString(orders)
-        withContext(Dispatchers.IO) {
+        val response = withContext(Dispatchers.IO) {
             try {
-                jedisPool.resource.use { jedis ->
-                    jedis.setex(cacheKey, 30, json)
-                }
+                httpClient.get("$orderServiceUrl/api/orders").bodyAsText()
             } catch (e: Exception) {
-                logger.warn("Failed to cache result: ${e.message}")
+                errorCount.incrementAndGet()
+                null
             }
         }
 
-        call.respond(orders)
+        if (response == null) {
+            call.respond(HttpStatusCode.BadGateway, ErrorResponse("Order service unavailable", 502))
+            return@get
+        }
+
+        withContext(Dispatchers.IO) {
+            try { jedisPool.resource.use { it.set(cacheKey, response) } }
+            catch (e: Exception) { logger.warn("Cache write failed: ${e.message}") }
+        }
+
+        call.respondText(response, ContentType.Application.Json)
+    }
+
+    get("/api/orders/{id}") {
+        totalRequests.incrementAndGet()
+        val orderId = call.parameters["id"]
+        if (orderId == null) {
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Missing order ID", 400))
+            return@get
+        }
+
+        val cacheKey = "orders:$orderId"
+        val cached = withContext(Dispatchers.IO) {
+            try { jedisPool.resource.use { it.get(cacheKey) } }
+            catch (e: Exception) { null }
+        }
+
+        if (cached != null) {
+            cacheHits.incrementAndGet()
+            call.response.headers.append("X-Cache", "HIT")
+            call.respondText(cached, ContentType.Application.Json)
+            return@get
+        }
+
+        cacheMisses.incrementAndGet()
+        call.response.headers.append("X-Cache", "MISS")
+
+        val response = withContext(Dispatchers.IO) {
+            try {
+                val resp = httpClient.get("$orderServiceUrl/api/orders/$orderId")
+                if (resp.status == HttpStatusCode.NotFound) return@withContext null
+                resp.bodyAsText()
+            } catch (e: Exception) {
+                errorCount.incrementAndGet()
+                null
+            }
+        }
+
+        if (response == null) {
+            call.respond(HttpStatusCode.NotFound, ErrorResponse("Order not found", 404))
+            return@get
+        }
+
+        withContext(Dispatchers.IO) {
+            try { jedisPool.resource.use { it.set(cacheKey, response) } }
+            catch (e: Exception) { logger.warn("Cache write failed: ${e.message}") }
+        }
+
+        call.respondText(response, ContentType.Application.Json)
+    }
+
+    post("/api/orders") {
+        totalRequests.incrementAndGet()
+        val body = call.receiveText()
+
+        val response = withContext(Dispatchers.IO) {
+            try {
+                val resp = httpClient.post("$orderServiceUrl/api/orders") {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                resp.status to resp.bodyAsText()
+            } catch (e: Exception) {
+                errorCount.incrementAndGet()
+                null
+            }
+        }
+
+        if (response == null) {
+            call.respond(HttpStatusCode.BadGateway, ErrorResponse("Order service unavailable", 502))
+            return@post
+        }
+
+        // Invalidate orders list cache since a new order was created
+        withContext(Dispatchers.IO) {
+            try { jedisPool.resource.use { it.del("orders:all") } }
+            catch (e: Exception) { logger.warn("Cache invalidation failed: ${e.message}") }
+        }
+
+        call.respondText(response.second, ContentType.Application.Json, response.first)
     }
 }
