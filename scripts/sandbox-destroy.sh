@@ -28,11 +28,11 @@ gcloud container clusters delete "$CLUSTER_NAME" \
   --project "$PROJECT" \
   --quiet
 
-# Clean up GCR images
+# Clean up container images from Artifact Registry
 echo "Cleaning up container images..."
 IMAGES=("test-api-gateway" "test-order-service" "test-notification-service" "test-webhook-stub" "test-traffic-generator")
 for img in "${IMAGES[@]}"; do
-  gcloud container images delete "gcr.io/$PROJECT/$img:latest" --quiet --force-delete-tags 2>/dev/null || true
+  gcloud artifacts docker images delete "us-docker.pkg.dev/$PROJECT/gcr.io/$img" --quiet --delete-tags 2>/dev/null || true
 done
 
 echo ""
