@@ -184,6 +184,10 @@ abstract class KubernetesWorkloadTestBase {
             val fromRoot = Paths.get(projectRoot, MANIFESTS_PATH).toFile()
             if (fromRoot.exists()) return fromRoot
 
+            // When running from a submodule (e.g., app/), check parent directory
+            val fromParent = Paths.get(projectRoot, "..", MANIFESTS_PATH).normalize().toFile()
+            if (fromParent.exists()) return fromParent
+
             return direct
         }
 

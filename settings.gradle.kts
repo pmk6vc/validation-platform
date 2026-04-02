@@ -10,6 +10,11 @@ pluginManagement {
 
 rootProject.name = "validation-platform"
 
+// Core modules
+include("shared")
+include("app")
+include("collector")
+
 // Test services - standalone microservices for k3s integration testing
 include("test-services:api-gateway")
 include("test-services:order-service")

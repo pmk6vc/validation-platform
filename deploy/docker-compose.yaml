@@ -19,7 +19,7 @@ services:
   app:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
+      dockerfile: deploy/Dockerfile.app
     container_name: platform-app
     depends_on:
       db:
@@ -30,6 +30,23 @@ services:
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "${APP_PORT:-8080}:8080"
+
+  collector:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.collector
+    container_name: platform-collector
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${COLLECTOR_PORT:-8081}:8081"
+    profiles:
+      - collector  # opt-in until collector has code
 
 volumes:
   platform-data:
