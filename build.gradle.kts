@@ -120,7 +120,7 @@ tasks.register<Exec>("testServicesUp") {
     group = "test-services"
     description = "Deploy test services to local Kubernetes cluster"
     dependsOn("testServicesBuild")
-    commandLine("kubectl", "apply", "-R", "-f", "k8s/test-services/")
+    commandLine("kubectl", "apply", "-k", "k8s/test-services/base/")
     doLast {
         println(
             """
@@ -143,7 +143,7 @@ tasks.register<Exec>("testServicesUp") {
 tasks.register<Exec>("testServicesDown") {
     group = "test-services"
     description = "Remove test services from local Kubernetes cluster"
-    commandLine("kubectl", "delete", "-R", "-f", "k8s/test-services/", "--ignore-not-found")
+    commandLine("kubectl", "delete", "-k", "k8s/test-services/base/", "--ignore-not-found")
 }
 
 tasks.register<Exec>("testServicesStatus") {

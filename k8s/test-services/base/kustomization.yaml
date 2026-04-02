@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespaces.yaml
+  - 01-infrastructure/kafka.yaml
+  - 01-infrastructure/redis.yaml
+  - 02-production/api-gateway.yaml
+  - 02-production/order-service.yaml
+  - 02-production/notification-service.yaml
+  - 02-production/traffic-generator.yaml
+  - 03-external/webhook-stub.yaml
