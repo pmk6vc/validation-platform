@@ -64,7 +64,7 @@ abstract class KubernetesWorkloadTestBase {
         private const val API_GATEWAY_NODE_PORT = 30080
 
         // Path to K8s manifests (relative to project root)
-        private const val MANIFESTS_PATH = "k8s/test-services"
+        private const val MANIFESTS_PATH = "k8s/test-services/base"
 
         @BeforeAll
         @JvmStatic
@@ -148,7 +148,7 @@ abstract class KubernetesWorkloadTestBase {
             if (!manifestsDir.exists()) {
                 throw RuntimeException(
                     "Manifests directory not found at ${manifestsDir.absolutePath}. " +
-                        "Make sure k8s/test-services/ exists in the project root.",
+                        "Make sure k8s/test-services/base/ exists in the project root.",
                 )
             }
 
@@ -156,6 +156,10 @@ abstract class KubernetesWorkloadTestBase {
                 MountableFile.forHostPath(manifestsDir.toPath()),
                 "/manifests",
             )
+
+            // Remove kustomization.yaml — kubectl apply -R doesn't understand it,
+            // and it's only needed for kustomize overlays (e.g. GKE deploy)
+            k3s!!.execInContainer("rm", "-f", "/manifests/kustomization.yaml")
 
             val result =
                 k3s!!.execInContainer(

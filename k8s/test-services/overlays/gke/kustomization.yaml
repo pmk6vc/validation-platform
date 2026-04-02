@@ -1,0 +1,68 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Replace local images with GCR images.
+# The GCP_PROJECT placeholder is replaced by sandbox-up.sh at deploy time
+# via: kubectl kustomize . | sed "s/GCP_PROJECT/$PROJECT/" | kubectl apply -f -
+images:
+  - name: docker.io/library/test-api-gateway
+    newName: gcr.io/GCP_PROJECT/test-api-gateway
+    newTag: latest
+  - name: docker.io/library/test-order-service
+    newName: gcr.io/GCP_PROJECT/test-order-service
+    newTag: latest
+  - name: docker.io/library/test-notification-service
+    newName: gcr.io/GCP_PROJECT/test-notification-service
+    newTag: latest
+  - name: docker.io/library/test-traffic-generator
+    newName: gcr.io/GCP_PROJECT/test-traffic-generator
+    newTag: latest
+  - name: docker.io/library/test-webhook-stub
+    newName: gcr.io/GCP_PROJECT/test-webhook-stub
+    newTag: latest
+
+# Override imagePullPolicy from Never to Always for all deployments
+patches:
+  - target:
+      kind: Deployment
+      namespace: production
+      name: api-gateway
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+  - target:
+      kind: Deployment
+      namespace: production
+      name: order-service
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+  - target:
+      kind: Deployment
+      namespace: production
+      name: notification-service
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+  - target:
+      kind: Deployment
+      namespace: production
+      name: traffic-generator
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+  - target:
+      kind: Deployment
+      namespace: external
+      name: webhook-stub
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
