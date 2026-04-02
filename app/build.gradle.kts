@@ -50,13 +50,13 @@ dependencies {
     implementation("ch.qos.logback:logback-classic:$logback_version")
 
     // Testing
+    testImplementation(testFixtures(project(":shared")))
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktor_version")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:$kotlin_version")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
     testImplementation("org.testcontainers:testcontainers:2.0.3")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter:2.0.3")
     testImplementation("org.testcontainers:testcontainers-postgresql:2.0.3")
-    testImplementation("org.testcontainers:testcontainers-k3s:2.0.3")
     testImplementation("io.mockk:mockk:1.13.9")
     // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.79")
