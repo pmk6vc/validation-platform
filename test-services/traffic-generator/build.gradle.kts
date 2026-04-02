@@ -28,7 +28,7 @@ dependencies {
 }
 
 // Detect current architecture for Jib
-val jibArch = when (System.getProperty("os.arch")) {
+val jibArch = System.getProperty("jib.arch") ?: when (System.getProperty("os.arch")) {
     "aarch64", "arm64" -> "arm64"
     else -> "amd64"
 }

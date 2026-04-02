@@ -65,9 +65,9 @@ gcloud container clusters get-credentials "$CLUSTER_NAME" \
 
 # --- Images ---
 
-echo "Building test service images..."
+echo "Building test service images (amd64 for GKE)..."
 cd "$PROJECT_ROOT"
-./gradlew testServicesBuild
+./gradlew testServicesBuild -Djib.arch=amd64
 
 IMAGES=("test-api-gateway" "test-order-service" "test-notification-service" "test-webhook-stub" "test-traffic-generator")
 REGISTRY="gcr.io/$PROJECT"
