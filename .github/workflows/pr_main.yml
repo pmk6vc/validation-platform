@@ -46,23 +46,22 @@ jobs:
         run: ./gradlew :shared:test :app:test
 
       - name: Test summary
-        uses: mikepenz/action-junit-report@v5
         if: always()
-        with:
-          report_paths: |
-            shared/build/test-results/test/*.xml
-            app/build/test-results/test/*.xml
-            collector/build/test-results/test/*.xml
-          include_passed: true
-          detailed_summary: true
-          summary: true
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: |
-            shared/build/reports/tests/test/
-            app/build/reports/tests/test/
-            collector/build/reports/tests/test/
+        run: |
+          echo '## Test Results' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          for module in shared app collector; do
+            dir="$module/build/test-results/test"
+            [ -d "$dir" ] || continue
+            echo "### $module" >> $GITHUB_STEP_SUMMARY
+            passed=$(grep -rl 'failures="0" errors="0"' "$dir" 2>/dev/null | wc -l)
+            failed=$(grep -rL 'failures="0" errors="0"' "$dir" --include='*.xml' 2>/dev/null | wc -l)
+            total=$((passed + failed))
+            if [ "$failed" -eq 0 ]; then
+              echo ":white_check_mark: All $total test suites passed" >> $GITHUB_STEP_SUMMARY
+            else
+              echo ":x: $failed/$total test suites had failures" >> $GITHUB_STEP_SUMMARY
+              grep -rh 'testcase.*name=' "$dir" | grep -v 'failures="0"' | head -20 >> $GITHUB_STEP_SUMMARY
+            fi
+            echo '' >> $GITHUB_STEP_SUMMARY
+          done
