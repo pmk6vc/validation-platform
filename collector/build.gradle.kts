@@ -1,6 +1,3 @@
-val ktor_version: String by project
-val logback_version: String by project
-
 plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
@@ -28,12 +25,8 @@ dependencies {
     implementation(project(":shared"))
 
     // Ktor server
-    implementation("io.ktor:ktor-server-core-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-netty-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktor_version")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-config-yaml:$ktor_version")
+    implementation(libs.bundles.ktor.server)
 
     // Logging
-    implementation("ch.qos.logback:logback-classic:$logback_version")
+    implementation(libs.logback)
 }

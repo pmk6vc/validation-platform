@@ -1,8 +1,3 @@
-val kotlin_version: String by project
-val logback_version: String by project
-val ktor_version: String by project
-val exposed_version = "0.57.0"
-
 plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
@@ -30,40 +25,32 @@ dependencies {
     implementation(project(":shared"))
 
     // Ktor server
-    implementation("io.ktor:ktor-server-core-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-netty-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktor_version")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktor_version")
-    implementation("io.ktor:ktor-server-config-yaml:$ktor_version")
+    implementation(libs.bundles.ktor.server)
 
     // Database (Exposed + PostgreSQL) - needed for app-owned tables and repositories
-    implementation("org.jetbrains.exposed:exposed-core:$exposed_version")
-    implementation("org.jetbrains.exposed:exposed-jdbc:$exposed_version")
-    implementation("org.jetbrains.exposed:exposed-java-time:$exposed_version")
-    implementation("org.jetbrains.exposed:exposed-json:$exposed_version")
-    implementation("org.postgresql:postgresql:42.7.7")
+    implementation(libs.bundles.exposed)
+    implementation(libs.postgresql)
 
     // Kubernetes
-    implementation("io.fabric8:kubernetes-client:6.10.0")
+    implementation(libs.fabric8.kubernetes.client)
 
     // Logging
-    implementation("ch.qos.logback:logback-classic:$logback_version")
+    implementation(libs.logback)
 
     // Testing
     testImplementation(testFixtures(project(":shared")))
-    testImplementation("io.ktor:ktor-server-test-host-jvm:$ktor_version")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:$kotlin_version")
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
-    testImplementation("org.testcontainers:testcontainers:2.0.3")
-    testImplementation("org.testcontainers:testcontainers-junit-jupiter:2.0.3")
-    testImplementation("org.testcontainers:testcontainers-postgresql:2.0.3")
-    testImplementation("io.mockk:mockk:1.13.9")
+    testImplementation(libs.ktor.server.test.host)
+    testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.testcontainers)
+    testImplementation(libs.testcontainers.junit)
+    testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.mockk)
     // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
-    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.79")
+    testImplementation(libs.bouncycastle)
 
     // Ktor client for integration tests
-    testImplementation("io.ktor:ktor-client-cio-jvm:$ktor_version")
-    testImplementation("io.ktor:ktor-client-content-negotiation-jvm:$ktor_version")
+    testImplementation(libs.bundles.ktor.client)
 }
 
 tasks.test {
