@@ -1,8 +1,8 @@
 plugins {
-    kotlin("jvm") version "2.2.21" apply false
-    kotlin("plugin.serialization") version "2.2.21" apply false
-    id("io.ktor.plugin") version "3.3.3" apply false
-    id("org.jlleitschuh.gradle.ktlint") version "12.1.2"
+    alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.kotlin.serialization) apply false
+    alias(libs.plugins.ktor) apply false
+    alias(libs.plugins.ktlint)
 }
 
 group = "com.platform"
@@ -12,13 +12,15 @@ repositories {
     mavenCentral()
 }
 
+val ktlintVersion = versionCatalogs.named("libs").findVersion("ktlint").get().requiredVersion
+
 // Apply ktlint to all subprojects (except test-services which have their own conventions)
 subprojects {
     if (!path.startsWith(":test-services")) {
         apply(plugin = "org.jlleitschuh.gradle.ktlint")
 
         configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
-            version.set("1.5.0")
+            version.set(ktlintVersion)
         }
     }
 }
