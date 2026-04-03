@@ -159,49 +159,72 @@ class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
             assertEquals(42.50, created.total)
             assertEquals("pending", created.status)
 
-            // Wait for Kafka consumer → webhook chain to complete
-            delay(5000)
+            // Poll for Kafka consumer → webhook chain to complete (CI can be slow)
+            val maxAttempts = 12
+            val pollInterval = 5000L
+            var notifHealthResult: NotificationHealth? = null
+            var webhookHealthResult: WebhookHealth? = null
 
-            // Check notification-service consumed the event
-            val notificationHealthResult =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "production",
-                    "deploy/notification-service",
-                    "--",
-                    "wget",
-                    "-qO-",
-                    "http://localhost:8080/api/health",
-                )
-            if (notificationHealthResult.exitCode == 0) {
-                val notifHealth = json.decodeFromString<NotificationHealth>(notificationHealthResult.stdout)
-                logger.info(
-                    "Notification service: consumed=${notifHealth.eventsConsumed}, webhooks=${notifHealth.webhooksSent}",
-                )
-                assertTrue(notifHealth.eventsConsumed > 0, "Expected notification-service to have consumed events")
-                assertTrue(notifHealth.webhooksSent > 0, "Expected notification-service to have sent webhooks")
+            for (attempt in 1..maxAttempts) {
+                delay(pollInterval)
+                logger.info("Polling for event propagation (attempt $attempt/$maxAttempts)...")
+
+                val notifResult =
+                    getK3sContainer().execInContainer(
+                        "kubectl",
+                        "exec",
+                        "-n",
+                        "production",
+                        "deploy/notification-service",
+                        "--",
+                        "wget",
+                        "-qO-",
+                        "http://localhost:8080/api/health",
+                    )
+                if (notifResult.exitCode == 0) {
+                    val health = json.decodeFromString<NotificationHealth>(notifResult.stdout)
+                    logger.info(
+                        "Notification service: consumed=${health.eventsConsumed}, webhooks=${health.webhooksSent}",
+                    )
+                    if (health.eventsConsumed > 0 && health.webhooksSent > 0) {
+                        notifHealthResult = health
+                    }
+                }
+
+                val webhookResult =
+                    getK3sContainer().execInContainer(
+                        "kubectl",
+                        "exec",
+                        "-n",
+                        "external",
+                        "deploy/webhook-stub",
+                        "--",
+                        "wget",
+                        "-qO-",
+                        "http://localhost:8080/api/health",
+                    )
+                if (webhookResult.exitCode == 0) {
+                    val health = json.decodeFromString<WebhookHealth>(webhookResult.stdout)
+                    logger.info("Webhook stub: requestsReceived=${health.requestsReceived}")
+                    if (health.requestsReceived > 0) {
+                        webhookHealthResult = health
+                    }
+                }
+
+                if (notifHealthResult != null && webhookHealthResult != null) {
+                    logger.info("Event chain completed on attempt $attempt")
+                    break
+                }
             }
 
-            // Check webhook-stub received the call
-            val webhookHealthResult =
-                getK3sContainer().execInContainer(
-                    "kubectl",
-                    "exec",
-                    "-n",
-                    "external",
-                    "deploy/webhook-stub",
-                    "--",
-                    "wget",
-                    "-qO-",
-                    "http://localhost:8080/api/health",
-                )
-            if (webhookHealthResult.exitCode == 0) {
-                val webhookHealth = json.decodeFromString<WebhookHealth>(webhookHealthResult.stdout)
-                logger.info("Webhook stub: requestsReceived=${webhookHealth.requestsReceived}")
-                assertTrue(webhookHealth.requestsReceived > 0, "Expected webhook-stub to have received requests")
-            }
+            assertTrue(
+                notifHealthResult != null,
+                "Expected notification-service to have consumed events and sent webhooks",
+            )
+            assertTrue(
+                webhookHealthResult != null,
+                "Expected webhook-stub to have received requests",
+            )
         }
 
     @Test
