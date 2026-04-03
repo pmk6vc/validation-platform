@@ -76,6 +76,7 @@ abstract class DatabaseTestBase {
     fun cleanTables() {
         runBlocking {
             newSuspendedTransaction {
+                CapturedInputs.deleteAll()
                 Services.deleteAll()
                 Organizations.deleteAll()
             }
