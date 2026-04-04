@@ -43,29 +43,47 @@ This is a **validation and release platform** that helps engineering teams valid
 
 ### What's Working Now
 
-- **REST API** with Ktor server (health check, organizations, services, captured-inputs endpoints)
-- **PostgreSQL database** with Flyway migrations (V0001–V0004)
-- **Multi-tenant data model** with Organizations and Services
-- **CapturedInput model** with full repository, migration, and API endpoints
-- **TrafficClassifier** — classifies HTTP methods as READ/WRITE with per-endpoint overrides
-- **Pagination and filtering** on list endpoints (cursor-based)
-- **Docker deployment** (docker-compose with PostgreSQL; collector service behind opt-in profile)
+- **Two Ktor servers**: `app` on port 8080 (organizations, services) and `collector` on port 8081 (captured inputs)
+- **PostgreSQL database** with Flyway migrations (V0001–V0004), all migrations in `shared/`
+- **Multi-tenant data model** with Organizations and Services (owned by `app`)
+- **CapturedInput model** (owned by `collector`) — HTTP-first, non-nullable method/url/responseStatus
+- **Pagination and filtering** on all list endpoints (cursor-based)
+- **Docker deployment** — app, collector, and db all start by default; health checks on both services
 - **Test infrastructure** with TestContainers (PostgreSQL + k3s Kubernetes)
 - **Code quality** with ktlint
 - **Adapter pattern** with ServiceAdapter interface
 - **Service discovery** via ManualSeedAdapter and KubernetesAdapter
 - **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES)
-- **Modular monolith** structure: `shared/` (DB + models), `app/` (API server), `collector/` (skeleton)
+- **Modular monolith** with enforced module boundaries: cross-module data access goes through REST APIs, not shared repositories
 
-### Implemented API Endpoints
+### Module Ownership
+
+Each module owns its tables, models, and repositories. Cross-module communication is via HTTP API calls.
+
+| Module | Owns | Port |
+|--------|------|------|
+| `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer) | — |
+| `app/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server | 8080 |
+| `collector/` | CapturedInputs table; CapturedInputRepository; Ktor server | 8081 |
+| `test-services/` | Standalone Kotlin microservices for k3s integration testing | — |
+
+### App Module API Endpoints (port 8080)
+
+```
+GET    /health                             # Health check
+GET    /api/organizations                  # List organizations (paginated)
+POST   /api/organizations                  # Create organization
+GET    /api/organizations/{id}             # Get organization by ID
+GET    /api/services                       # List services (paginated, filterable by organizationId/cluster/namespace)
+POST   /api/services                       # Create service
+GET    /api/services/{id}                  # Get service by ID
+```
+
+### Collector Module API Endpoints (port 8081)
 
 ```
 GET    /health                                    # Health check
-GET    /api/organizations                         # List organizations (paginated)
-GET    /api/organizations/{id}                    # Get organization by ID
-GET    /api/services                              # List services (paginated, filterable)
-GET    /api/services/{id}                         # Get service by ID
-GET    /api/captured-inputs                       # List captured inputs (paginated, filterable by serviceId/inputType/classification)
+GET    /api/captured-inputs                       # List captured inputs (paginated, filterable by serviceId/inputType)
 GET    /api/captured-inputs/{id}                  # Get captured input by ID
 DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs for a service
 ```
@@ -73,7 +91,10 @@ DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs f
 ### Current Data Models
 
 ```kotlin
+// --- app module ---
+
 // Organization - a tenant/team in the platform
+// app/src/main/kotlin/com/platform/models/Organization.kt
 data class Organization(
     val id: String,
     val name: String,
@@ -83,6 +104,7 @@ data class Organization(
 
 // Service - a deployable unit discovered from various providers
 // Uniquely identified by: organizationId + cluster + namespace + name
+// app/src/main/kotlin/com/platform/models/Service.kt
 data class Service(
     val id: String,
     val organizationId: String,
@@ -96,6 +118,7 @@ data class Service(
 )
 
 // Provider - tracks where a service was discovered
+// app/src/main/kotlin/com/platform/models/Provider.kt
 enum class Provider {
     UNKNOWN,        // Provider unknown or not specified
     MANUAL_SEED,    // Manually seeded test data
@@ -103,25 +126,50 @@ enum class Provider {
     // KUBESHARK - Reserved for future Kubeshark adapter
 }
 
-// CapturedInput - a protocol-agnostic captured traffic record (HTTP req/res pair)
-// inputType: HTTP | KAFKA | PUBSUB
-// classification: READ | WRITE | UNKNOWN (drives safe-replay behavior)
+// --- collector module ---
+
+// CapturedInput - an HTTP req/res pair captured from production traffic
+// HTTP-only for now; method, url, responseStatus are non-nullable
+// collector/src/main/kotlin/com/platform/collector/models/CapturedInput.kt
 data class CapturedInput(
     val id: String,
     val serviceId: String,
     val inputType: InputType,
-    val classification: TrafficClassification,
-    val method: String?,           // HTTP only
-    val url: String?,              // HTTP only
-    val requestHeaders: Map<String, String>?,
-    val requestBody: String?,
-    val responseStatus: Int?,      // HTTP only
-    val responseHeaders: Map<String, String>?,
-    val responseBody: String?,
-    val latencyMs: Long?,
-    val sourceIp: String?,
-    val destinationIp: String?,
+    val method: String,           // non-nullable: HTTP-only for now
+    val url: String,              // non-nullable: HTTP-only for now
+    val requestHeaders: Map<String, String>? = null,
+    val requestBody: String? = null,
+    val responseStatus: Int,      // non-nullable: HTTP-only for now
+    val responseHeaders: Map<String, String>? = null,
+    val responseBody: String? = null,
+    val latencyMs: Long? = null,
+    val sourceIp: String? = null,
+    val destinationIp: String? = null,
     val capturedAt: Instant,
+)
+
+// InputType - HTTP-first; UNKNOWN for unrecognized protocols
+// KAFKA and PUBSUB removed (YAGNI — will add when replay engine needs them)
+// collector/src/main/kotlin/com/platform/collector/models/InputType.kt
+enum class InputType {
+    HTTP,
+    UNKNOWN,
+}
+```
+
+### Request DTOs (app module)
+
+```kotlin
+// app/src/main/kotlin/com/platform/api/Requests.kt
+data class CreateOrganizationRequest(val name: String)
+
+data class CreateServiceRequest(
+    val organizationId: String,
+    val cluster: String,
+    val namespace: String,
+    val name: String,
+    val provider: Provider = Provider.UNKNOWN,
+    val metadata: Map<String, String>? = null,
 )
 ```
 
@@ -134,11 +182,12 @@ data class CapturedInput(
 # TestContainers and Jib. build.gradle.kts auto-detects Colima's socket.
 brew install colima docker && colima start
 
-# Start PostgreSQL (runs app + db; collector behind --profile collector flag)
+# Start all services (app + collector + db; all start by default)
 ./gradlew dockerUp
 
-# Run application (app module)
-./gradlew :app:run
+# Run application servers individually
+./gradlew :app:run          # app server on port 8080
+./gradlew :collector:run    # collector server on port 8081
 
 # Run tests (includes k3s Kubernetes integration tests)
 ./gradlew test
@@ -148,10 +197,12 @@ brew install colima docker && colima start
 ```
 
 **Module structure:**
-- `shared/` — DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer)
-- `app/` — Ktor API server, adapters, repositories, routes, features
-- `collector/` — Future Kubeshark collector service (skeleton only; no source yet)
+- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0004`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
+- `app/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; depends on `:shared`
+- `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
 - `test-services/` — Standalone Kotlin microservices for k3s integration testing
+
+**Note on collector config:** The collector uses `application.yaml` (not HOCON `.conf`). This is required by Ktor 3, which uses the YAML config parser.
 
 **Optional:** Deploy test workloads to local Kubernetes (kind/minikube) for manual testing:
 ```bash
@@ -219,9 +270,10 @@ PLATFORM
 
 1. **Staging-based validation**: Customer provides staging environments with real dependencies. Platform captures production traffic and replays it against staging — no dependency mocking needed.
 2. **Read-only replay by default**: Only replay safe (read) requests to avoid mutating staging DB state between sequential runs. Full replay available when customer provides a DB reset hook.
-3. **Protocol-agnostic input model**: All captured inputs (HTTP, Kafka, gRPC) are treated uniformly via `CapturedInput` with a `type` field. HTTP-first, but the abstraction supports message queues without refactoring.
-4. **eBPF for capture and observation**: Kubeshark in production for traffic capture, Kubeshark in staging for observability during replay.
-5. **Statistical rigor**: Use proper statistical tests (Mann-Whitney U, linear regression), not arbitrary thresholds.
+3. **HTTP-first, protocol-extensible model**: `CapturedInput` uses an `InputType` enum (`HTTP`, `UNKNOWN`). KAFKA and PUBSUB variants are intentionally deferred (YAGNI) until the replay engine needs them. The data model can extend without breaking changes.
+4. **Module ownership via APIs**: Each module owns its tables and repositories. Cross-module data access (e.g., the collector needing a service fixture in tests) goes through REST API calls, not direct repository imports.
+5. **eBPF for capture and observation**: Kubeshark in production for traffic capture, Kubeshark in staging for observability during replay.
+6. **Statistical rigor**: Use proper statistical tests (Mann-Whitney U, linear regression), not arbitrary thresholds.
 
 ### Staging-Based Validation (Architectural Pivot)
 
@@ -241,9 +293,9 @@ The original design used PCAP-based record-replay proxies to mock all dependenci
 | No PCAP truncation (11,324 frames, zero data loss) | Validated |
 | TLS-encrypted DB traffic invisible in PCAPs | **Blocker** that motivated the pivot |
 
-### Read/Write Traffic Classification
+### Read/Write Traffic Classification (Planned — Not Yet Implemented)
 
-To avoid mutating staging state between sequential baseline/candidate runs, the platform classifies traffic and defaults to read-only replay.
+To avoid mutating staging state between sequential baseline/candidate runs, the platform will classify traffic and default to read-only replay. The `TrafficClassifier` was previously stubbed in the app module but removed as premature — it belongs in the replay engine, which will own this logic.
 
 | Protocol | Read | Write | Reliability |
 |---|---|---|---|
@@ -360,16 +412,16 @@ Per-service PostgreSQL is colocated with service manifests (not shared). The Kaf
 
 ## Data Models
 
-| Model | Purpose | Status |
-|-------|---------|--------|
-| Organization | Tenant/team in the platform | Implemented |
-| Service | Deployable unit discovered from various providers | Implemented |
-| CapturedInput | Protocol-agnostic captured traffic (HTTP req/res, with read/write classification) | Implemented |
-| ReplayRun | A replay run against staging (config, status, collected responses) | Planned |
-| ReplayResponse | Per-request response collected during replay (status, body, latency) | Planned |
-| ObservationData | Kubeshark + K8s metrics collected during a replay run | Planned |
-| ValidationResult | Comparison of baseline vs candidate runs with verdict | Planned |
-| ResourceSample | Point-in-time CPU/memory usage during replay | Planned |
+| Model | Purpose | Module | Status |
+|-------|---------|--------|--------|
+| Organization | Tenant/team in the platform | `app` | Implemented |
+| Service | Deployable unit discovered from various providers | `app` | Implemented |
+| CapturedInput | HTTP req/res pair captured from production traffic | `collector` | Implemented |
+| ReplayRun | A replay run against staging (config, status, collected responses) | TBD (likely its own module) | Planned |
+| ReplayResponse | Per-request response collected during replay (status, body, latency) | TBD | Planned |
+| ObservationData | Kubeshark + K8s metrics collected during a replay run | TBD | Planned |
+| ValidationResult | Comparison of baseline vs candidate runs with verdict | TBD | Planned |
+| ResourceSample | Point-in-time CPU/memory usage during replay | TBD | Planned |
 
 ---
 
@@ -468,15 +520,22 @@ Adapters normalize data from different sources into the unified model.
 ### Phase 3: Traffic Capture + Replay - IN PROGRESS
 
 **Traffic Capture (Feature 1)**
-- [x] CapturedInput model (protocol-agnostic: HTTP, KAFKA, PUBSUB) — `app/src/main/kotlin/com/platform/models/capture/`
-- [x] TrafficClassifier (read/write classification with per-endpoint overrides) — `app/src/main/kotlin/com/platform/features/capture/`
-- [x] Database migration + repository for captured inputs (V0004, cursor-based pagination, batch insert)
-- [x] API: `GET /api/captured-inputs`, `GET /api/captured-inputs/{id}`, `DELETE /api/captured-inputs?serviceId=`
-- [ ] collector module: Kubeshark polling → store captured inputs (skeleton exists, no source yet)
+- [x] CapturedInput model (HTTP-first, non-nullable method/url/responseStatus) — `collector/src/main/kotlin/com/platform/collector/models/`
+- [x] InputType enum simplified to HTTP + UNKNOWN (YAGNI: KAFKA, PUBSUB deferred)
+- [x] TrafficClassification enum and TrafficClassifier removed — not needed until replay engine
+- [x] CapturedInputs table definition — `collector/src/main/kotlin/com/platform/collector/database/CapturedInputs.kt`
+- [x] Database migration V0004 (method/url/responseStatus non-nullable) — `shared/src/main/resources/db/migration/`
+- [x] CapturedInputRepository (create, createBatch, findById, find, countByService, deleteByService) — `collector/src/main/kotlin/com/platform/collector/database/`
+- [x] Collector API: `GET /api/captured-inputs`, `GET /api/captured-inputs/{id}`, `DELETE /api/captured-inputs?serviceId=` (port 8081)
+- [x] POST endpoints in app module: `POST /api/organizations`, `POST /api/services`
+- [x] Collector module: full Ktor server on port 8081 (no longer a skeleton)
+- [x] Test infrastructure: 18 CapturedInputRepository tests, 12 CapturedInputRoutesTest, 1 HealthRoutesTest, 6 new POST endpoint tests in app
+- [x] AppApiTestHelper: collector tests create org/service fixtures via POST API calls to app module (enforces module boundary)
+- [ ] collector: Kubeshark polling → store captured inputs (Kubeshark adapter not yet implemented)
 
 **Replay Engine (Feature 2)**
-- [ ] ReplayRun model + database migration
-- [ ] ReplayEngine: send captured HTTP requests to staging target
+- [ ] ReplayRun model + database migration (likely in its own module)
+- [ ] ReplayEngine: send captured HTTP requests to staging target (fetches inputs via collector API)
 - [ ] Configurable fidelity: QUICK (sequential), STANDARD (10-50 concurrent), LOAD (prod-rate)
 - [ ] Read-only flag (skip write-classified requests)
 - [ ] Optional DB reset hook between runs
@@ -537,7 +596,13 @@ Adapters normalize data from different sources into the unified model.
 |----------|--------|-----------|
 | Validation approach | Staging-based (customer provides staging env) | TLS blocks PCAP-based dependency mocking for production databases. Staging-based avoids protocol-specific proxies entirely. Simpler, shippable sooner. |
 | Traffic capture | Kubeshark (eBPF) for HTTP at L7 | Zero instrumentation in production. HTTP req/res pairs captured with bodies. Validated on minikube 2026-04-02. |
-| Replay model | Protocol-agnostic `CapturedInput` with type field | HTTP-first, but `type: HTTP | KAFKA | PUBSUB` supports future message queue replay without refactoring |
+| Module boundaries | Cross-module access via HTTP API, not shared repositories | Enforces clean ownership. Collector tests create org/service fixtures via POST to app routes (AppApiTestHelper), not by importing app repositories directly. |
+| InputType enum | HTTP + UNKNOWN only (KAFKA, PUBSUB removed) | YAGNI: message queue capture deferred until replay engine needs it. Enum can extend without breaking changes. |
+| CapturedInput fields | method, url, responseStatus non-nullable | HTTP-only for now; nullable fields were premature abstraction before non-HTTP capture exists. |
+| TrafficClassifier | Removed from app module | Premature: classification is only needed during replay, which may be its own module. Re-add there when the time comes. |
+| Collector config format | `application.yaml` (not HOCON) | Ktor 3 requires the YAML config parser; HOCON is legacy Ktor 2 behavior. |
+| Test base hierarchy | `DatabaseTestBase` (shared fixtures) → `AppDatabaseTestBase` / `CollectorDatabaseTestBase` | Each module's test base cleans only its own tables, preserving module ownership in tests. |
+| Replay model | `CapturedInput` with InputType field | HTTP-first, but `type: HTTP | UNKNOWN` allows extension to KAFKA/PUBSUB without model changes. |
 | Replay safety | Read-only by default, full with reset hook | Avoids DB mutation between sequential baseline/candidate runs. Conservative classification (ambiguous = write = skip). |
 | Run model | Sequential (baseline then candidate) | Simpler than parallel — one set of staging infra. For 5-15 min runs, environmental drift is negligible. |
 | Staging observation | Kubeshark in staging + K8s Metrics API | Kubeshark gives outbound connection counts and patterns. K8s Metrics gives CPU/memory for leak detection. |
@@ -545,14 +610,75 @@ Adapters normalize data from different sources into the unified model.
 | Leak detection | Linear regression | Detect memory growth trend over time |
 | Interface | API-first (CLI deferred) | Enables UI/webhook integration without binary distribution; CLI can wrap API later if needed |
 
+## Known Issues & Technical Debt
+
+Architecture review performed 2026-04-03. Items ordered by priority.
+
+### Fix Before Customer Data
+
+| # | Issue | Location | Fix |
+|---|-------|----------|-----|
+| 1 | `TIMESTAMP WITHOUT TIME ZONE` in all migrations — timestamps silently misinterpreted if DB timezone ≠ UTC | V0001 line 4, V0002 lines 8-9, V0004 line 15 | New migration: `ALTER COLUMN ... TYPE TIMESTAMPTZ` |
+| 2 | `.env` with credentials committed to git — establishes dangerous pattern | `.env`, `.gitignore` | `git rm --cached .env`, add to `.gitignore`, restore `.env.example` |
+
+### Fix Before Replay Phase
+
+| # | Issue | Location | Fix |
+|---|-------|----------|-----|
+| 3 | Malformed UUID in path/query params causes 500 (no `StatusPages` plugin) | `app/.../Routes.kt`, `collector/.../Routes.kt` | Add Ktor `StatusPages` plugin catching `IllegalArgumentException` → 400 |
+| 4 | UUID-based cursor pagination unstable under concurrent inserts (random v4 UUIDs aren't monotonic) | All 3 repositories (`OrganizationRepository`, `ServiceRepository`, `CapturedInputRepository`) | Switch to `captured_at`-based or composite `(captured_at, id)` cursor for `captured_inputs`; `created_at` for orgs/services |
+| 5 | `ServiceRepository.upsert` has TOCTOU race — two concurrent upserts can both SELECT "no row", both INSERT, one fails with unique constraint 500 | `ServiceRepository.kt:105-128` | Use PostgreSQL `INSERT ... ON CONFLICT DO UPDATE` |
+| 6 | Blocking Kubernetes API call on coroutine dispatcher — `discoverServices` calls synchronous Fabric8 client without `Dispatchers.IO`, can starve Ktor worker threads | `KubernetesAdapter.kt:82` | Wrap in `withContext(Dispatchers.IO)` |
+
+### Address When Adding Third Module
+
+| # | Issue | Location | Fix |
+|---|-------|----------|-----|
+| 7 | Application startup code duplicated across app and collector — identical DB config resolution + `ContentNegotiation` setup | `Application.kt:17-43`, `CollectorApplication.kt:17-43` | Extract `configureDatabase()` and `configureContentNegotiation()` into `shared/` |
+| 8 | Collector test dependency on app internals — `testImplementation(project(":app"))` imports `CreateOrganizationRequest`, `configureRouting` directly | `collector/build.gradle.kts:38`, `AppApiTestHelper.kt:3-5` | Long-term: extract shared test DTOs into `shared` testFixtures, or use synthetic UUIDs that bypass FK |
+
+### Minor Cleanup
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 9 | `captured_inputs.service_id` FK in SQL migration but not in Exposed table definition — inconsistent | Either add `.references()` to Exposed column or document as intentional |
+| 10 | Stale Pixie references in adapter KDoc | `ServiceAdapter.kt:8`, `ManualSeedAdapter.kt:15` — replace "Pixie" with "Kubeshark" |
+| 11 | `DELETE /api/captured-inputs` response uses untyped `mapOf("deleted" to deleted)` | Add a `DeleteResponse(val deleted: Long)` data class |
+| 12 | `prettyPrint = true` in production JSON config — wastes bandwidth | Consider removing for non-dev environments |
+
+---
+
 ## Implementation Guidelines
 
-For each feature, implement in this order:
-1. Data model (`app/src/main/kotlin/com/platform/models/`)
-2. Database migration (`shared/src/main/resources/db/migration/`)
-3. Database operations (`app/src/main/kotlin/com/platform/database/`)
-4. Business logic (`app/src/main/kotlin/com/platform/features/`)
-5. API endpoint (`app/src/main/kotlin/com/platform/api/Routes.kt`)
-6. Tests (`app/src/test/kotlin/com/platform/`)
+### Module Assignment
 
-Shared infrastructure (DatabaseFactory, migrations, Page model) lives in `shared/`. The `collector/` module is a separate Ktor process that will poll Kubeshark and write CapturedInputs to the database via the shared module.
+Before implementing a feature, decide which module owns it:
+- **`app`**: Organizations, Services, topology/discovery concerns
+- **`collector`**: CapturedInputs, Kubeshark polling, traffic ingestion
+- **Future replay module**: ReplayRuns, ReplayResponses, ReplayEngine
+
+### Implementation Order (per module)
+
+1. Data model in the owning module's `models/` package
+2. Database migration in `shared/src/main/resources/db/migration/` (V-numbered, sequential)
+3. Exposed table definition in the owning module's `database/` package
+4. Repository in the owning module's `database/` package
+5. API endpoint in the owning module's `api/Routes.kt`
+6. Tests: use the module's `*DatabaseTestBase` (which extends `DatabaseTestBase` from shared fixtures)
+
+### Cross-Module Access
+
+Cross-module data access uses HTTP REST calls, not direct repository imports.
+
+Example: collector tests need org/service fixtures. They call `AppApiTestHelper`, which starts a `testApplication` with the app module's routing and issues `POST /api/organizations` and `POST /api/services`. The collector's `build.gradle.kts` declares `testImplementation(project(":app"))` only for this purpose.
+
+This pattern will extend to the replay engine: it fetches captured inputs via `GET /api/captured-inputs` from the collector, not by importing `CapturedInputRepository` directly.
+
+### Shared Infrastructure
+
+`shared/` provides:
+- `DatabaseFactory` — HikariCP connection pool + Flyway migrations
+- `Page<T>` — cursor-based pagination model
+- `InstantSerializer` — kotlinx.serialization adapter for `java.time.Instant`
+- `DatabaseTestBase` (test fixtures) — starts a TestContainers PostgreSQL instance
+- `KubernetesWorkloadTestBase` (test fixtures) — starts a k3s cluster with test workloads
