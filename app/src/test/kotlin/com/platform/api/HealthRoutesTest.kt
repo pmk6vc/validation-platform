@@ -1,6 +1,6 @@
 package com.platform.api
 
-import com.platform.database.DatabaseTestBase
+import com.platform.database.AppDatabaseTestBase
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -13,7 +13,7 @@ import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
-class HealthRoutesTest : DatabaseTestBase() {
+class HealthRoutesTest : AppDatabaseTestBase() {
     private fun Application.configureTestApplication() {
         install(ContentNegotiation) {
             json(

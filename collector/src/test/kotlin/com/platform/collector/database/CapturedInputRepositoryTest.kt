@@ -1,11 +1,12 @@
-package com.platform.database
+package com.platform.collector.database
 
+import com.platform.database.OrganizationRepository
+import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Provider
 import com.platform.models.Service
 import com.platform.models.capture.CapturedInput
 import com.platform.models.capture.InputType
-import com.platform.models.capture.TrafficClassification
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -16,7 +17,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class CapturedInputRepositoryTest : DatabaseTestBase() {
+class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     private lateinit var testOrg: Organization
     private lateinit var testService: Service
     private lateinit var otherService: Service
@@ -64,12 +65,11 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
         id: String = UUID.randomUUID().toString(),
         serviceId: String = testService.id,
         inputType: InputType = InputType.HTTP,
-        classification: TrafficClassification = TrafficClassification.READ,
-        method: String? = "GET",
-        url: String? = "/api/orders",
+        method: String = "GET",
+        url: String = "/api/orders",
         requestHeaders: Map<String, String>? = null,
         requestBody: String? = null,
-        responseStatus: Int? = 200,
+        responseStatus: Int = 200,
         responseHeaders: Map<String, String>? = null,
         responseBody: String? = """{"orders":[]}""",
         latencyMs: Long? = 42L,
@@ -80,7 +80,6 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
         id = id,
         serviceId = serviceId,
         inputType = inputType,
-        classification = classification,
         method = method,
         url = url,
         requestHeaders = requestHeaders,
@@ -104,7 +103,6 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
             assertEquals(input.id, created.id)
             assertEquals(testService.id, created.serviceId)
             assertEquals(InputType.HTTP, created.inputType)
-            assertEquals(TrafficClassification.READ, created.classification)
         }
 
     @Test
@@ -114,7 +112,6 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
                 createTestInput(
                     method = "POST",
                     url = "/api/orders",
-                    classification = TrafficClassification.WRITE,
                     requestBody = """{"item":"book"}""",
                     responseStatus = 201,
                     latencyMs = 125L,
@@ -127,7 +124,6 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
             assertEquals(input.id, found.id)
             assertEquals("POST", found.method)
             assertEquals("/api/orders", found.url)
-            assertEquals(TrafficClassification.WRITE, found.classification)
             assertEquals("""{"item":"book"}""", found.requestBody)
             assertEquals(201, found.responseStatus)
             assertEquals(125L, found.latencyMs)
@@ -236,31 +232,13 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
         runBlocking {
             val httpInput1 = createTestInput(inputType = InputType.HTTP)
             val httpInput2 = createTestInput(inputType = InputType.HTTP)
-            val kafkaInput = createTestInput(inputType = InputType.KAFKA)
             CapturedInputRepository.create(httpInput1)
             CapturedInputRepository.create(httpInput2)
-            CapturedInputRepository.create(kafkaInput)
 
             val page = CapturedInputRepository.find(inputType = InputType.HTTP)
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.inputType == InputType.HTTP })
-        }
-
-    @Test
-    fun `find with classification should return only inputs with that classification`() =
-        runBlocking {
-            val read1 = createTestInput(classification = TrafficClassification.READ)
-            val read2 = createTestInput(classification = TrafficClassification.READ)
-            val write = createTestInput(classification = TrafficClassification.WRITE)
-            CapturedInputRepository.create(read1)
-            CapturedInputRepository.create(read2)
-            CapturedInputRepository.create(write)
-
-            val page = CapturedInputRepository.find(classification = TrafficClassification.READ)
-
-            assertEquals(2, page.items.size)
-            assertTrue(page.items.all { it.classification == TrafficClassification.READ })
         }
 
     @Test
@@ -270,28 +248,19 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
                 createTestInput(
                     serviceId = testService.id,
                     inputType = InputType.HTTP,
-                    classification = TrafficClassification.WRITE,
                 )
             val wrongService =
                 createTestInput(
                     serviceId = otherService.id,
                     inputType = InputType.HTTP,
-                    classification = TrafficClassification.WRITE,
-                )
-            val wrongClassification =
-                createTestInput(
-                    serviceId = testService.id,
-                    inputType = InputType.HTTP,
-                    classification = TrafficClassification.READ,
                 )
             CapturedInputRepository.create(match)
             CapturedInputRepository.create(wrongService)
-            CapturedInputRepository.create(wrongClassification)
 
             val page =
                 CapturedInputRepository.find(
                     serviceId = testService.id,
-                    classification = TrafficClassification.WRITE,
+                    inputType = InputType.HTTP,
                 )
 
             assertEquals(1, page.items.size)
@@ -391,7 +360,6 @@ class CapturedInputRepositoryTest : DatabaseTestBase() {
 
             assertEquals(3L, deleted)
             assertEquals(0L, CapturedInputRepository.countByService(testService.id))
-            // Other service inputs should be untouched
             assertEquals(2L, CapturedInputRepository.countByService(otherService.id))
         }
 

@@ -1,6 +1,6 @@
 package com.platform.api
 
-import com.platform.database.DatabaseTestBase
+import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
@@ -26,7 +26,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class ServiceRoutesTest : DatabaseTestBase() {
+class ServiceRoutesTest : AppDatabaseTestBase() {
     private lateinit var testOrg: Organization
 
     @BeforeEach

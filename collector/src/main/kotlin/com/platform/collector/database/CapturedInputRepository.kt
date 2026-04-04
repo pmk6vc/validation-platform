@@ -1,9 +1,8 @@
-package com.platform.database
+package com.platform.collector.database
 
 import com.platform.models.Page
 import com.platform.models.capture.CapturedInput
 import com.platform.models.capture.InputType
-import com.platform.models.capture.TrafficClassification
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
@@ -17,9 +16,6 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import java.util.UUID
 
-/**
- * Repository for CapturedInput CRUD operations.
- */
 object CapturedInputRepository {
     const val DEFAULT_PAGE_SIZE = 20
     const val MAX_PAGE_SIZE = 100
@@ -30,7 +26,6 @@ object CapturedInputRepository {
                 it[id] = UUID.fromString(input.id)
                 it[serviceId] = UUID.fromString(input.serviceId)
                 it[inputType] = input.inputType
-                it[classification] = input.classification
                 it[method] = input.method
                 it[url] = input.url
                 it[requestHeaders] = input.requestHeaders
@@ -46,19 +41,12 @@ object CapturedInputRepository {
             input
         }
 
-    /**
-     * Bulk insert for efficiency when storing many captured inputs at once.
-     *
-     * @param inputs List of inputs to store
-     * @return The same list of inputs (unchanged)
-     */
     suspend fun createBatch(inputs: List<CapturedInput>): List<CapturedInput> =
         newSuspendedTransaction {
             CapturedInputs.batchInsert(inputs) { input ->
                 this[CapturedInputs.id] = UUID.fromString(input.id)
                 this[CapturedInputs.serviceId] = UUID.fromString(input.serviceId)
                 this[CapturedInputs.inputType] = input.inputType
-                this[CapturedInputs.classification] = input.classification
                 this[CapturedInputs.method] = input.method
                 this[CapturedInputs.url] = input.url
                 this[CapturedInputs.requestHeaders] = input.requestHeaders
@@ -83,20 +71,9 @@ object CapturedInputRepository {
                 .singleOrNull()
         }
 
-    /**
-     * Find captured inputs with optional filters and cursor-based pagination.
-     *
-     * @param serviceId Filter by service
-     * @param inputType Filter by protocol type
-     * @param classification Filter by read/write classification
-     * @param limit Maximum number of items to return (default 20, max 100)
-     * @param cursor Cursor from previous page's nextCursor, null for first page
-     * @return Page containing captured inputs and nextCursor for pagination
-     */
     suspend fun find(
         serviceId: String? = null,
         inputType: InputType? = null,
-        classification: TrafficClassification? = null,
         limit: Int = DEFAULT_PAGE_SIZE,
         cursor: String? = null,
     ): Page<CapturedInput> =
@@ -110,9 +87,6 @@ object CapturedInputRepository {
             inputType?.let {
                 conditions.add(CapturedInputs.inputType eq it)
             }
-            classification?.let {
-                conditions.add(CapturedInputs.classification eq it)
-            }
             cursor?.let {
                 conditions.add(CapturedInputs.id greater UUID.fromString(it))
             }
@@ -124,7 +98,6 @@ object CapturedInputRepository {
                     CapturedInputs.selectAll().where { conditions.reduce { acc, op -> acc and op } }
                 }
 
-            // Fetch one extra to determine if there's a next page
             val results =
                 query
                     .orderBy(CapturedInputs.id, SortOrder.ASC)
@@ -146,12 +119,6 @@ object CapturedInputRepository {
                 .count()
         }
 
-    /**
-     * Delete all captured inputs for a service.
-     *
-     * @param serviceId Service whose captured inputs should be removed
-     * @return Number of rows deleted
-     */
     suspend fun deleteByService(serviceId: String): Long =
         newSuspendedTransaction {
             CapturedInputs
@@ -164,7 +131,6 @@ object CapturedInputRepository {
             id = this[CapturedInputs.id].toString(),
             serviceId = this[CapturedInputs.serviceId].toString(),
             inputType = this[CapturedInputs.inputType],
-            classification = this[CapturedInputs.classification],
             method = this[CapturedInputs.method],
             url = this[CapturedInputs.url],
             requestHeaders = this[CapturedInputs.requestHeaders],

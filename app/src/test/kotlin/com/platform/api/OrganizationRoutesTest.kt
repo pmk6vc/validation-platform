@@ -1,6 +1,6 @@
 package com.platform.api
 
-import com.platform.database.DatabaseTestBase
+import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.models.Organization
 import io.ktor.client.request.get
@@ -18,7 +18,7 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class OrganizationRoutesTest : DatabaseTestBase() {
+class OrganizationRoutesTest : AppDatabaseTestBase() {
     private fun Application.configureTestApplication() {
         install(ContentNegotiation) {
             json(
