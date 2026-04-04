@@ -610,17 +610,6 @@ Adapters normalize data from different sources into the unified model.
 | Leak detection | Linear regression | Detect memory growth trend over time |
 | Interface | API-first (CLI deferred) | Enables UI/webhook integration without binary distribution; CLI can wrap API later if needed |
 
-## Known Issues & Technical Debt
-
-Architecture review performed 2026-04-03. Items ordered by priority.
-
-### Address When Adding Third Module
-
-| # | Issue | Location | Fix |
-|---|-------|----------|-----|
-| 4 | Application startup code duplicated across app and collector — identical DB config resolution + `ContentNegotiation` setup | `Application.kt:17-43`, `CollectorApplication.kt:17-43` | Extract `configureDatabase()` and `configureContentNegotiation()` into `shared/` |
-| 5 | Collector test dependency on app internals — `testImplementation(project(":app"))` imports `CreateOrganizationRequest`, `configureRouting` directly | `collector/build.gradle.kts:38`, `AppApiTestHelper.kt:3-5` | Long-term: extract shared test DTOs into `shared` testFixtures, or use synthetic UUIDs that bypass FK |
-
 ---
 
 ## Implementation Guidelines

@@ -38,7 +38,6 @@ fun Application.module(initDatabase: Boolean = true) {
     install(ContentNegotiation) {
         json(
             Json {
-                prettyPrint = true
                 ignoreUnknownKeys = true
             },
         )
