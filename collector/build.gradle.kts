@@ -34,9 +34,11 @@ dependencies {
     // Logging
     implementation(libs.logback)
 
-    // Testing — app dependency for fixture setup (OrganizationRepository, ServiceRepository)
+    // Testing — app dependency for fixture setup via POST API
     testImplementation(project(":app"))
     testImplementation(testFixtures(project(":shared")))
+    testImplementation(libs.ktor.server.test.host)
+    testImplementation(libs.bundles.ktor.client)
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.testcontainers)

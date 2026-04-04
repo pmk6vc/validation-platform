@@ -2,11 +2,6 @@ package com.platform.collector.database
 
 import com.platform.collector.models.CapturedInput
 import com.platform.collector.models.InputType
-import com.platform.database.OrganizationRepository
-import com.platform.database.ServiceRepository
-import com.platform.models.Organization
-import com.platform.models.Provider
-import com.platform.models.Service
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -18,52 +13,33 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
-    private lateinit var testOrg: Organization
-    private lateinit var testService: Service
-    private lateinit var otherService: Service
+    private lateinit var testServiceId: String
+    private lateinit var otherServiceId: String
 
     @BeforeEach
     fun setupServiceFixtures() {
         runBlocking {
-            testOrg =
-                Organization(
-                    id = UUID.randomUUID().toString(),
-                    name = "Test Organization",
-                    createdAt = Instant.now(),
-                )
-            OrganizationRepository.create(testOrg)
+            val org = AppApiTestHelper.createOrganization("Test Organization")
 
-            testService =
-                Service(
-                    id = UUID.randomUUID().toString(),
-                    organizationId = testOrg.id,
-                    cluster = "prod",
-                    namespace = "default",
+            val service =
+                AppApiTestHelper.createService(
+                    organizationId = org.id,
                     name = "order-service",
-                    provider = Provider.KUBERNETES,
-                    discoveredAt = Instant.now(),
-                    lastSeenAt = Instant.now(),
                 )
-            ServiceRepository.create(testService)
+            testServiceId = service.id
 
-            otherService =
-                Service(
-                    id = UUID.randomUUID().toString(),
-                    organizationId = testOrg.id,
-                    cluster = "prod",
-                    namespace = "default",
+            val other =
+                AppApiTestHelper.createService(
+                    organizationId = org.id,
                     name = "payment-service",
-                    provider = Provider.KUBERNETES,
-                    discoveredAt = Instant.now(),
-                    lastSeenAt = Instant.now(),
                 )
-            ServiceRepository.create(otherService)
+            otherServiceId = other.id
         }
     }
 
     private fun createTestInput(
         id: String = UUID.randomUUID().toString(),
-        serviceId: String = testService.id,
+        serviceId: String = testServiceId,
         inputType: InputType = InputType.HTTP,
         method: String = "GET",
         url: String = "/api/orders",
@@ -101,7 +77,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
             val created = CapturedInputRepository.create(input)
 
             assertEquals(input.id, created.id)
-            assertEquals(testService.id, created.serviceId)
+            assertEquals(testServiceId, created.serviceId)
             assertEquals(InputType.HTTP, created.inputType)
         }
 
@@ -197,7 +173,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
 
             CapturedInputRepository.createBatch(inputs)
 
-            val page = CapturedInputRepository.find(serviceId = testService.id)
+            val page = CapturedInputRepository.find(serviceId = testServiceId)
             assertEquals(5, page.items.size)
         }
 
@@ -214,17 +190,17 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `find with serviceId should return only inputs for that service`() =
         runBlocking {
-            val input1 = createTestInput(serviceId = testService.id)
-            val input2 = createTestInput(serviceId = testService.id)
-            val input3 = createTestInput(serviceId = otherService.id)
+            val input1 = createTestInput(serviceId = testServiceId)
+            val input2 = createTestInput(serviceId = testServiceId)
+            val input3 = createTestInput(serviceId = otherServiceId)
             CapturedInputRepository.create(input1)
             CapturedInputRepository.create(input2)
             CapturedInputRepository.create(input3)
 
-            val page = CapturedInputRepository.find(serviceId = testService.id)
+            val page = CapturedInputRepository.find(serviceId = testServiceId)
 
             assertEquals(2, page.items.size)
-            assertTrue(page.items.all { it.serviceId == testService.id })
+            assertTrue(page.items.all { it.serviceId == testServiceId })
         }
 
     @Test
@@ -246,12 +222,12 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             val match =
                 createTestInput(
-                    serviceId = testService.id,
+                    serviceId = testServiceId,
                     inputType = InputType.HTTP,
                 )
             val wrongService =
                 createTestInput(
-                    serviceId = otherService.id,
+                    serviceId = otherServiceId,
                     inputType = InputType.HTTP,
                 )
             CapturedInputRepository.create(match)
@@ -259,7 +235,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
 
             val page =
                 CapturedInputRepository.find(
-                    serviceId = testService.id,
+                    serviceId = testServiceId,
                     inputType = InputType.HTTP,
                 )
 
@@ -334,10 +310,10 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `countByService should return correct count`() =
         runBlocking {
-            repeat(4) { CapturedInputRepository.create(createTestInput(serviceId = testService.id)) }
-            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherService.id)) }
+            repeat(4) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId)) }
+            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherServiceId)) }
 
-            val count = CapturedInputRepository.countByService(testService.id)
+            val count = CapturedInputRepository.countByService(testServiceId)
 
             assertEquals(4L, count)
         }
@@ -345,7 +321,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `countByService should return zero when no inputs exist`() =
         runBlocking {
-            val count = CapturedInputRepository.countByService(testService.id)
+            val count = CapturedInputRepository.countByService(testServiceId)
 
             assertEquals(0L, count)
         }
@@ -353,20 +329,20 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `deleteByService should remove all inputs for that service`() =
         runBlocking {
-            repeat(3) { CapturedInputRepository.create(createTestInput(serviceId = testService.id)) }
-            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherService.id)) }
+            repeat(3) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId)) }
+            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherServiceId)) }
 
-            val deleted = CapturedInputRepository.deleteByService(testService.id)
+            val deleted = CapturedInputRepository.deleteByService(testServiceId)
 
             assertEquals(3L, deleted)
-            assertEquals(0L, CapturedInputRepository.countByService(testService.id))
-            assertEquals(2L, CapturedInputRepository.countByService(otherService.id))
+            assertEquals(0L, CapturedInputRepository.countByService(testServiceId))
+            assertEquals(2L, CapturedInputRepository.countByService(otherServiceId))
         }
 
     @Test
     fun `deleteByService should return zero when no inputs exist`() =
         runBlocking {
-            val deleted = CapturedInputRepository.deleteByService(testService.id)
+            val deleted = CapturedInputRepository.deleteByService(testServiceId)
 
             assertEquals(0L, deleted)
         }
