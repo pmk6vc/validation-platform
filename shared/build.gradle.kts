@@ -22,10 +22,11 @@ dependencies {
     // Database migrations
     implementation(libs.flyway.core)
 
-    // Test fixtures: shared test infrastructure for k3s integration tests
+    // Test fixtures: shared test infrastructure for integration tests
     testFixturesImplementation(libs.junit.jupiter)
     testFixturesImplementation(libs.testcontainers)
     testFixturesImplementation(libs.testcontainers.k3s)
+    testFixturesImplementation(libs.testcontainers.postgresql)
     testFixturesImplementation(libs.fabric8.kubernetes.client)
     testFixturesImplementation(libs.logback)
 

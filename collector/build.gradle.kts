@@ -27,6 +27,33 @@ dependencies {
     // Ktor server
     implementation(libs.bundles.ktor.server)
 
+    // Database (Exposed + PostgreSQL) - needed for collector-owned tables and repositories
+    implementation(libs.bundles.exposed)
+    implementation(libs.postgresql)
+
     // Logging
     implementation(libs.logback)
+
+    // Testing — app dependency for fixture setup via POST API
+    testImplementation(project(":app"))
+    testImplementation(testFixtures(project(":shared")))
+    testImplementation(libs.ktor.server.test.host)
+    testImplementation(libs.bundles.ktor.client)
+    testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.testcontainers)
+    testImplementation(libs.testcontainers.junit)
+    testImplementation(libs.testcontainers.postgresql)
+}
+
+tasks.test {
+    useJUnitPlatform()
+
+    maxParallelForks = 1
+
+    val colimaSocket = file("${System.getProperty("user.home")}/.colima/docker.sock")
+    if (colimaSocket.exists()) {
+        environment("DOCKER_HOST", "unix://${colimaSocket.absolutePath}")
+        environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
+    }
 }

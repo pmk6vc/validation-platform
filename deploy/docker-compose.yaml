@@ -30,6 +30,12 @@ services:
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   collector:
     build:
@@ -45,8 +51,12 @@ services:
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "${COLLECTOR_PORT:-8081}:8081"
-    profiles:
-      - collector  # opt-in until collector has code
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   platform-data:

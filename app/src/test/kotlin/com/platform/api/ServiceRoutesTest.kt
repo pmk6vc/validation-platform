@@ -1,6 +1,6 @@
 package com.platform.api
 
-import com.platform.database.DatabaseTestBase
+import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
@@ -8,12 +8,17 @@ import com.platform.models.Page
 import com.platform.models.Provider
 import com.platform.models.Service
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -25,8 +30,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 
-class ServiceRoutesTest : DatabaseTestBase() {
+class ServiceRoutesTest : AppDatabaseTestBase() {
     private lateinit var testOrg: Organization
 
     @BeforeEach
@@ -48,6 +54,13 @@ class ServiceRoutesTest : DatabaseTestBase() {
         }
         configureRouting()
     }
+
+    private fun ApplicationTestBuilder.createJsonClient() =
+        createClient {
+            install(ClientContentNegotiation) {
+                json(Json { ignoreUnknownKeys = true })
+            }
+        }
 
     private fun createService(
         name: String = "test-service",
@@ -235,6 +248,78 @@ class ServiceRoutesTest : DatabaseTestBase() {
             val response = client.get("/api/services/${UUID.randomUUID()}")
 
             assertEquals(HttpStatusCode.NotFound, response.status)
+        }
+
+    @Test
+    fun `POST services should create and return service with 201`() =
+        testApplication {
+            application { configureTestApplication() }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            organizationId = testOrg.id,
+                            cluster = "prod",
+                            namespace = "default",
+                            name = "new-service",
+                            provider = Provider.KUBERNETES,
+                        ),
+                    )
+                }
+
+            assertEquals(HttpStatusCode.Created, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains("new-service"))
+            assertTrue(body.contains("\"id\""))
+            assertTrue(body.contains("KUBERNETES"))
+            assertTrue(body.contains(testOrg.id))
+        }
+
+    @Test
+    fun `POST services should persist service retrievable by GET`() =
+        testApplication {
+            application { configureTestApplication() }
+            val jsonClient = createJsonClient()
+
+            val createResponse =
+                jsonClient.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            organizationId = testOrg.id,
+                            cluster = "staging",
+                            namespace = "backend",
+                            name = "persist-service",
+                            metadata = mapOf("team" to "platform"),
+                        ),
+                    )
+                }
+            assertEquals(HttpStatusCode.Created, createResponse.status)
+
+            val created = Json.decodeFromString<Service>(createResponse.bodyAsText())
+
+            val getResponse = jsonClient.get("/api/services/${created.id}")
+            assertEquals(HttpStatusCode.OK, getResponse.status)
+            val body = getResponse.bodyAsText()
+            assertTrue(body.contains("persist-service"))
+            assertTrue(body.contains("platform"))
+        }
+
+    @Test
+    fun `POST services with missing required fields returns 400`() =
+        testApplication {
+            application { configureTestApplication() }
+
+            val response =
+                client.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{}")
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test

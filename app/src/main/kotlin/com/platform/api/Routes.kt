@@ -2,14 +2,20 @@ package com.platform.api
 
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
+import com.platform.models.Organization
+import com.platform.models.Service
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
+import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import java.time.Instant
+import java.util.UUID
 
 fun Application.configureRouting() {
     routing {
@@ -31,6 +37,18 @@ fun Application.configureRouting() {
 
                     val page = OrganizationRepository.find(limit = limit, cursor = cursor)
                     call.respond(page)
+                }
+
+                post {
+                    val request = call.receive<CreateOrganizationRequest>()
+                    val organization =
+                        Organization(
+                            id = UUID.randomUUID().toString(),
+                            name = request.name,
+                            createdAt = Instant.now(),
+                        )
+                    val created = OrganizationRepository.create(organization)
+                    call.respond(HttpStatusCode.Created, created)
                 }
 
                 get("/{id}") {
@@ -63,6 +81,25 @@ fun Application.configureRouting() {
                             cursor = cursor,
                         )
                     call.respond(page)
+                }
+
+                post {
+                    val request = call.receive<CreateServiceRequest>()
+                    val now = Instant.now()
+                    val service =
+                        Service(
+                            id = UUID.randomUUID().toString(),
+                            organizationId = request.organizationId,
+                            cluster = request.cluster,
+                            namespace = request.namespace,
+                            name = request.name,
+                            provider = request.provider,
+                            discoveredAt = now,
+                            lastSeenAt = now,
+                            metadata = request.metadata,
+                        )
+                    val created = ServiceRepository.create(service)
+                    call.respond(HttpStatusCode.Created, created)
                 }
 
                 get("/{id}") {

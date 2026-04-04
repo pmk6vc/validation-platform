@@ -1,6 +1,6 @@
-package com.platform.api
+package com.platform.collector.api
 
-import com.platform.database.AppDatabaseTestBase
+import com.platform.collector.database.CollectorDatabaseTestBase
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -13,7 +13,7 @@ import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
-class HealthRoutesTest : AppDatabaseTestBase() {
+class HealthRoutesTest : CollectorDatabaseTestBase() {
     private fun Application.configureTestApplication() {
         install(ContentNegotiation) {
             json(
@@ -25,17 +25,6 @@ class HealthRoutesTest : AppDatabaseTestBase() {
         }
         configureRouting()
     }
-
-    @Test
-    fun `GET root should return welcome message`() =
-        testApplication {
-            application { configureTestApplication() }
-
-            val response = client.get("/")
-
-            assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals("Validation Platform API", response.bodyAsText())
-        }
 
     @Test
     fun `GET health should return OK`() =

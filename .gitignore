@@ -37,3 +37,4 @@ out/
 
 ### Claude Code ###
 .claude/
+.mcp.json
