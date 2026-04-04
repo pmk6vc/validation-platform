@@ -44,7 +44,7 @@ This is a **validation and release platform** that helps engineering teams valid
 ### What's Working Now
 
 - **Two Ktor servers**: `app` on port 8080 (organizations, services) and `collector` on port 8081 (captured inputs)
-- **PostgreSQL database** with Flyway migrations (V0001–V0004), all migrations in `shared/`
+- **PostgreSQL database** with Flyway migrations (V0001–V0005), all migrations in `shared/`
 - **Multi-tenant data model** with Organizations and Services (owned by `app`)
 - **CapturedInput model** (owned by `collector`) — HTTP-first, non-nullable method/url/responseStatus
 - **Pagination and filtering** on all list endpoints (cursor-based)
@@ -197,7 +197,7 @@ brew install colima docker && colima start
 ```
 
 **Module structure:**
-- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0004`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
+- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0005`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
 - `app/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
 - `test-services/` — Standalone Kotlin microservices for k3s integration testing
@@ -618,8 +618,7 @@ Architecture review performed 2026-04-03. Items ordered by priority.
 
 | # | Issue | Location | Fix |
 |---|-------|----------|-----|
-| 1 | `TIMESTAMP WITHOUT TIME ZONE` in all migrations — timestamps silently misinterpreted if DB timezone ≠ UTC | V0001 line 4, V0002 lines 8-9, V0004 line 15 | New migration: `ALTER COLUMN ... TYPE TIMESTAMPTZ` |
-| 2 | `.env` with credentials committed to git — establishes dangerous pattern | `.env`, `.gitignore` | `git rm --cached .env`, add to `.gitignore`, restore `.env.example` |
+| ~~1~~ | ~~`TIMESTAMP WITHOUT TIME ZONE` in all migrations~~ | ~~V0001, V0002, V0004~~ | ~~Fixed in V0005~~ |
 
 ### Fix Before Replay Phase
 
