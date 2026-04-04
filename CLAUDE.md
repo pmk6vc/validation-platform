@@ -618,7 +618,7 @@ Architecture review performed 2026-04-03. Items ordered by priority.
 
 | # | Issue | Location | Fix |
 |---|-------|----------|-----|
-| 2 | `ServiceRepository.upsert` has TOCTOU race — two concurrent upserts can both SELECT "no row", both INSERT, one fails with unique constraint 500 | `ServiceRepository.kt:105-128` | Use PostgreSQL `INSERT ... ON CONFLICT DO UPDATE` |
+| ~~2~~ | ~~`ServiceRepository.upsert` TOCTOU race~~ | ~~`ServiceRepository.kt`~~ | ~~Fixed: uses Exposed `upsert` with `onUpdateExclude`~~ |
 | 3 | Blocking Kubernetes API call on coroutine dispatcher — `discoverServices` calls synchronous Fabric8 client without `Dispatchers.IO`, can starve Ktor worker threads | `KubernetesAdapter.kt:82` | Wrap in `withContext(Dispatchers.IO)` |
 
 ### Address When Adding Third Module

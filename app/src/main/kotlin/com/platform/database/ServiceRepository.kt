@@ -15,7 +15,6 @@ import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
-import org.jetbrains.exposed.sql.update
 import org.jetbrains.exposed.sql.upsert
 import java.util.UUID
 
@@ -117,27 +116,38 @@ object ServiceRepository {
 
     suspend fun upsert(service: Service): Service =
         newSuspendedTransaction {
-            val existingId =
-                Services
-                    .selectAll()
-                    .where {
-                        (Services.organizationId eq UUID.fromString(service.organizationId)) and
-                            (Services.cluster eq service.cluster) and
-                            (Services.namespace eq service.namespace) and
-                            (Services.name eq service.name)
-                    }.map { it[Services.id] }
-                    .singleOrNull()
-
-            if (existingId != null) {
-                Services.update({ Services.id eq existingId }) {
-                    it[provider] = service.provider
-                    it[lastSeenAt] = service.lastSeenAt
-                    it[metadata] = service.metadata
-                }
-                service.copy(id = existingId.toString())
-            } else {
-                create(service)
+            Services.upsert(
+                keys = arrayOf(Services.organizationId, Services.cluster, Services.namespace, Services.name),
+                onUpdateExclude = listOf(
+                    Services.id,
+                    Services.organizationId,
+                    Services.cluster,
+                    Services.namespace,
+                    Services.name,
+                    Services.discoveredAt,
+                ),
+            ) {
+                it[id] = UUID.fromString(service.id)
+                it[organizationId] = UUID.fromString(service.organizationId)
+                it[cluster] = service.cluster
+                it[namespace] = service.namespace
+                it[name] = service.name
+                it[provider] = service.provider
+                it[discoveredAt] = service.discoveredAt
+                it[lastSeenAt] = service.lastSeenAt
+                it[metadata] = service.metadata
             }
+
+            // Return the service as it exists in the database (may have a different id if it already existed)
+            Services
+                .selectAll()
+                .where {
+                    (Services.organizationId eq UUID.fromString(service.organizationId)) and
+                        (Services.cluster eq service.cluster) and
+                        (Services.namespace eq service.namespace) and
+                        (Services.name eq service.name)
+                }.map { it.toService() }
+                .single()
         }
 
     suspend fun delete(id: String): Boolean =
