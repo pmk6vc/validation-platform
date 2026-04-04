@@ -3,12 +3,15 @@ package com.platform.collector.database
 import com.platform.collector.models.CapturedInput
 import com.platform.collector.models.InputType
 import com.platform.models.Page
+import com.platform.models.decodeCursor
+import com.platform.models.encodeCursor
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.batchInsert
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
@@ -88,7 +91,11 @@ object CapturedInputRepository {
                 conditions.add(CapturedInputs.inputType eq it)
             }
             cursor?.let {
-                conditions.add(CapturedInputs.id greater UUID.fromString(it))
+                val (cursorTimestamp, cursorId) = decodeCursor(it)
+                conditions.add(
+                    (CapturedInputs.capturedAt greater cursorTimestamp) or
+                        ((CapturedInputs.capturedAt eq cursorTimestamp) and (CapturedInputs.id greater cursorId)),
+                )
             }
 
             val query =
@@ -100,13 +107,18 @@ object CapturedInputRepository {
 
             val results =
                 query
-                    .orderBy(CapturedInputs.id, SortOrder.ASC)
+                    .orderBy(CapturedInputs.capturedAt to SortOrder.ASC, CapturedInputs.id to SortOrder.ASC)
                     .limit(pageLimit + 1)
                     .map { it.toCapturedInput() }
 
             val hasMore = results.size > pageLimit
             val items = if (hasMore) results.dropLast(1) else results
-            val nextCursor = if (hasMore) items.last().id else null
+            val nextCursor =
+                if (hasMore) {
+                    encodeCursor(items.last().capturedAt, items.last().id)
+                } else {
+                    null
+                }
 
             Page(items = items, nextCursor = nextCursor)
         }

@@ -2,6 +2,8 @@ package com.platform.database
 
 import com.platform.models.Page
 import com.platform.models.Service
+import com.platform.models.decodeCursor
+import com.platform.models.encodeCursor
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
@@ -10,9 +12,11 @@ import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.jetbrains.exposed.sql.update
+import org.jetbrains.exposed.sql.upsert
 import java.util.UUID
 
 /**
@@ -78,7 +82,11 @@ object ServiceRepository {
                 conditions.add(Services.namespace eq it)
             }
             cursor?.let {
-                conditions.add(Services.id greater UUID.fromString(it))
+                val (cursorTimestamp, cursorId) = decodeCursor(it)
+                conditions.add(
+                    (Services.discoveredAt greater cursorTimestamp) or
+                        ((Services.discoveredAt eq cursorTimestamp) and (Services.id greater cursorId)),
+                )
             }
 
             val query =
@@ -91,13 +99,18 @@ object ServiceRepository {
             // Fetch one extra to determine if there's a next page
             val results =
                 query
-                    .orderBy(Services.id, SortOrder.ASC)
+                    .orderBy(Services.discoveredAt to SortOrder.ASC, Services.id to SortOrder.ASC)
                     .limit(pageLimit + 1)
                     .map { it.toService() }
 
             val hasMore = results.size > pageLimit
             val items = if (hasMore) results.dropLast(1) else results
-            val nextCursor = if (hasMore) items.last().id else null
+            val nextCursor =
+                if (hasMore) {
+                    encodeCursor(items.last().discoveredAt, items.last().id)
+                } else {
+                    null
+                }
 
             Page(items = items, nextCursor = nextCursor)
         }

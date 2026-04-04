@@ -2,10 +2,13 @@ package com.platform.collector
 
 import com.platform.collector.api.configureRouting
 import com.platform.database.DatabaseFactory
+import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.response.respond
 import kotlinx.serialization.json.Json
 
 fun main(args: Array<String>) {
@@ -30,6 +33,12 @@ fun Application.module() {
             ?: "postgres"
 
     DatabaseFactory.init(dbUrl, dbUser, dbPassword)
+
+    install(StatusPages) {
+        exception<IllegalArgumentException> { call, cause ->
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
+        }
+    }
 
     install(ContentNegotiation) {
         json(

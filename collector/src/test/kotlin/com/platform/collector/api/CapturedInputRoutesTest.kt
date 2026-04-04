@@ -14,6 +14,8 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.response.respond
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -42,6 +44,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     }
 
     private fun Application.configureTestApplication() {
+        install(StatusPages) {
+            exception<IllegalArgumentException> { call, cause ->
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
+            }
+        }
         install(ContentNegotiation) {
             json(
                 Json {
@@ -241,6 +248,16 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs/${UUID.randomUUID()}")
 
             assertEquals(HttpStatusCode.NotFound, response.status)
+        }
+
+    @Test
+    fun `GET captured-input by id should return 400 for malformed UUID`() =
+        testApplication {
+            application { configureTestApplication() }
+
+            val response = client.get("/api/captured-inputs/not-a-uuid")
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
