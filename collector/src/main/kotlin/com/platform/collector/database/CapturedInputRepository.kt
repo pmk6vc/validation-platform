@@ -1,8 +1,8 @@
 package com.platform.collector.database
 
+import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.InputType
 import com.platform.models.Page
-import com.platform.models.capture.CapturedInput
-import com.platform.models.capture.InputType
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder

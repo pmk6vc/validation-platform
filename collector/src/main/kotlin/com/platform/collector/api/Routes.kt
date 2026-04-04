@@ -1,7 +1,7 @@
 package com.platform.collector.api
 
 import com.platform.collector.database.CapturedInputRepository
-import com.platform.models.capture.InputType
+import com.platform.collector.models.InputType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call

@@ -1,12 +1,12 @@
 package com.platform.collector.database
 
+import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.InputType
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Provider
 import com.platform.models.Service
-import com.platform.models.capture.CapturedInput
-import com.platform.models.capture.InputType
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test

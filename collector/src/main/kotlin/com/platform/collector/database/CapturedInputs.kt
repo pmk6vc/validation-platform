@@ -1,6 +1,6 @@
 package com.platform.collector.database
 
-import com.platform.models.capture.InputType
+import com.platform.collector.models.InputType
 import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.javatime.timestamp

@@ -23,7 +23,6 @@ repositories {
 
 dependencies {
     implementation(project(":shared"))
-    implementation(project(":app"))
 
     // Ktor server
     implementation(libs.bundles.ktor.server)
@@ -35,7 +34,8 @@ dependencies {
     // Logging
     implementation(libs.logback)
 
-    // Testing
+    // Testing — app dependency for fixture setup (OrganizationRepository, ServiceRepository)
+    testImplementation(project(":app"))
     testImplementation(testFixtures(project(":shared")))
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.junit.jupiter)

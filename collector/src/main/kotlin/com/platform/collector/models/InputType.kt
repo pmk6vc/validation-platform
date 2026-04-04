@@ -1,4 +1,4 @@
-package com.platform.models.capture
+package com.platform.collector.models
 
 import kotlinx.serialization.Serializable
 
