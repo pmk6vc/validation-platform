@@ -7,6 +7,15 @@ import org.jetbrains.exposed.sql.Database
  * Database configuration and initialization.
  */
 object DatabaseFactory {
+    fun initFromEnvironment() {
+        val jdbcUrl =
+            System.getenv("DATABASE_URL")
+                ?: "jdbc:postgresql://localhost:5432/platform"
+        val username = System.getenv("DATABASE_USER") ?: "postgres"
+        val password = System.getenv("DATABASE_PASSWORD") ?: "postgres"
+        init(jdbcUrl, username, password)
+    }
+
     fun init(
         jdbcUrl: String,
         username: String,

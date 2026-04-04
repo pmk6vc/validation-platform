@@ -3,6 +3,7 @@ package com.platform.api
 import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.models.Organization
+import com.platform.module
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -11,15 +12,9 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.response.respond
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
@@ -28,34 +23,6 @@ import kotlin.test.assertTrue
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 
 class OrganizationRoutesTest : AppDatabaseTestBase() {
-    private fun Application.configureTestApplication() {
-        install(StatusPages) {
-            exception<IllegalArgumentException> { call, cause ->
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
-            }
-            exception<ExposedSQLException> { call, cause ->
-                when (cause.sqlState) {
-                    "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
-                    "23503" ->
-                        call.respond(
-                            HttpStatusCode.BadRequest,
-                            mapOf("error" to "Referenced resource not found"),
-                        )
-                    else -> throw cause
-                }
-            }
-        }
-        install(ContentNegotiation) {
-            json(
-                Json {
-                    prettyPrint = true
-                    ignoreUnknownKeys = true
-                },
-            )
-        }
-        configureRouting()
-    }
-
     private fun ApplicationTestBuilder.createJsonClient() =
         createClient {
             install(ClientContentNegotiation) {
@@ -66,7 +33,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations should return empty page when no organizations`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/organizations")
 
@@ -80,7 +47,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations should return all organizations`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val org1 = Organization(UUID.randomUUID().toString(), "Org 1", Instant.now())
             val org2 = Organization(UUID.randomUUID().toString(), "Org 2", Instant.now())
@@ -98,7 +65,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organization by id should return organization when exists`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val org = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
             OrganizationRepository.create(org)
@@ -114,7 +81,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organization by id should return 404 when not exists`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/organizations/${UUID.randomUUID()}")
 
@@ -124,7 +91,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organization by id should return 400 for malformed UUID`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/organizations/not-a-uuid")
 
@@ -134,7 +101,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations should create and return organization with 201`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -153,7 +120,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations should persist organization retrievable by GET`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
             val createResponse =
@@ -173,7 +140,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations with missing name returns 400`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response =
                 client.post("/api/organizations") {

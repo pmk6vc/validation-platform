@@ -5,21 +5,15 @@ import com.platform.collector.database.CapturedInputRepository
 import com.platform.collector.database.CollectorDatabaseTestBase
 import com.platform.collector.models.CapturedInput
 import com.platform.collector.models.InputType
+import com.platform.collector.module
 import com.platform.models.Page
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.response.respond
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -44,34 +38,6 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
     }
 
-    private fun Application.configureTestApplication() {
-        install(StatusPages) {
-            exception<IllegalArgumentException> { call, cause ->
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
-            }
-            exception<ExposedSQLException> { call, cause ->
-                when (cause.sqlState) {
-                    "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
-                    "23503" ->
-                        call.respond(
-                            HttpStatusCode.BadRequest,
-                            mapOf("error" to "Referenced resource not found"),
-                        )
-                    else -> throw cause
-                }
-            }
-        }
-        install(ContentNegotiation) {
-            json(
-                Json {
-                    prettyPrint = true
-                    ignoreUnknownKeys = true
-                },
-            )
-        }
-        configureRouting()
-    }
-
     private fun createTestInput(
         id: String = UUID.randomUUID().toString(),
         serviceId: String = testServiceId,
@@ -94,7 +60,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs should return empty page when no inputs`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/captured-inputs")
 
@@ -108,7 +74,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs should return all inputs`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val input1 = createTestInput(url = "/api/orders/1")
             val input2 = createTestInput(url = "/api/orders/2")
@@ -126,7 +92,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with serviceId filter should return filtered inputs`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val org = runBlocking { AppApiTestHelper.createOrganization("Other Org") }
             val otherService =
@@ -153,7 +119,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with inputType filter should return filtered inputs`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val httpInput = createTestInput(inputType = InputType.HTTP, url = "/api/http")
             CapturedInputRepository.create(httpInput)
@@ -168,7 +134,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with invalid inputType should return 400`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/captured-inputs?inputType=INVALID")
 
@@ -178,7 +144,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with limit should return paginated response`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             repeat(5) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
@@ -196,7 +162,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with cursor should return next page`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             repeat(5) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
@@ -231,7 +197,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by id should return input when exists`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val input =
                 createTestInput(
@@ -255,7 +221,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by id should return 404 when not exists`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/captured-inputs/${UUID.randomUUID()}")
 
@@ -265,7 +231,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by id should return 400 for malformed UUID`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/captured-inputs/not-a-uuid")
 
@@ -275,7 +241,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs with serviceId should delete and return count`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             repeat(3) { CapturedInputRepository.create(createTestInput()) }
 
@@ -290,7 +256,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs without serviceId should return 400`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.delete("/api/captured-inputs")
 
@@ -300,7 +266,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs with no matching inputs should return zero`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.delete("/api/captured-inputs?serviceId=${UUID.randomUUID()}")
 

@@ -614,27 +614,12 @@ Adapters normalize data from different sources into the unified model.
 
 Architecture review performed 2026-04-03. Items ordered by priority.
 
-### Fix Before Replay Phase
-
-| # | Issue | Location | Fix |
-|---|-------|----------|-----|
-| 3 | Blocking Kubernetes API call on coroutine dispatcher — `discoverServices` calls synchronous Fabric8 client without `Dispatchers.IO`, can starve Ktor worker threads | `KubernetesAdapter.kt:82` | Wrap in `withContext(Dispatchers.IO)` |
-
 ### Address When Adding Third Module
 
 | # | Issue | Location | Fix |
 |---|-------|----------|-----|
 | 4 | Application startup code duplicated across app and collector — identical DB config resolution + `ContentNegotiation` setup | `Application.kt:17-43`, `CollectorApplication.kt:17-43` | Extract `configureDatabase()` and `configureContentNegotiation()` into `shared/` |
 | 5 | Collector test dependency on app internals — `testImplementation(project(":app"))` imports `CreateOrganizationRequest`, `configureRouting` directly | `collector/build.gradle.kts:38`, `AppApiTestHelper.kt:3-5` | Long-term: extract shared test DTOs into `shared` testFixtures, or use synthetic UUIDs that bypass FK |
-
-### Minor Cleanup
-
-| # | Issue | Fix |
-|---|-------|-----|
-| 6 | `captured_inputs.service_id` FK in SQL migration but not in Exposed table definition — inconsistent | Either add `.references()` to Exposed column or document as intentional |
-| 7 | Stale Pixie references in adapter KDoc | `ServiceAdapter.kt:8`, `ManualSeedAdapter.kt:15` — replace "Pixie" with "Kubeshark" |
-| 8 | `DELETE /api/captured-inputs` response uses untyped `mapOf("deleted" to deleted)` | Add a `DeleteResponse(val deleted: Long)` data class |
-| 9 | `prettyPrint = true` in production JSON config — wastes bandwidth | Consider removing for non-dev environments |
 
 ---
 

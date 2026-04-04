@@ -2,7 +2,7 @@ package com.platform.collector.database
 
 import com.platform.api.CreateOrganizationRequest
 import com.platform.api.CreateServiceRequest
-import com.platform.api.configureRouting
+import com.platform.module
 import io.ktor.client.HttpClient
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -10,8 +10,6 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.Serializable
@@ -37,7 +35,7 @@ object AppApiTestHelper {
     suspend fun createOrganization(name: String): CreatedOrganization {
         var result: CreatedOrganization? = null
         testApplication {
-            configureApp()
+            application { module(initDatabase = false) }
             val client = createJsonClient()
             val response =
                 client.post("/api/organizations") {
@@ -57,7 +55,7 @@ object AppApiTestHelper {
     ): CreatedService {
         var result: CreatedService? = null
         testApplication {
-            configureApp()
+            application { module(initDatabase = false) }
             val client = createJsonClient()
             val response =
                 client.post("/api/services") {
@@ -74,20 +72,6 @@ object AppApiTestHelper {
             result = lenientJson.decodeFromString<CreatedService>(response.bodyAsText())
         }
         return result!!
-    }
-
-    private fun ApplicationTestBuilder.configureApp() {
-        application {
-            install(ContentNegotiation) {
-                json(
-                    Json {
-                        prettyPrint = true
-                        ignoreUnknownKeys = true
-                    },
-                )
-            }
-            configureRouting()
-        }
     }
 
     private fun ApplicationTestBuilder.createJsonClient(): HttpClient =

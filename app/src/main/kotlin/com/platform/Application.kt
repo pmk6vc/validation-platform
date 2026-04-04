@@ -17,23 +17,10 @@ fun main(args: Array<String>) {
         .main(args)
 }
 
-fun Application.module() {
-    val dbUrl =
-        environment.config.propertyOrNull("database.url")?.getString()
-            ?: System.getenv("DATABASE_URL")
-            ?: "jdbc:postgresql://localhost:5432/platform"
-
-    val dbUser =
-        environment.config.propertyOrNull("database.user")?.getString()
-            ?: System.getenv("DATABASE_USER")
-            ?: "postgres"
-
-    val dbPassword =
-        environment.config.propertyOrNull("database.password")?.getString()
-            ?: System.getenv("DATABASE_PASSWORD")
-            ?: "postgres"
-
-    DatabaseFactory.init(dbUrl, dbUser, dbPassword)
+fun Application.module(initDatabase: Boolean = true) {
+    if (initDatabase) {
+        DatabaseFactory.initFromEnvironment()
+    }
 
     install(StatusPages) {
         exception<IllegalArgumentException> { call, cause ->

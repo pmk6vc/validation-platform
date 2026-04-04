@@ -7,6 +7,7 @@ import com.platform.models.Organization
 import com.platform.models.Page
 import com.platform.models.Provider
 import com.platform.models.Service
+import com.platform.module
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -15,16 +16,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.response.respond
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -44,34 +39,6 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             testOrg = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
             OrganizationRepository.create(testOrg)
         }
-    }
-
-    private fun Application.configureTestApplication() {
-        install(StatusPages) {
-            exception<IllegalArgumentException> { call, cause ->
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
-            }
-            exception<ExposedSQLException> { call, cause ->
-                when (cause.sqlState) {
-                    "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
-                    "23503" ->
-                        call.respond(
-                            HttpStatusCode.BadRequest,
-                            mapOf("error" to "Referenced resource not found"),
-                        )
-                    else -> throw cause
-                }
-            }
-        }
-        install(ContentNegotiation) {
-            json(
-                Json {
-                    prettyPrint = true
-                    ignoreUnknownKeys = true
-                },
-            )
-        }
-        configureRouting()
     }
 
     private fun ApplicationTestBuilder.createJsonClient() =
@@ -102,7 +69,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services should return empty page when no services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/services")
 
@@ -116,7 +83,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services should return all services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc1 = createService(name = "order-service")
             val svc2 = createService(name = "payment-service")
@@ -134,7 +101,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with organizationId filter should return filtered services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val otherOrg = Organization(UUID.randomUUID().toString(), "Other Org", Instant.now())
             OrganizationRepository.create(otherOrg)
@@ -166,7 +133,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with cluster filter should return filtered services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc1 = createService(name = "prod-service", cluster = "prod-us-east")
             val svc2 = createService(name = "staging-service", cluster = "staging")
@@ -184,7 +151,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with namespace filter should return filtered services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
@@ -202,7 +169,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with only namespace filter should return filtered services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "payments-worker", cluster = "staging", namespace = "payments")
@@ -223,7 +190,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with only cluster filter should return filtered services`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc1 = createService(name = "prod-service-1", cluster = "prod")
             val svc2 = createService(name = "prod-service-2", cluster = "prod", namespace = "other")
@@ -244,7 +211,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by id should return service when exists`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc = createService(name = "my-service", metadata = mapOf("version" to "1.0"))
             ServiceRepository.create(svc)
@@ -262,7 +229,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by id should return 404 when not exists`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/services/${UUID.randomUUID()}")
 
@@ -272,7 +239,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by id should return 400 for malformed UUID`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response = client.get("/api/services/not-a-uuid")
 
@@ -282,7 +249,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services should create and return service with 201`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -310,7 +277,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services should persist service retrievable by GET`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
             val createResponse =
@@ -340,7 +307,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with missing required fields returns 400`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val response =
                 client.post("/api/services") {
@@ -354,7 +321,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with duplicate identity returns 409`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
             val request =
@@ -383,7 +350,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with invalid organizationId returns 400`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -405,7 +372,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service should include all fields in response`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             val svc =
                 createService(
@@ -433,7 +400,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with limit should return paginated response`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             repeat(5) { i ->
                 ServiceRepository.create(createService(name = "service-$i"))
@@ -454,7 +421,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with cursor should return next page`() =
         testApplication {
-            application { configureTestApplication() }
+            application { module(initDatabase = false) }
 
             repeat(5) { i ->
                 ServiceRepository.create(createService(name = "service-$i"))

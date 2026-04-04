@@ -12,7 +12,7 @@ import java.util.UUID
  * representing a typical microservices architecture with frontend, backend, messaging, and data layers.
  *
  * Use cases:
- * - Development environment setup without requiring Kubernetes/Pixie
+ * - Development environment setup without requiring Kubernetes/Kubeshark
  * - Testing adapter integration patterns
  * - Demos and examples
  */
