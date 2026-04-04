@@ -4,6 +4,8 @@ import com.platform.models.Provider
 import com.platform.models.Service
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientBuilder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.util.UUID
@@ -79,7 +81,7 @@ class KubernetesAdapter(
         logger.info("Starting service discovery for cluster: $clusterName")
 
         return try {
-            val k8sServices = fetchKubernetesServices()
+            val k8sServices = withContext(Dispatchers.IO) { fetchKubernetesServices() }
             logger.info("Found ${k8sServices.size} Kubernetes services")
 
             k8sServices

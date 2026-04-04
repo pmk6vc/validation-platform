@@ -5,7 +5,7 @@ import com.platform.models.Service
 /**
  * Contract for adapters that discover and import services from various sources.
  *
- * Adapters normalize data from different providers (manual seed, Kubernetes, Pixie)
+ * Adapters normalize data from different providers (manual seed, Kubernetes, Kubeshark)
  * into the unified Service model. Each adapter is responsible for:
  * - Connecting to its data source
  * - Querying/discovering services

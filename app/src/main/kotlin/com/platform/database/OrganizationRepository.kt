@@ -2,12 +2,17 @@ package com.platform.database
 
 import com.platform.models.Organization
 import com.platform.models.Page
+import com.platform.models.decodeCursor
+import com.platform.models.encodeCursor
+import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import java.util.UUID
@@ -54,20 +59,29 @@ object OrganizationRepository {
 
             val query =
                 if (cursor != null) {
-                    Organizations.selectAll().where { Organizations.id greater UUID.fromString(cursor) }
+                    val (cursorTimestamp, cursorId) = decodeCursor(cursor)
+                    val cursorCondition: Op<Boolean> =
+                        (Organizations.createdAt greater cursorTimestamp) or
+                            ((Organizations.createdAt eq cursorTimestamp) and (Organizations.id greater cursorId))
+                    Organizations.selectAll().where { cursorCondition }
                 } else {
                     Organizations.selectAll()
                 }
 
             val results =
                 query
-                    .orderBy(Organizations.id, SortOrder.ASC)
+                    .orderBy(Organizations.createdAt to SortOrder.ASC, Organizations.id to SortOrder.ASC)
                     .limit(pageLimit + 1)
                     .map { it.toOrganization() }
 
             val hasMore = results.size > pageLimit
             val items = if (hasMore) results.dropLast(1) else results
-            val nextCursor = if (hasMore) items.last().id else null
+            val nextCursor =
+                if (hasMore) {
+                    encodeCursor(items.last().createdAt, items.last().id)
+                } else {
+                    null
+                }
 
             Page(items = items, nextCursor = nextCursor)
         }

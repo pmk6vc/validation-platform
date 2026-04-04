@@ -44,7 +44,7 @@ This is a **validation and release platform** that helps engineering teams valid
 ### What's Working Now
 
 - **Two Ktor servers**: `app` on port 8080 (organizations, services) and `collector` on port 8081 (captured inputs)
-- **PostgreSQL database** with Flyway migrations (V0001–V0004), all migrations in `shared/`
+- **PostgreSQL database** with Flyway migrations (V0001–V0005), all migrations in `shared/`
 - **Multi-tenant data model** with Organizations and Services (owned by `app`)
 - **CapturedInput model** (owned by `collector`) — HTTP-first, non-nullable method/url/responseStatus
 - **Pagination and filtering** on all list endpoints (cursor-based)
@@ -197,7 +197,7 @@ brew install colima docker && colima start
 ```
 
 **Module structure:**
-- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0004`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
+- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0005`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
 - `app/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
 - `test-services/` — Standalone Kotlin microservices for k3s integration testing
@@ -609,42 +609,6 @@ Adapters normalize data from different sources into the unified model.
 | Statistical tests | Mann-Whitney U | Non-parametric, handles skewed latency distributions |
 | Leak detection | Linear regression | Detect memory growth trend over time |
 | Interface | API-first (CLI deferred) | Enables UI/webhook integration without binary distribution; CLI can wrap API later if needed |
-
-## Known Issues & Technical Debt
-
-Architecture review performed 2026-04-03. Items ordered by priority.
-
-### Fix Before Customer Data
-
-| # | Issue | Location | Fix |
-|---|-------|----------|-----|
-| 1 | `TIMESTAMP WITHOUT TIME ZONE` in all migrations — timestamps silently misinterpreted if DB timezone ≠ UTC | V0001 line 4, V0002 lines 8-9, V0004 line 15 | New migration: `ALTER COLUMN ... TYPE TIMESTAMPTZ` |
-| 2 | `.env` with credentials committed to git — establishes dangerous pattern | `.env`, `.gitignore` | `git rm --cached .env`, add to `.gitignore`, restore `.env.example` |
-
-### Fix Before Replay Phase
-
-| # | Issue | Location | Fix |
-|---|-------|----------|-----|
-| 3 | Malformed UUID in path/query params causes 500 (no `StatusPages` plugin) | `app/.../Routes.kt`, `collector/.../Routes.kt` | Add Ktor `StatusPages` plugin catching `IllegalArgumentException` → 400 |
-| 4 | UUID-based cursor pagination unstable under concurrent inserts (random v4 UUIDs aren't monotonic) | All 3 repositories (`OrganizationRepository`, `ServiceRepository`, `CapturedInputRepository`) | Switch to `captured_at`-based or composite `(captured_at, id)` cursor for `captured_inputs`; `created_at` for orgs/services |
-| 5 | `ServiceRepository.upsert` has TOCTOU race — two concurrent upserts can both SELECT "no row", both INSERT, one fails with unique constraint 500 | `ServiceRepository.kt:105-128` | Use PostgreSQL `INSERT ... ON CONFLICT DO UPDATE` |
-| 6 | Blocking Kubernetes API call on coroutine dispatcher — `discoverServices` calls synchronous Fabric8 client without `Dispatchers.IO`, can starve Ktor worker threads | `KubernetesAdapter.kt:82` | Wrap in `withContext(Dispatchers.IO)` |
-
-### Address When Adding Third Module
-
-| # | Issue | Location | Fix |
-|---|-------|----------|-----|
-| 7 | Application startup code duplicated across app and collector — identical DB config resolution + `ContentNegotiation` setup | `Application.kt:17-43`, `CollectorApplication.kt:17-43` | Extract `configureDatabase()` and `configureContentNegotiation()` into `shared/` |
-| 8 | Collector test dependency on app internals — `testImplementation(project(":app"))` imports `CreateOrganizationRequest`, `configureRouting` directly | `collector/build.gradle.kts:38`, `AppApiTestHelper.kt:3-5` | Long-term: extract shared test DTOs into `shared` testFixtures, or use synthetic UUIDs that bypass FK |
-
-### Minor Cleanup
-
-| # | Issue | Fix |
-|---|-------|-----|
-| 9 | `captured_inputs.service_id` FK in SQL migration but not in Exposed table definition — inconsistent | Either add `.references()` to Exposed column or document as intentional |
-| 10 | Stale Pixie references in adapter KDoc | `ServiceAdapter.kt:8`, `ManualSeedAdapter.kt:15` — replace "Pixie" with "Kubeshark" |
-| 11 | `DELETE /api/captured-inputs` response uses untyped `mapOf("deleted" to deleted)` | Add a `DeleteResponse(val deleted: Long)` data class |
-| 12 | `prettyPrint = true` in production JSON config — wastes bandwidth | Consider removing for non-dev environments |
 
 ---
 
