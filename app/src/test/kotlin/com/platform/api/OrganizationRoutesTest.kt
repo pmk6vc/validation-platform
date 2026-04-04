@@ -19,6 +19,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
@@ -31,6 +32,17 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
         install(StatusPages) {
             exception<IllegalArgumentException> { call, cause ->
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
+            }
+            exception<ExposedSQLException> { call, cause ->
+                when (cause.sqlState) {
+                    "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
+                    "23503" ->
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            mapOf("error" to "Referenced resource not found"),
+                        )
+                    else -> throw cause
+                }
             }
         }
         install(ContentNegotiation) {

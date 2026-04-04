@@ -16,7 +16,10 @@ data class Page<T>(
     val nextCursor: String?,
 )
 
-fun encodeCursor(timestamp: Instant, id: String): String = "${timestamp.epochSecond}.${timestamp.nano}|$id"
+fun encodeCursor(
+    timestamp: Instant,
+    id: String,
+): String = "${timestamp.epochSecond}.${timestamp.nano}|$id"
 
 fun decodeCursor(cursor: String): Pair<Instant, UUID> {
     val parts = cursor.split("|", limit = 2)

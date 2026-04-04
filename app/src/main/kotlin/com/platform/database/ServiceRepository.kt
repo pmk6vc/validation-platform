@@ -118,14 +118,15 @@ object ServiceRepository {
         newSuspendedTransaction {
             Services.upsert(
                 keys = arrayOf(Services.organizationId, Services.cluster, Services.namespace, Services.name),
-                onUpdateExclude = listOf(
-                    Services.id,
-                    Services.organizationId,
-                    Services.cluster,
-                    Services.namespace,
-                    Services.name,
-                    Services.discoveredAt,
-                ),
+                onUpdateExclude =
+                    listOf(
+                        Services.id,
+                        Services.organizationId,
+                        Services.cluster,
+                        Services.namespace,
+                        Services.name,
+                        Services.discoveredAt,
+                    ),
             ) {
                 it[id] = UUID.fromString(service.id)
                 it[organizationId] = UUID.fromString(service.organizationId)

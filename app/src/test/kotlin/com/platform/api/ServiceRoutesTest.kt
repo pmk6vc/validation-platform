@@ -24,6 +24,7 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -49,6 +50,17 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
         install(StatusPages) {
             exception<IllegalArgumentException> { call, cause ->
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
+            }
+            exception<ExposedSQLException> { call, cause ->
+                when (cause.sqlState) {
+                    "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
+                    "23503" ->
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            mapOf("error" to "Referenced resource not found"),
+                        )
+                    else -> throw cause
+                }
             }
         }
         install(ContentNegotiation) {
@@ -334,6 +346,57 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
                 client.post("/api/services") {
                     contentType(ContentType.Application.Json)
                     setBody("{}")
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
+    fun `POST services with duplicate identity returns 409`() =
+        testApplication {
+            application { configureTestApplication() }
+            val jsonClient = createJsonClient()
+
+            val request =
+                CreateServiceRequest(
+                    organizationId = testOrg.id,
+                    cluster = "prod",
+                    namespace = "default",
+                    name = "duplicate-service",
+                )
+
+            val first =
+                jsonClient.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(request)
+                }
+            assertEquals(HttpStatusCode.Created, first.status)
+
+            val second =
+                jsonClient.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(request)
+                }
+            assertEquals(HttpStatusCode.Conflict, second.status)
+        }
+
+    @Test
+    fun `POST services with invalid organizationId returns 400`() =
+        testApplication {
+            application { configureTestApplication() }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            organizationId = UUID.randomUUID().toString(),
+                            cluster = "prod",
+                            namespace = "default",
+                            name = "orphan-service",
+                        ),
+                    )
                 }
 
             assertEquals(HttpStatusCode.BadRequest, response.status)

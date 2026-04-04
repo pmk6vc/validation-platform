@@ -10,6 +10,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.exceptions.ExposedSQLException
 
 fun main(args: Array<String>) {
     io.ktor.server.netty.EngineMain
@@ -37,6 +38,13 @@ fun Application.module() {
     install(StatusPages) {
         exception<IllegalArgumentException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest, mapOf("error" to (cause.message ?: "Bad request")))
+        }
+        exception<ExposedSQLException> { call, cause ->
+            when (cause.sqlState) {
+                "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
+                "23503" -> call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Referenced resource not found"))
+                else -> throw cause
+            }
         }
     }
 
