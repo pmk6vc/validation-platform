@@ -14,14 +14,18 @@ data class StaticConfig(
     companion object {
         fun fromEnvironment(): StaticConfig =
             StaticConfig(
-                kubesharkUrl = System.getenv("KUBESHARK_URL") ?: "http://kubeshark-front.kubeshark:80",
+                kubesharkUrl =
+                    System.getenv("KUBESHARK_URL")
+                        ?: "http://kubeshark-front.kubeshark:80",
                 collectorUrl = requireEnv("COLLECTOR_URL"),
                 apiKey = requireEnv("API_KEY"),
             )
 
         private fun requireEnv(name: String): String =
             System.getenv(name)
-                ?: throw IllegalStateException("Required environment variable $name is not set")
+                ?: throw IllegalStateException(
+                    "Required environment variable $name is not set",
+                )
     }
 }
 
