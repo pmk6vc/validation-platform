@@ -65,6 +65,7 @@ Each module owns its tables, models, and repositories. Cross-module communicatio
 | `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer) | — |
 | `app/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server | 8080 |
 | `collector/` | CapturedInputs table; CapturedInputRepository; Ktor server | 8081 |
+| `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding to collector | — (standalone process) |
 | `test-services/` | Standalone Kotlin microservices for k3s integration testing | — |
 
 ### App Module API Endpoints (port 8080)
@@ -200,6 +201,7 @@ brew install colima docker && colima start
 - `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0005`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
 - `app/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
+- `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to collector; no dependency on `shared/`, `app/`, or `collector/` (API contract only)
 - `test-services/` — Standalone Kotlin microservices for k3s integration testing
 
 **Note on collector config:** The collector uses `application.yaml` (not HOCON `.conf`). This is required by Ktor 3, which uses the YAML config parser.
@@ -218,36 +220,50 @@ brew install colima docker && colima start
 ### High-Level Design
 
 ```
-PRODUCTION CLUSTER                         STAGING CLUSTER
-┌──────────────────────┐                  ┌──────────────────────────────────┐
-│  Kubeshark (eBPF)    │                  │  Kubeshark (eBPF)               │
-│  captures HTTP       │                  │  observes replay traffic         │
-│  req/res pairs       │   captured       │                                  │
-│                      │   traffic        │  ┌────────────┐                 │
-│  order-service ─────►│ ─────────────►   │  │ order-svc  │ (baseline or   │
-│  api-gateway ───────►│                  │  │ (target)   │  candidate)    │
-│  notification-svc ──►│                  │  └─────┬──────┘                 │
-└──────────────────────┘                  │        │ real connections        │
-                                          │        ▼                         │
-                                          │  staging-db, staging-kafka, etc  │
-                                          └──────────────────────────────────┘
-
+CUSTOMER'S PRODUCTION CLUSTER
+┌─────────────────────────────────────────────────┐
+│  Kubeshark (eBPF)      Validation Agent         │
+│  captures HTTP ───────► (3 loops):              │
+│  req/res pairs          1. K8s API → discover   │
+│                            services → register  │
+│  order-service          2. Poll platform for    │
+│  api-gateway               config (sampling,    │
+│  notification-svc          namespace filters)   │
+│                         3. Poll Kubeshark →     │
+│                            filter + sample →    │
+│                            POST to collector    │
+└───────────────────────────┬─────────────────────┘
+                            │ HTTPS (push)
+                            ▼
 PLATFORM
 ┌────────────────────────────────────────────────────────────────────┐
-│  1. Capture: pull HTTP req/res from prod Kubeshark                │
-│  2. Classify: safe (read) vs mutating (write)                     │
-│  3. Replay: send captured requests to staging (read-only default) │
-│  4. Observe: Kubeshark in staging + K8s metrics API               │
-│  5. Compare: baseline run vs candidate run → verdict              │
+│  Collector (8081)          App (8080)                              │
+│  POST /api/captured-inputs POST /api/services (agent registers)   │
+│  stores req/res pairs      GET /api/agent/config (agent polls)    │
+│                                                                    │
+│  Replay Engine (planned):                                          │
+│  1. Fetch captured inputs from collector                           │
+│  2. Replay against staging (read-only default)                     │
+│  3. Observe via Kubeshark in staging + K8s metrics                 │
+│  4. Compare baseline vs candidate → verdict                        │
 └────────────────────────────────────────────────────────────────────┘
+
+CUSTOMER'S STAGING CLUSTER
+┌──────────────────────────────────────────┐
+│  Kubeshark (eBPF)    target service      │
+│  observes replay     (baseline or        │
+│  traffic             candidate)          │
+│                      ↓ real connections   │
+│                      staging-db, kafka    │
+└──────────────────────────────────────────┘
 ```
 
 ### Validation Flow
 
 ```
-1. CAPTURE (production, continuous)
+1. CAPTURE (production, continuous, push model)
    Kubeshark eBPF captures HTTP request/response pairs at L7
-   Platform pulls and stores correlated req/res with read/write classification
+   Validation agent polls Kubeshark, filters by registered services, samples, and pushes to collector
 
 2. BASELINE RUN (staging, current version)
    Replay captured read traffic against current version in staging
@@ -292,6 +308,54 @@ The original design used PCAP-based record-replay proxies to mock all dependenci
 | PCAP contains full Kafka messages for non-TLS connections | Validated, not needed with staging approach |
 | No PCAP truncation (11,324 frames, zero data loss) | Validated |
 | TLS-encrypted DB traffic invisible in PCAPs | **Blocker** that motivated the pivot |
+
+### Validation Agent (Push Model)
+
+The agent runs in the customer's K8s cluster as a standalone Kotlin process. It pushes data to the platform — the platform never reaches into the customer's cluster.
+
+**Three independent coroutine loops:**
+
+| Loop | Interval | Responsibility |
+|------|----------|----------------|
+| Service discovery | ~60s | Query K8s API for services → diff against in-memory map → register new services with platform via `POST /api/services` → receive service ID map |
+| Config polling | ~60s | `GET /api/agent/config` → update sampling rate, namespace filters, batch size, poll interval |
+| Traffic capture | ~5s | Poll Kubeshark `list_api_calls` → filter by namespace + registered services → sample → `POST /api/captured-inputs` to collector |
+
+**Concurrency model:** Each loop writes to an `AtomicReference`. The traffic capture loop reads the latest snapshot of the service map and config. No locks, no coordination.
+
+**Static config (env vars, set at deploy time):**
+- `COLLECTOR_URL` — platform collector endpoint
+- `COLLECTOR_AUTH_TOKEN` — bearer token for authentication
+- `KUBESHARK_URL` — in-cluster Kubeshark API (default: `http://kubeshark-hub:80`)
+- `CLUSTER` — cluster name (deployment-time fact)
+
+**Dynamic config (polled from platform):**
+- Sampling rate per service
+- Namespace filters
+- Batch size
+- Poll intervals
+
+**Key design decisions:**
+- Push model: agent pushes to platform, not platform pulling from customer cluster. Only requires outbound network access.
+- Agent has its own DTOs (`CapturedInputRequest`), no compile-time dependency on platform modules. API contract only.
+- Kubeshark `list_api_calls` with `format=full` returns request bodies inline — no N+1 detail API calls needed.
+- Deduplication: Kubeshark shows each call from both src and dst perspective. Agent filters on `dst.svc` matching a target service, which naturally deduplicates.
+- Sampling: stateless per-entry random check against configured rate. Acceptable to lose some traffic.
+- Cursor-based polling: advance timestamp cursor to latest entry. Some out-of-order entries may be missed — acceptable tradeoff.
+
+**Agent module structure:**
+```
+agent/
+  src/main/kotlin/com/platform/agent/
+    AgentApplication.kt        # main, three coroutine loops
+    AgentConfig.kt             # static config from env vars
+    KubesharkClient.kt         # HTTP client for Kubeshark API
+    CollectorClient.kt         # HTTP client for collector POST
+    TrafficTransformer.kt      # Kubeshark → CapturedInputRequest
+    models/
+      KubesharkEntry.kt        # Kubeshark API response DTOs
+      CapturedInputRequest.kt  # Collector POST payload DTOs
+```
 
 ### Read/Write Traffic Classification (Planned — Not Yet Implemented)
 
@@ -531,7 +595,17 @@ Adapters normalize data from different sources into the unified model.
 - [x] Collector module: full Ktor server on port 8081 (no longer a skeleton)
 - [x] Test infrastructure: 18 CapturedInputRepository tests, 12 CapturedInputRoutesTest, 1 HealthRoutesTest, 6 new POST endpoint tests in app
 - [x] AppApiTestHelper: collector tests create org/service fixtures via POST API calls to app module (enforces module boundary)
-- [ ] collector: Kubeshark polling → store captured inputs (Kubeshark adapter not yet implemented)
+- [x] Agent module: KubesharkClient, CollectorClient, TrafficTransformer, AgentConfig, AgentApplication
+- [x] Agent DTOs: KubesharkEntry/KubesharkEndpoint (Kubeshark API), CapturedInputRequest/BatchCapturedInputRequest (collector POST)
+- [x] Kubeshark API validated: `list_api_calls` with `format=full` returns req/res bodies inline, no N+1 detail calls needed
+- [ ] Refactor agent to use dynamic config polling from platform instead of env vars for mutable settings
+- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map
+- [ ] Agent Loop 2: Poll `GET /api/agent/config` for sampling rate, namespace filters, etc.
+- [ ] Agent Loop 3: Poll Kubeshark → filter → sample → POST to collector
+- [ ] Collector: `POST /api/captured-inputs` batch endpoint (agent pushes to this)
+- [ ] Platform: `GET /api/agent/config` endpoint (agent polls this)
+- [ ] Agent tests: TrafficTransformer, config parsing, client mocks
+- [ ] End-to-end: agent captures traffic from minikube test services and stores via collector
 
 **Replay Engine (Feature 2)**
 - [ ] ReplayRun model + database migration (likely in its own module)
@@ -609,6 +683,12 @@ Adapters normalize data from different sources into the unified model.
 | Statistical tests | Mann-Whitney U | Non-parametric, handles skewed latency distributions |
 | Leak detection | Linear regression | Detect memory growth trend over time |
 | Interface | API-first (CLI deferred) | Enables UI/webhook integration without binary distribution; CLI can wrap API later if needed |
+| Traffic capture model | Push (agent → collector) not pull (platform → Kubeshark) | Agent in customer cluster pushes to platform. Only requires outbound network access. Platform never reaches into customer clusters. Scales naturally — N agents push, zero fan-out from platform. |
+| Agent language | Kotlin (same as platform) | Same build toolchain, CI, team knowledge. Image size (~150MB with JRE vs ~10MB Go) acceptable for long-running agent. Swappable later — agent communicates via HTTP only. |
+| Agent config | Static env vars (URLs, auth) + dynamic polling (sampling, filters) | Mutable config polled from platform avoids redeploying agent for config changes. Env vars only for deployment-time facts (cluster name, endpoints). |
+| Agent service discovery | Agent queries K8s API directly, registers with platform | Agent has visibility into cluster service inventory. Platform can't know about new deployments without being told. Agent registers services and receives ID map. |
+| Agent ↔ platform contract | Separate DTOs, API contract only, no shared compile-time types | Agent ships as container to customer clusters, versions independently. `ignoreUnknownKeys = true` on both sides enables additive API evolution without lockstep releases. |
+| Traffic loss tolerance | Acceptable to lose some traffic (sampling, cursor gaps, drops on collector unavailability) | For mature high-traffic services, sampling is required anyway. Cursor-based polling may miss out-of-order entries — acceptable. Agent drops traffic if collector unreachable rather than buffering. |
 
 ---
 
@@ -617,8 +697,9 @@ Adapters normalize data from different sources into the unified model.
 ### Module Assignment
 
 Before implementing a feature, decide which module owns it:
-- **`app`**: Organizations, Services, topology/discovery concerns
-- **`collector`**: CapturedInputs, Kubeshark polling, traffic ingestion
+- **`app`**: Organizations, Services, topology/discovery, agent config endpoint
+- **`collector`**: CapturedInputs, traffic ingestion (POST endpoint for agent)
+- **`agent`**: Kubeshark polling, K8s service discovery, traffic capture and forwarding (standalone process, no platform dependencies)
 - **Future replay module**: ReplayRuns, ReplayResponses, ReplayEngine
 
 ### Implementation Order (per module)
