@@ -55,15 +55,12 @@ fun main() {
     }
 }
 
-/**
- * Loop 1: Discover K8s services and register them with the platform.
- * V1 stub — service discovery will be implemented when the platform
- * exposes a service registration endpoint.
- */
+// --- Loop wrappers (while/true + delay + error handling) ---
+
 suspend fun serviceDiscoveryLoop(dynamicConfig: AtomicReference<DynamicConfig>) {
     while (true) {
         try {
-            logger.debug("Service discovery loop: not yet implemented")
+            discoverServices()
         } catch (e: Exception) {
             logger.error("Service discovery loop failed", e)
         }
@@ -71,34 +68,13 @@ suspend fun serviceDiscoveryLoop(dynamicConfig: AtomicReference<DynamicConfig>) 
     }
 }
 
-/**
- * Loop 2: Poll the platform for dynamic config updates.
- * Updates the shared AtomicReference so other loops pick up changes
- * on their next iteration.
- */
 suspend fun configPollLoop(
     configClient: ConfigClient,
     dynamicConfig: AtomicReference<DynamicConfig>,
 ) {
     while (true) {
         try {
-            val newConfig = configClient.fetchConfig()
-            if (newConfig != null) {
-                val oldConfig = dynamicConfig.getAndSet(newConfig)
-                if (oldConfig.targetServices != newConfig.targetServices) {
-                    logger.info(
-                        "Target services updated: {}",
-                        newConfig.targetServices.keys,
-                    )
-                }
-                if (oldConfig.samplingRate != newConfig.samplingRate) {
-                    logger.info(
-                        "Sampling rate changed: {} -> {}",
-                        oldConfig.samplingRate,
-                        newConfig.samplingRate,
-                    )
-                }
-            }
+            pollConfig(configClient, dynamicConfig)
         } catch (e: Exception) {
             logger.error("Config poll loop failed", e)
         }
@@ -106,10 +82,6 @@ suspend fun configPollLoop(
     }
 }
 
-/**
- * Loop 3: Poll Kubeshark for HTTP traffic, transform, and push to collector.
- * Uses a cursor (timestamp) to avoid re-processing entries.
- */
 suspend fun trafficCaptureLoop(
     dynamicConfig: AtomicReference<DynamicConfig>,
     kubesharkClient: KubesharkClient,
@@ -121,35 +93,85 @@ suspend fun trafficCaptureLoop(
     while (true) {
         val config = dynamicConfig.get()
         try {
-            val entries =
-                kubesharkClient.listHttpCalls(
-                    startMs = cursor,
-                    limit = config.batchSize,
-                )
-
-            if (entries.isNotEmpty()) {
-                val captured = transformer.transform(entries)
-
-                if (captured.isNotEmpty()) {
-                    val sent =
-                        collectorClient.sendBatch(
-                            BatchCapturedInputRequest(items = captured),
-                        )
-                    if (sent) {
-                        logger.info(
-                            "Captured {} entries (from {} raw)",
-                            captured.size,
-                            entries.size,
-                        )
-                    }
-                }
-
-                cursor = entries.maxOf { it.ts } + 1
-            }
+            cursor = captureTraffic(cursor, config.batchSize, kubesharkClient, collectorClient, transformer)
         } catch (e: Exception) {
             logger.error("Traffic capture loop failed", e)
         }
-
         delay(config.captureIntervalMs)
     }
+}
+
+// --- Single-iteration logic (testable without loops) ---
+
+/**
+ * V1 stub — service discovery will be implemented when the platform
+ * exposes a service registration endpoint.
+ */
+fun discoverServices() {
+    logger.debug("Service discovery: not yet implemented")
+}
+
+/**
+ * Fetch config from the platform and update the shared AtomicReference.
+ * Returns true if config was updated, false otherwise.
+ */
+suspend fun pollConfig(
+    configClient: ConfigClient,
+    dynamicConfig: AtomicReference<DynamicConfig>,
+): Boolean {
+    val newConfig = configClient.fetchConfig() ?: return false
+
+    val oldConfig = dynamicConfig.getAndSet(newConfig)
+    if (oldConfig.targetServices != newConfig.targetServices) {
+        logger.info(
+            "Target services updated: {}",
+            newConfig.targetServices.keys,
+        )
+    }
+    if (oldConfig.samplingRate != newConfig.samplingRate) {
+        logger.info(
+            "Sampling rate changed: {} -> {}",
+            oldConfig.samplingRate,
+            newConfig.samplingRate,
+        )
+    }
+    return true
+}
+
+/**
+ * Run one capture cycle: poll Kubeshark, transform, send to collector.
+ * Returns the updated cursor for the next cycle.
+ */
+suspend fun captureTraffic(
+    cursor: Long?,
+    batchSize: Int,
+    kubesharkClient: KubesharkClient,
+    collectorClient: CollectorClient,
+    transformer: TrafficTransformer,
+): Long? {
+    val entries =
+        kubesharkClient.listHttpCalls(
+            startMs = cursor,
+            limit = batchSize,
+        )
+
+    if (entries.isEmpty()) return cursor
+
+    val captured = transformer.transform(entries)
+
+    if (captured.isNotEmpty()) {
+        val sent =
+            collectorClient.sendBatch(
+                BatchCapturedInputRequest(items = captured),
+            )
+        if (sent) {
+            logger.info(
+                "Captured {} entries (from {} raw)",
+                captured.size,
+                entries.size,
+            )
+        }
+    }
+
+    return entries.maxOf { it.ts } + 1
 }

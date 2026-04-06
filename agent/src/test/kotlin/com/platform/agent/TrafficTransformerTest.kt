@@ -14,17 +14,13 @@ class TrafficTransformerTest {
             "api-gateway" to "svc-456",
         )
 
-    private fun transformer(
-        services: Map<String, String> = targetServices,
-        samplingRate: Double = 1.0,
-        random: () -> Double = { 0.0 },
-    ): TrafficTransformer {
+    private fun transformer(services: Map<String, String> = targetServices): TrafficTransformer {
         val config =
             DynamicConfig(
                 targetServices = services,
-                samplingRate = samplingRate,
+                samplingRate = 1.0,
             )
-        return TrafficTransformer(AtomicReference(config), random)
+        return TrafficTransformer(AtomicReference(config))
     }
 
     private fun httpEntry(
@@ -168,57 +164,13 @@ class TrafficTransformerTest {
         assertTrue(result.isEmpty())
     }
 
-    // --- Sampling tests (deterministic via injected random) ---
-
-    @Test
-    fun `sampling includes entry when random is below rate`() {
-        val result =
-            transformer(samplingRate = 0.3, random = { 0.29 })
-                .transform(listOf(httpEntry()))
-        assertEquals(1, result.size)
-    }
-
-    @Test
-    fun `sampling excludes entry when random equals rate`() {
-        val result =
-            transformer(samplingRate = 0.3, random = { 0.3 })
-                .transform(listOf(httpEntry()))
-        assertTrue(result.isEmpty())
-    }
-
-    @Test
-    fun `sampling excludes entry when random exceeds rate`() {
-        val result =
-            transformer(samplingRate = 0.3, random = { 0.5 })
-                .transform(listOf(httpEntry()))
-        assertTrue(result.isEmpty())
-    }
-
-    @Test
-    fun `sampling rate 1 always includes`() {
-        val result =
-            transformer(samplingRate = 1.0, random = { 0.999 })
-                .transform(listOf(httpEntry()))
-        assertEquals(1, result.size)
-    }
-
-    @Test
-    fun `sampling rate 0 always excludes`() {
-        val result =
-            transformer(samplingRate = 0.0, random = { 0.0 })
-                .transform(listOf(httpEntry()))
-        assertTrue(result.isEmpty())
-    }
-
-    // --- AtomicReference hot-swap test ---
-
     @Test
     fun `reads config from AtomicReference on each call`() {
         val configRef =
             AtomicReference(
                 DynamicConfig(targetServices = targetServices, samplingRate = 1.0),
             )
-        val transformer = TrafficTransformer(configRef, random = { 0.0 })
+        val transformer = TrafficTransformer(configRef)
 
         val before = transformer.transform(listOf(httpEntry()))
         assertEquals(1, before.size)

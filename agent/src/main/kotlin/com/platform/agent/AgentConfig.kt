@@ -12,17 +12,20 @@ data class StaticConfig(
     val apiKey: String,
 ) {
     companion object {
-        fun fromEnvironment(): StaticConfig =
+        fun fromEnvironment(env: (String) -> String? = System::getenv): StaticConfig =
             StaticConfig(
                 kubesharkUrl =
-                    System.getenv("KUBESHARK_URL")
+                    env("KUBESHARK_URL")
                         ?: "http://kubeshark-front.kubeshark:80",
-                collectorUrl = requireEnv("COLLECTOR_URL"),
-                apiKey = requireEnv("API_KEY"),
+                collectorUrl = requireEnv("COLLECTOR_URL", env),
+                apiKey = requireEnv("API_KEY", env),
             )
 
-        private fun requireEnv(name: String): String =
-            System.getenv(name)
+        private fun requireEnv(
+            name: String,
+            env: (String) -> String?,
+        ): String =
+            env(name)
                 ?: throw IllegalStateException(
                     "Required environment variable $name is not set",
                 )

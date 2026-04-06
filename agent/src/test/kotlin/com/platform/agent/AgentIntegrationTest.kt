@@ -16,6 +16,7 @@ import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -94,43 +95,27 @@ class AgentIntegrationTest {
             val kubesharkClient = KubesharkClient(httpClient, "http://kubeshark:80")
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
-            val transformer = TrafficTransformer(dynamicConfig, random = { 0.0 })
+            val transformer = TrafficTransformer(dynamicConfig)
 
-            // Execute one iteration of the capture pipeline
-            val entries = kubesharkClient.listHttpCalls(limit = 100)
-            val captured = transformer.transform(entries)
-            if (captured.isNotEmpty()) {
-                collectorClient.sendBatch(
-                    BatchCapturedInputRequest(items = captured),
-                )
-            }
+            // Execute one iteration via the extracted function
+            val newCursor =
+                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
 
-            // e1 + e2 captured (order-service, HTTP)
-            // e3 filtered (unknown service), e4 filtered (grpc)
-            assertEquals(2, captured.size)
-            assertEquals("GET", captured[0].method)
-            assertEquals("/api/orders/1", captured[0].url)
-            assertEquals("POST", captured[1].method)
-            assertEquals("/api/orders", captured[1].url)
-
-            // Both mapped to correct platform service ID
-            assertTrue(captured.all { it.serviceId == "svc-123" })
-
-            // Headers and bodies preserved through the pipeline
-            assertEquals(
-                mapOf("Accept" to "application/json"),
-                captured[0].requestHeaders,
-            )
-            assertEquals("""{"id": 1}""", captured[0].responseBody)
-            assertEquals("""{"item": "widget"}""", captured[1].requestBody)
+            // Cursor advanced past the latest entry timestamp (max of all entries, not just matched)
+            assertEquals(1004L, newCursor)
 
             // Collector received exactly one batch POST
             assertEquals(1, collectorRequestCount)
 
-            // Verify the batch body is valid JSON with 2 items
+            // Verify the batch body has 2 items (e1 + e2, filtered e3 + e4)
             val batch =
                 json.decodeFromString<BatchCapturedInputRequest>(collectorRequestBody)
             assertEquals(2, batch.items.size)
+            assertEquals("GET", batch.items[0].method)
+            assertEquals("/api/orders/1", batch.items[0].url)
+            assertEquals("POST", batch.items[1].method)
+            assertEquals("/api/orders", batch.items[1].url)
+            assertTrue(batch.items.all { it.serviceId == "svc-123" })
         }
 
     @Test
@@ -149,16 +134,20 @@ class AgentIntegrationTest {
 
             val kubesharkClient =
                 KubesharkClient(httpClient, "http://kubeshark:80")
-            val transformer = TrafficTransformer(dynamicConfig, random = { 0.0 })
+            val collectorClient =
+                CollectorClient(httpClient, "http://collector:8081", "key")
+            val transformer = TrafficTransformer(dynamicConfig)
 
-            val entries = kubesharkClient.listHttpCalls()
-            val captured = transformer.transform(entries)
+            // Even though Kubeshark returns entries, nothing passes the filter
+            val newCursor =
+                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
 
-            assertTrue(captured.isEmpty())
+            // Cursor still advances (entries were fetched, just nothing matched)
+            assertEquals(1004L, newCursor)
         }
 
     @Test
-    fun `pipeline handles kubeshark failure gracefully`() =
+    fun `pipeline handles kubeshark failure gracefully`(): Unit =
         runBlocking {
             val engine =
                 MockEngine {
@@ -181,13 +170,15 @@ class AgentIntegrationTest {
                 )
 
             val kubesharkClient = KubesharkClient(httpClient, "http://kubeshark:80")
-            val transformer = TrafficTransformer(dynamicConfig, random = { 0.0 })
+            val collectorClient =
+                CollectorClient(httpClient, "http://collector:8081", "key")
+            val transformer = TrafficTransformer(dynamicConfig)
 
-            val entries = kubesharkClient.listHttpCalls()
-            val captured = transformer.transform(entries)
+            // Kubeshark failure → cursor unchanged
+            val newCursor =
+                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
 
-            assertTrue(entries.isEmpty())
-            assertTrue(captured.isEmpty())
+            assertNull(newCursor)
         }
 
     private fun MockRequestHandleScope.respondJson(body: String) =

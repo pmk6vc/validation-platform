@@ -7,7 +7,6 @@ import java.util.concurrent.atomic.AtomicReference
 
 class TrafficTransformer(
     private val configRef: AtomicReference<DynamicConfig>,
-    private val random: () -> Double = { Math.random() },
 ) {
     /**
      * Filter and transform Kubeshark entries into collector POST payloads.
@@ -34,7 +33,7 @@ class TrafficTransformer(
             .filter { it.proto == "http" }
             .filter { it.dst?.svc != null && it.dst.svc in targetServices }
             .filter { it.method != null && it.url != null && it.status != null }
-            .filter { random() < samplingRate }
+            .filter { Math.random() < samplingRate }
             .map { entry ->
                 CapturedInputRequest(
                     serviceId = targetServices.getValue(entry.dst!!.svc!!),
