@@ -40,7 +40,7 @@ subprojects {
 }
 
 // Aggregated JaCoCo coverage report across all platform modules
-val platformModules = listOf(":shared", ":app", ":collector")
+val platformModules = listOf(":shared", ":app", ":collector", ":agent")
 
 tasks.register<JacocoReport>("jacocoAggregatedReport") {
     group = "verification"
