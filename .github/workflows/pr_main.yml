@@ -55,7 +55,11 @@ jobs:
         uses: dorny/test-reporter@v1
         with:
           name: Test Results
-          path: '**/build/test-results/test/TEST-*.xml'
+          path: |
+            shared/build/test-results/test/TEST-*.xml
+            app/build/test-results/test/TEST-*.xml
+            collector/build/test-results/test/TEST-*.xml
+            agent/build/test-results/test/TEST-*.xml
           reporter: java-junit
 
       - name: Coverage report
