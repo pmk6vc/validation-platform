@@ -52,12 +52,13 @@ jobs:
 
       - name: Test report
         if: always()
-        uses: dorny/test-reporter@v1
+        uses: EnricoMi/publish-unit-test-result-action@v2
         with:
-          name: Test Results
-          path: 'shared/build/test-results/test/TEST-*.xml,app/build/test-results/test/TEST-*.xml,collector/build/test-results/test/TEST-*.xml,agent/build/test-results/test/TEST-*.xml'
-          reporter: java-junit
-          fail-on-empty: 'false'
+          files: |
+            shared/build/test-results/test/TEST-*.xml
+            app/build/test-results/test/TEST-*.xml
+            collector/build/test-results/test/TEST-*.xml
+            agent/build/test-results/test/TEST-*.xml
 
       - name: Coverage report
         if: always()
