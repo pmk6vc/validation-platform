@@ -93,24 +93,38 @@ suspend fun trafficCaptureLoop(
     while (true) {
         val config = dynamicConfig.get()
         try {
-            val result = captureTraffic(cursor, config.batchSize, kubesharkClient, collectorClient, transformer)
+            val result =
+                captureOneBatch(cursor, config.batchSize, kubesharkClient, collectorClient, transformer)
             cursor = result.cursor
+
+            if (result.lagMs != null && result.lagMs > LAG_WARN_THRESHOLD_MS) {
+                // TODO: Surface lag to the platform (e.g. via config poll or heartbeat)
+                //  so the customer can take action (scale agents, increase sampling, tune batch size)
+                logger.warn(
+                    "Traffic capture lagging: {}ms behind real-time ({} entries this batch)",
+                    result.lagMs,
+                    result.entriesProcessed,
+                )
+            }
+
+            if (result.caughtUp) {
+                delay(config.captureIntervalMs)
+            }
         } catch (e: Exception) {
-            logger.error("Traffic capture loop failed", e)
+            logger.error("Traffic capture failed", e)
+            delay(config.captureIntervalMs)
         }
-        delay(config.captureIntervalMs)
     }
 }
 
 /**
- * Result of a single capture cycle. Carries the updated cursor
- * and metrics the caller uses for lag detection.
+ * Result of processing a single batch from Kubeshark.
  */
 data class CaptureResult(
     val cursor: Long?,
-    val pagesProcessed: Int,
     val entriesProcessed: Int,
     val lagMs: Long?,
+    val caughtUp: Boolean,
 )
 
 // --- Single-iteration logic (testable without loops) ---
@@ -156,16 +170,12 @@ suspend fun pollConfig(
 }
 
 /**
- * Run one capture cycle: page through all available Kubeshark entries,
- * transform, and send to collector in batches.
- *
- * batchSize controls the number of entries per HTTP call to Kubeshark,
- * not a cap on entries per cycle. We page until Kubeshark returns fewer
- * than batchSize entries, meaning we've caught up.
+ * Fetch one batch from Kubeshark, transform, and send to collector.
+ * No loops — the caller decides whether to continue or delay based on [CaptureResult.caughtUp].
  *
  * nowMs is injectable for testing lag detection. Defaults to wall clock.
  */
-suspend fun captureTraffic(
+suspend fun captureOneBatch(
     cursor: Long?,
     batchSize: Int,
     kubesharkClient: KubesharkClient,
@@ -173,60 +183,45 @@ suspend fun captureTraffic(
     transformer: TrafficTransformer,
     nowMs: Long = System.currentTimeMillis(),
 ): CaptureResult {
-    var currentCursor = cursor
-    var pagesProcessed = 0
-    var entriesProcessed = 0
+    val entries =
+        kubesharkClient.listHttpCalls(
+            startMs = cursor,
+            limit = batchSize,
+        )
 
-    while (true) {
-        val entries =
-            kubesharkClient.listHttpCalls(
-                startMs = currentCursor,
-                limit = batchSize,
-            )
-
-        if (entries.isEmpty()) break
-
-        pagesProcessed++
-        entriesProcessed += entries.size
-
-        val captured = transformer.transform(entries)
-
-        if (captured.isNotEmpty()) {
-            val sent =
-                collectorClient.sendBatch(
-                    BatchCapturedInputRequest(items = captured),
-                )
-            if (sent) {
-                logger.info(
-                    "Captured {} entries (from {} raw)",
-                    captured.size,
-                    entries.size,
-                )
-            }
-        }
-
-        currentCursor = entries.maxOf { it.ts } + 1
-
-        if (entries.size < batchSize) break
-    }
-
-    val lagMs = if (currentCursor != null) nowMs - currentCursor else null
-    if (lagMs != null && lagMs > LAG_WARN_THRESHOLD_MS) {
-        // TODO: Surface lag to the platform (e.g. via config poll or heartbeat)
-        //  so the customer can take action (scale agents, increase sampling, tune batch size)
-        logger.warn(
-            "Traffic capture lagging: {}ms behind real-time ({} pages, {} entries this cycle)",
-            lagMs,
-            pagesProcessed,
-            entriesProcessed,
+    if (entries.isEmpty()) {
+        return CaptureResult(
+            cursor = cursor,
+            entriesProcessed = 0,
+            lagMs = null,
+            caughtUp = true,
         )
     }
 
+    val captured = transformer.transform(entries)
+
+    if (captured.isNotEmpty()) {
+        val sent =
+            collectorClient.sendBatch(
+                BatchCapturedInputRequest(items = captured),
+            )
+        if (sent) {
+            logger.info(
+                "Captured {} entries (from {} raw)",
+                captured.size,
+                entries.size,
+            )
+        }
+    }
+
+    val newCursor = entries.maxOf { it.ts } + 1
+    val lagMs = nowMs - newCursor
+
     return CaptureResult(
-        cursor = currentCursor,
-        pagesProcessed = pagesProcessed,
-        entriesProcessed = entriesProcessed,
+        cursor = newCursor,
+        entriesProcessed = entries.size,
         lagMs = lagMs,
+        caughtUp = entries.size < batchSize,
     )
 }
 

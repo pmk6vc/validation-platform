@@ -99,7 +99,7 @@ class AgentIntegrationTest {
 
             // Execute one iteration via the extracted function
             val result =
-                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             // Cursor advanced past the latest entry timestamp (max of all entries, not just matched)
             assertEquals(1004L, result.cursor)
@@ -140,7 +140,7 @@ class AgentIntegrationTest {
 
             // Even though Kubeshark returns entries, nothing passes the filter
             val result =
-                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             // Cursor still advances (entries were fetched, just nothing matched)
             assertEquals(1004L, result.cursor)
@@ -176,7 +176,7 @@ class AgentIntegrationTest {
 
             // Kubeshark failure → cursor unchanged
             val result =
-                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             assertNull(result.cursor)
         }
