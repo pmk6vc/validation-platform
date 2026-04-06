@@ -2,6 +2,7 @@ plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
     id("io.ktor.plugin")
+    jacoco
 }
 
 group = "com.platform"
@@ -46,7 +47,16 @@ dependencies {
     testImplementation(libs.testcontainers.postgresql)
 }
 
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
 tasks.test {
+    finalizedBy(tasks.jacocoTestReport)
     useJUnitPlatform()
 
     maxParallelForks = 1

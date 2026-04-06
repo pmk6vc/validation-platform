@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   checks: write
+  pull-requests: write
 
 jobs:
   lint:
@@ -43,25 +44,34 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Run tests
-        run: ./gradlew :shared:test :app:test
+        run: ./gradlew :shared:test :app:test :collector:test
 
-      - name: Test summary
+      - name: Generate coverage report
         if: always()
-        run: |
-          echo '## Test Results' >> $GITHUB_STEP_SUMMARY
-          echo '' >> $GITHUB_STEP_SUMMARY
-          for module in shared app collector; do
-            dir="$module/build/test-results/test"
-            [ -d "$dir" ] || continue
-            echo "### $module" >> $GITHUB_STEP_SUMMARY
-            passed=$(grep -rl 'failures="0" errors="0"' "$dir" 2>/dev/null | wc -l)
-            failed=$(grep -rL 'failures="0" errors="0"' "$dir" --include='*.xml' 2>/dev/null | wc -l)
-            total=$((passed + failed))
-            if [ "$failed" -eq 0 ]; then
-              echo ":white_check_mark: All $total test suites passed" >> $GITHUB_STEP_SUMMARY
-            else
-              echo ":x: $failed/$total test suites had failures" >> $GITHUB_STEP_SUMMARY
-              grep -rh 'testcase.*name=' "$dir" | grep -v 'failures="0"' | head -20 >> $GITHUB_STEP_SUMMARY
-            fi
-            echo '' >> $GITHUB_STEP_SUMMARY
-          done
+        run: ./gradlew jacocoAggregatedReport
+
+      - name: Test report
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Test Results
+          path: '**/build/test-results/test/TEST-*.xml'
+          reporter: java-junit
+
+      - name: Coverage report
+        if: always()
+        uses: madrapps/jacoco-report@v1.7.1
+        with:
+          paths: build/reports/jacoco/aggregated/jacocoAggregatedReport.xml
+          token: ${{ secrets.GITHUB_TOKEN }}
+          min-coverage-overall: 0
+          min-coverage-changed-files: 0
+          title: Code Coverage
+          update-comment: true
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/reports/jacoco/aggregated/html/

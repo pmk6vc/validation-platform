@@ -2,6 +2,7 @@ plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
     `java-test-fixtures`
+    jacoco
 }
 
 group = "com.platform"
@@ -43,7 +44,16 @@ dependencies {
     testImplementation(libs.ktor.serialization.json)
 }
 
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
 tasks.test {
+    finalizedBy(tasks.jacocoTestReport)
     useJUnitPlatform()
 
     // Run tests from root project directory so paths to k8s/ manifests resolve correctly

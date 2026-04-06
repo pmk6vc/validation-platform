@@ -2,6 +2,7 @@ plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
     id("io.ktor.plugin")
+    jacoco
 }
 
 group = "com.platform"
@@ -53,7 +54,16 @@ dependencies {
     testImplementation(libs.bundles.ktor.client)
 }
 
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
 tasks.test {
+    finalizedBy(tasks.jacocoTestReport)
     useJUnitPlatform()
 
     // Run tests from root project directory so paths to k8s/ manifests resolve correctly

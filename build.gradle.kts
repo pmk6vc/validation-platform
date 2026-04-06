@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ktor) apply false
     alias(libs.plugins.ktlint)
+    jacoco
 }
 
 group = "com.platform"
@@ -22,6 +23,46 @@ subprojects {
         configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
             version.set(ktlintVersion)
         }
+    }
+}
+
+// Aggregated JaCoCo coverage report across all platform modules
+val platformModules = listOf(":shared", ":app", ":collector")
+
+tasks.register<JacocoReport>("jacocoAggregatedReport") {
+    group = "verification"
+    description = "Generates an aggregated JaCoCo coverage report for all platform modules"
+
+    dependsOn(platformModules.map { "$it:jacocoTestReport" })
+
+    executionData.setFrom(
+        platformModules.map { modulePath ->
+            fileTree(project(modulePath).layout.buildDirectory) {
+                include("jacoco/test.exec")
+            }
+        },
+    )
+
+    sourceDirectories.setFrom(
+        platformModules.map { modulePath ->
+            files("${project(modulePath).projectDir}/src/main/kotlin")
+        },
+    )
+
+    classDirectories.setFrom(
+        platformModules.map { modulePath ->
+            fileTree(project(modulePath).layout.buildDirectory) {
+                include("classes/kotlin/main/**")
+                exclude("**/generated/**")
+            }
+        },
+    )
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        xml.outputLocation.set(layout.buildDirectory.file("reports/jacoco/aggregated/jacocoAggregatedReport.xml"))
+        html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco/aggregated/html"))
     }
 }
 
