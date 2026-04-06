@@ -93,19 +93,50 @@ suspend fun trafficCaptureLoop(
     while (true) {
         val config = dynamicConfig.get()
         try {
-            cursor = captureTraffic(cursor, config.batchSize, kubesharkClient, collectorClient, transformer)
+            val result =
+                captureOneBatch(cursor, config.batchSize, kubesharkClient, collectorClient, transformer)
+            cursor = result.cursor
+
+            if (result.lagMs != null && result.lagMs > LAG_WARN_THRESHOLD_MS) {
+                // TODO: Surface lag to the platform (e.g. via config poll or heartbeat)
+                //  so the customer can take action (scale agents, increase sampling, tune batch size)
+                logger.warn(
+                    "Traffic capture lagging: {}ms behind real-time ({} entries this batch)",
+                    result.lagMs,
+                    result.entriesProcessed,
+                )
+            }
+
+            if (result.caughtUp) {
+                delay(config.captureIntervalMs)
+            }
         } catch (e: Exception) {
-            logger.error("Traffic capture loop failed", e)
+            logger.error("Traffic capture failed", e)
+            delay(config.captureIntervalMs)
         }
-        delay(config.captureIntervalMs)
     }
 }
+
+/**
+ * Result of processing a single batch from Kubeshark.
+ */
+data class CaptureResult(
+    val cursor: Long?,
+    val entriesProcessed: Int,
+    val lagMs: Long?,
+    val caughtUp: Boolean,
+)
 
 // --- Single-iteration logic (testable without loops) ---
 
 /**
  * V1 stub — service discovery will be implemented when the platform
  * exposes a service registration endpoint.
+ *
+ * TODO: Inject a K8s client to list services in the cluster and a
+ *  platform registration client to POST /api/services. The platform
+ *  returns a service ID map that populates targetServices in DynamicConfig.
+ *  Until then, targetServices comes entirely from the config poll.
  */
 fun discoverServices() {
     logger.debug("Service discovery: not yet implemented")
@@ -139,23 +170,33 @@ suspend fun pollConfig(
 }
 
 /**
- * Run one capture cycle: poll Kubeshark, transform, send to collector.
- * Returns the updated cursor for the next cycle.
+ * Fetch one batch from Kubeshark, transform, and send to collector.
+ * No loops — the caller decides whether to continue or delay based on [CaptureResult.caughtUp].
+ *
+ * nowMs is injectable for testing lag detection. Defaults to wall clock.
  */
-suspend fun captureTraffic(
+suspend fun captureOneBatch(
     cursor: Long?,
     batchSize: Int,
     kubesharkClient: KubesharkClient,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
-): Long? {
+    nowMs: Long = System.currentTimeMillis(),
+): CaptureResult {
     val entries =
         kubesharkClient.listHttpCalls(
             startMs = cursor,
             limit = batchSize,
         )
 
-    if (entries.isEmpty()) return cursor
+    if (entries.isEmpty()) {
+        return CaptureResult(
+            cursor = cursor,
+            entriesProcessed = 0,
+            lagMs = null,
+            caughtUp = true,
+        )
+    }
 
     val captured = transformer.transform(entries)
 
@@ -173,5 +214,16 @@ suspend fun captureTraffic(
         }
     }
 
-    return entries.maxOf { it.ts } + 1
+    val newCursor = entries.maxOf { it.ts } + 1
+    val lagMs = nowMs - newCursor
+
+    return CaptureResult(
+        cursor = newCursor,
+        entriesProcessed = entries.size,
+        lagMs = lagMs,
+        caughtUp = entries.size < batchSize,
+    )
 }
+
+/** Warn when cursor is more than 15s behind wall clock */
+private const val LAG_WARN_THRESHOLD_MS = 15_000L

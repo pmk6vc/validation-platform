@@ -98,11 +98,11 @@ class AgentIntegrationTest {
             val transformer = TrafficTransformer(dynamicConfig)
 
             // Execute one iteration via the extracted function
-            val newCursor =
-                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
+            val result =
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             // Cursor advanced past the latest entry timestamp (max of all entries, not just matched)
-            assertEquals(1004L, newCursor)
+            assertEquals(1004L, result.cursor)
 
             // Collector received exactly one batch POST
             assertEquals(1, collectorRequestCount)
@@ -139,11 +139,11 @@ class AgentIntegrationTest {
             val transformer = TrafficTransformer(dynamicConfig)
 
             // Even though Kubeshark returns entries, nothing passes the filter
-            val newCursor =
-                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
+            val result =
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             // Cursor still advances (entries were fetched, just nothing matched)
-            assertEquals(1004L, newCursor)
+            assertEquals(1004L, result.cursor)
         }
 
     @Test
@@ -175,10 +175,10 @@ class AgentIntegrationTest {
             val transformer = TrafficTransformer(dynamicConfig)
 
             // Kubeshark failure → cursor unchanged
-            val newCursor =
-                captureTraffic(null, 100, kubesharkClient, collectorClient, transformer)
+            val result =
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
-            assertNull(newCursor)
+            assertNull(result.cursor)
         }
 
     private fun MockRequestHandleScope.respondJson(body: String) =
