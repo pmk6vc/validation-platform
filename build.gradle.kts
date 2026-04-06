@@ -15,13 +15,26 @@ repositories {
 
 val ktlintVersion = versionCatalogs.named("libs").findVersion("ktlint").get().requiredVersion
 
-// Apply ktlint to all subprojects (except test-services which have their own conventions)
+// Apply ktlint and JaCoCo to all subprojects (except test-services which have their own conventions)
 subprojects {
     if (!path.startsWith(":test-services")) {
         apply(plugin = "org.jlleitschuh.gradle.ktlint")
+        apply(plugin = "jacoco")
 
         configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
             version.set(ktlintVersion)
+        }
+
+        tasks.withType<JacocoReport> {
+            dependsOn(tasks.named("test"))
+            reports {
+                xml.required.set(true)
+                html.required.set(true)
+            }
+        }
+
+        tasks.withType<Test> {
+            finalizedBy(tasks.withType<JacocoReport>())
         }
     }
 }
