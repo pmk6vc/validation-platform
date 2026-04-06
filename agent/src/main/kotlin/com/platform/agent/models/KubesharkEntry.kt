@@ -1,40 +1,81 @@
 package com.platform.agent.models
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-@Serializable
-data class KubesharkResponse(
-    val calls: List<KubesharkEntry>,
-    val truncated: Boolean = false,
-)
-
+/**
+ * Represents a single API call entry from the Kubeshark WebSocket /wsFull stream.
+ *
+ * The WebSocket pushes one JSON object per captured L7 transaction. This DTO
+ * captures the subset of fields the agent needs for traffic capture:
+ * identity, timing, source/destination, and HTTP request/response data.
+ *
+ * Fields not needed by the agent (protocol metadata, PCAP refs, checksums, etc.)
+ * are ignored via `ignoreUnknownKeys = true` on the Json instance.
+ */
 @Serializable
 data class KubesharkEntry(
     val id: String,
-    val ts: Long,
+    val timestamp: Long,
+    val protocol: KubesharkProtocol? = null,
+    val tls: Boolean = false,
     val src: KubesharkEndpoint? = null,
     val dst: KubesharkEndpoint? = null,
-    val proto: String,
-    @SerialName("sub_proto") val subProto: String? = null,
-    val method: String? = null,
-    val url: String? = null,
-    val path: String? = null,
-    @SerialName("req_headers") val reqHeaders: Map<String, String>? = null,
-    @SerialName("req_body") val reqBody: String? = null,
-    @SerialName("resp_headers") val respHeaders: Map<String, String>? = null,
-    @SerialName("resp_body") val respBody: String? = null,
-    val status: Int? = null,
-    @SerialName("req_size") val reqSize: Long? = null,
-    @SerialName("resp_size") val respSize: Long? = null,
+    val request: KubesharkRequest? = null,
+    val response: KubesharkResponse? = null,
+    val requestSize: Long? = null,
+    val responseSize: Long? = null,
+    val elapsedTime: Long? = null,
+)
+
+@Serializable
+data class KubesharkProtocol(
+    val name: String,
+    val abbr: String? = null,
 )
 
 @Serializable
 data class KubesharkEndpoint(
-    val name: String? = null,
-    val ns: String? = null,
-    val svc: String? = null,
     val ip: String? = null,
-    val port: Int? = null,
-    val labels: Map<String, String>? = null,
+    val port: String? = null,
+    val name: String? = null,
+    val namespace: String? = null,
+)
+
+/**
+ * HTTP request from the WebSocket stream.
+ * Headers are in HAR format: list of {name, value} objects.
+ */
+@Serializable
+data class KubesharkRequest(
+    val method: String? = null,
+    val url: String? = null,
+    val path: String? = null,
+    val headers: List<KubesharkHeader>? = null,
+    val bodySize: Long? = null,
+)
+
+/**
+ * HTTP response from the WebSocket stream.
+ * Body is in `content.text` (HAR format).
+ */
+@Serializable
+data class KubesharkResponse(
+    val status: Int? = null,
+    val statusText: String? = null,
+    val headers: List<KubesharkHeader>? = null,
+    val content: KubesharkContent? = null,
+    val bodySize: Long? = null,
+)
+
+@Serializable
+data class KubesharkHeader(
+    val name: String,
+    val value: String,
+)
+
+@Serializable
+data class KubesharkContent(
+    val text: String? = null,
+    val mimeType: String? = null,
+    val size: Long? = null,
 )

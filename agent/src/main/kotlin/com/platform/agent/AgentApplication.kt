@@ -4,6 +4,7 @@ import com.platform.agent.models.BatchCapturedInputRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -30,6 +31,7 @@ fun main() {
             install(ContentNegotiation) {
                 json(Json { ignoreUnknownKeys = true })
             }
+            install(WebSockets)
         }
 
     val kubesharkClient = KubesharkClient(httpClient, staticConfig.kubesharkUrl)
@@ -84,7 +86,7 @@ suspend fun configPollLoop(
 
 suspend fun trafficCaptureLoop(
     dynamicConfig: AtomicReference<DynamicConfig>,
-    kubesharkClient: KubesharkClient,
+    kubesharkClient: TrafficSource,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
 ) {
@@ -178,13 +180,13 @@ suspend fun pollConfig(
 suspend fun captureOneBatch(
     cursor: Long?,
     batchSize: Int,
-    kubesharkClient: KubesharkClient,
+    trafficSource: TrafficSource,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
     nowMs: Long = System.currentTimeMillis(),
 ): CaptureResult {
     val entries =
-        kubesharkClient.listHttpCalls(
+        trafficSource.listHttpCalls(
             startMs = cursor,
             limit = batchSize,
         )
@@ -214,7 +216,7 @@ suspend fun captureOneBatch(
         }
     }
 
-    val newCursor = entries.maxOf { it.ts } + 1
+    val newCursor = entries.maxOf { it.timestamp } + 1
     val lagMs = nowMs - newCursor
 
     return CaptureResult(

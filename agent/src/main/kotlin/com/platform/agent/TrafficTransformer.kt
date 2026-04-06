@@ -15,8 +15,10 @@ class TrafficTransformer(
      * snapshot, so changes take effect on the next call without restart.
      *
      * Filtering logic:
-     * 1. Only keep HTTP entries (proto == "http")
-     * 2. Only keep entries where dst.svc matches a target service (deduplicates)
+     * 1. Only keep HTTP entries (protocol.name == "http")
+     * 2. Only keep entries where dst.name matches a target service name
+     *    (Kubeshark shows each call from both pod-IP and service-IP perspectives;
+     *    filtering on dst.name == service name deduplicates naturally)
      * 3. Only keep entries with required fields (method, url, status)
      * 4. Apply sampling rate
      *
@@ -30,24 +32,31 @@ class TrafficTransformer(
         val samplingRate = config.samplingRate
 
         return entries
-            .filter { it.proto == "http" }
-            .filter { it.dst?.svc != null && it.dst.svc in targetServices }
-            .filter { it.method != null && it.url != null && it.status != null }
-            .filter { Math.random() < samplingRate }
+            .filter { it.protocol?.name == "http" }
+            .filter { it.dst?.name != null && it.dst.name in targetServices }
+            .filter {
+                it.request?.method != null &&
+                    it.request.url != null &&
+                    it.response?.status != null
+            }.filter { Math.random() < samplingRate }
             .map { entry ->
                 CapturedInputRequest(
-                    serviceId = targetServices.getValue(entry.dst!!.svc!!),
+                    serviceId = targetServices.getValue(entry.dst!!.name!!),
                     inputType = "HTTP",
-                    method = entry.method!!,
-                    url = entry.url!!,
-                    requestHeaders = entry.reqHeaders,
-                    requestBody = entry.reqBody,
-                    responseStatus = entry.status!!,
-                    responseHeaders = entry.respHeaders,
-                    responseBody = entry.respBody,
+                    method = entry.request!!.method!!,
+                    url = entry.request.url!!,
+                    requestHeaders =
+                        entry.request.headers
+                            ?.associate { it.name to it.value },
+                    requestBody = null, // Request body not in base WebSocket stream
+                    responseStatus = entry.response!!.status!!,
+                    responseHeaders =
+                        entry.response.headers
+                            ?.associate { it.name to it.value },
+                    responseBody = entry.response.content?.text,
                     sourceIp = entry.src?.ip,
                     destinationIp = entry.dst.ip,
-                    capturedAt = Instant.ofEpochMilli(entry.ts).toString(),
+                    capturedAt = Instant.ofEpochMilli(entry.timestamp).toString(),
                 )
             }
     }

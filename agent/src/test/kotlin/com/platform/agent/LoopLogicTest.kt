@@ -1,5 +1,10 @@
 package com.platform.agent
 
+import com.platform.agent.models.KubesharkEndpoint
+import com.platform.agent.models.KubesharkEntry
+import com.platform.agent.models.KubesharkProtocol
+import com.platform.agent.models.KubesharkRequest
+import com.platform.agent.models.KubesharkResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -119,25 +124,25 @@ class LoopLogicTest {
 
     @Nested
     inner class CaptureOneBatchTests {
+        private fun fakeTrafficSource(entries: List<KubesharkEntry> = emptyList()): TrafficSource =
+            object : TrafficSource {
+                override suspend fun listHttpCalls(
+                    startMs: Long?,
+                    limit: Int,
+                ): List<KubesharkEntry> =
+                    entries
+                        .filter { startMs == null || it.timestamp >= startMs }
+                        .take(limit)
+            }
+
         private fun mockClients(
-            kubesharkBody: String = """{"calls": [], "truncated": false}""",
-            kubesharkStatus: HttpStatusCode = HttpStatusCode.OK,
+            entries: List<KubesharkEntry> = emptyList(),
             collectorStatus: HttpStatusCode = HttpStatusCode.OK,
             onCollectorRequest: ((String) -> Unit)? = null,
-        ): Triple<KubesharkClient, CollectorClient, TrafficTransformer> {
+        ): Triple<TrafficSource, CollectorClient, TrafficTransformer> {
             val engine =
                 MockEngine { request ->
                     when {
-                        request.url.encodedPath.contains("/api/entries") ->
-                            respond(
-                                content = kubesharkBody,
-                                status = kubesharkStatus,
-                                headers =
-                                    headersOf(
-                                        HttpHeaders.ContentType,
-                                        "application/json",
-                                    ),
-                            )
                         request.url.encodedPath.contains("/api/captured-inputs") -> {
                             onCollectorRequest?.invoke(
                                 String(request.body.toByteArray(), Charsets.UTF_8),
@@ -167,30 +172,31 @@ class LoopLogicTest {
                     ),
                 )
             return Triple(
-                KubesharkClient(httpClient, "http://kubeshark:80"),
+                fakeTrafficSource(entries),
                 CollectorClient(httpClient, "http://collector:8081", "key"),
                 TrafficTransformer(dynamicConfig),
             )
         }
 
-        private fun kubesharkResponseWith(vararg entries: Pair<Long, String>): String {
-            val calls =
-                entries.joinToString(",") { (ts, svc) ->
-                    """{
-                        "id": "e-$ts", "ts": $ts, "proto": "http",
-                        "dst": {"svc": "$svc", "ip": "10.0.0.2"},
-                        "method": "GET", "url": "/api/test", "status": 200
-                    }"""
-                }
-            return """{"calls": [$calls], "truncated": false}"""
-        }
+        private fun httpEntry(
+            timestamp: Long,
+            dstName: String,
+        ): KubesharkEntry =
+            KubesharkEntry(
+                id = "e-$timestamp",
+                timestamp = timestamp,
+                protocol = KubesharkProtocol(name = "http"),
+                dst = KubesharkEndpoint(name = dstName, ip = "10.0.0.2"),
+                request = KubesharkRequest(method = "GET", url = "/api/test"),
+                response = KubesharkResponse(status = 200),
+            )
 
         @Test
         fun `returns null cursor and caughtUp when no entries returned`() =
             runBlocking {
-                val (kubeshark, collector, transformer) = mockClients()
+                val (source, collector, transformer) = mockClients()
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer)
+                val result = captureOneBatch(null, 100, source, collector, transformer)
 
                 assertNull(result.cursor)
                 assertEquals(0, result.entriesProcessed)
@@ -201,15 +207,15 @@ class LoopLogicTest {
         @Test
         fun `advances cursor to max timestamp plus one`() =
             runBlocking {
-                val response =
-                    kubesharkResponseWith(
-                        5000L to "order-service",
-                        3000L to "order-service",
-                        7000L to "order-service",
+                val entries =
+                    listOf(
+                        httpEntry(5000L, "order-service"),
+                        httpEntry(3000L, "order-service"),
+                        httpEntry(7000L, "order-service"),
                     )
-                val (kubeshark, collector, transformer) = mockClients(kubesharkBody = response)
+                val (source, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer)
+                val result = captureOneBatch(null, 100, source, collector, transformer)
 
                 assertEquals(7001L, result.cursor)
                 assertEquals(3, result.entriesProcessed)
@@ -218,9 +224,9 @@ class LoopLogicTest {
         @Test
         fun `preserves existing cursor when kubeshark returns empty`() =
             runBlocking {
-                val (kubeshark, collector, transformer) = mockClients()
+                val (source, collector, transformer) = mockClients()
 
-                val result = captureOneBatch(5000L, 100, kubeshark, collector, transformer)
+                val result = captureOneBatch(5000L, 100, source, collector, transformer)
 
                 assertEquals(5000L, result.cursor)
                 assertTrue(result.caughtUp)
@@ -230,14 +236,14 @@ class LoopLogicTest {
         fun `does not call collector when all entries filtered out`() =
             runBlocking {
                 var collectorCalled = false
-                val response = kubesharkResponseWith(1000L to "unknown-service")
-                val (kubeshark, collector, transformer) =
+                val entries = listOf(httpEntry(1000L, "unknown-service"))
+                val (source, collector, transformer) =
                     mockClients(
-                        kubesharkBody = response,
+                        entries = entries,
                         onCollectorRequest = { collectorCalled = true },
                     )
 
-                captureOneBatch(null, 100, kubeshark, collector, transformer)
+                captureOneBatch(null, 100, source, collector, transformer)
 
                 assertFalse(collectorCalled)
             }
@@ -245,11 +251,11 @@ class LoopLogicTest {
         @Test
         fun `still advances cursor when entries exist but all filtered`() =
             runBlocking {
-                val response = kubesharkResponseWith(2000L to "unknown-service")
-                val (kubeshark, collector, transformer) =
-                    mockClients(kubesharkBody = response)
+                val entries = listOf(httpEntry(2000L, "unknown-service"))
+                val (source, collector, transformer) =
+                    mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer)
+                val result = captureOneBatch(null, 100, source, collector, transformer)
 
                 assertEquals(2001L, result.cursor)
             }
@@ -258,14 +264,14 @@ class LoopLogicTest {
         fun `sends matching entries to collector`() =
             runBlocking {
                 var receivedBody = ""
-                val response = kubesharkResponseWith(1000L to "order-service")
-                val (kubeshark, collector, transformer) =
+                val entries = listOf(httpEntry(1000L, "order-service"))
+                val (source, collector, transformer) =
                     mockClients(
-                        kubesharkBody = response,
+                        entries = entries,
                         onCollectorRequest = { receivedBody = it },
                     )
 
-                captureOneBatch(null, 100, kubeshark, collector, transformer)
+                captureOneBatch(null, 100, source, collector, transformer)
 
                 val batch = json.decodeFromString<com.platform.agent.models.BatchCapturedInputRequest>(receivedBody)
                 assertEquals(1, batch.items.size)
@@ -275,10 +281,10 @@ class LoopLogicTest {
         @Test
         fun `caughtUp is true when entries less than batchSize`() =
             runBlocking {
-                val response = kubesharkResponseWith(1000L to "order-service")
-                val (kubeshark, collector, transformer) = mockClients(kubesharkBody = response)
+                val entries = listOf(httpEntry(1000L, "order-service"))
+                val (source, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer)
+                val result = captureOneBatch(null, 100, source, collector, transformer)
 
                 assertTrue(result.caughtUp)
             }
@@ -286,14 +292,14 @@ class LoopLogicTest {
         @Test
         fun `caughtUp is false when entries equals batchSize`() =
             runBlocking {
-                val response =
-                    kubesharkResponseWith(
-                        1000L to "order-service",
-                        2000L to "order-service",
+                val entries =
+                    listOf(
+                        httpEntry(1000L, "order-service"),
+                        httpEntry(2000L, "order-service"),
                     )
-                val (kubeshark, collector, transformer) = mockClients(kubesharkBody = response)
+                val (source, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 2, kubeshark, collector, transformer)
+                val result = captureOneBatch(null, 2, source, collector, transformer)
 
                 assertFalse(result.caughtUp)
             }
@@ -301,10 +307,10 @@ class LoopLogicTest {
         @Test
         fun `reports lag when cursor is behind wall clock`() =
             runBlocking {
-                val response = kubesharkResponseWith(1000L to "order-service")
-                val (kubeshark, collector, transformer) = mockClients(kubesharkBody = response)
+                val entries = listOf(httpEntry(1000L, "order-service"))
+                val (source, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer, nowMs = 50_000L)
+                val result = captureOneBatch(null, 100, source, collector, transformer, nowMs = 50_000L)
 
                 assertEquals(48_999L, result.lagMs)
             }
@@ -312,10 +318,10 @@ class LoopLogicTest {
         @Test
         fun `reports no lag when cursor is close to wall clock`() =
             runBlocking {
-                val response = kubesharkResponseWith(1000L to "order-service")
-                val (kubeshark, collector, transformer) = mockClients(kubesharkBody = response)
+                val entries = listOf(httpEntry(1000L, "order-service"))
+                val (source, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer, nowMs = 1002L)
+                val result = captureOneBatch(null, 100, source, collector, transformer, nowMs = 1002L)
 
                 assertEquals(1L, result.lagMs)
             }
@@ -323,9 +329,9 @@ class LoopLogicTest {
         @Test
         fun `lag is null when no entries processed`() =
             runBlocking {
-                val (kubeshark, collector, transformer) = mockClients()
+                val (source, collector, transformer) = mockClients()
 
-                val result = captureOneBatch(null, 100, kubeshark, collector, transformer)
+                val result = captureOneBatch(null, 100, source, collector, transformer)
 
                 assertNull(result.lagMs)
             }
@@ -333,9 +339,9 @@ class LoopLogicTest {
         @Test
         fun `lag is null for sparse traffic with stale cursor`() =
             runBlocking {
-                val (kubeshark, collector, transformer) = mockClients()
+                val (source, collector, transformer) = mockClients()
 
-                val result = captureOneBatch(1000L, 100, kubeshark, collector, transformer, nowMs = 100_000L)
+                val result = captureOneBatch(1000L, 100, source, collector, transformer, nowMs = 100_000L)
 
                 assertEquals(1000L, result.cursor)
                 assertNull(result.lagMs)

@@ -1,7 +1,12 @@
 package com.platform.agent
 
+import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
+import com.platform.agent.models.KubesharkHeader
+import com.platform.agent.models.KubesharkProtocol
+import com.platform.agent.models.KubesharkRequest
+import com.platform.agent.models.KubesharkResponse
 import org.junit.jupiter.api.Test
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
@@ -25,30 +30,29 @@ class TrafficTransformerTest {
 
     private fun httpEntry(
         id: String = "entry-1",
-        dstSvc: String? = "order-service",
+        dstName: String? = "order-service",
         method: String? = "GET",
         url: String? = "/api/orders",
         status: Int? = 200,
-        ts: Long = 1000L,
-        reqHeaders: Map<String, String>? = null,
-        reqBody: String? = null,
-        respHeaders: Map<String, String>? = null,
+        timestamp: Long = 1000L,
+        reqHeaders: List<KubesharkHeader>? = null,
+        respHeaders: List<KubesharkHeader>? = null,
         respBody: String? = null,
         srcIp: String? = "10.0.0.1",
         dstIp: String? = "10.0.0.2",
     ) = KubesharkEntry(
         id = id,
-        ts = ts,
-        proto = "http",
+        timestamp = timestamp,
+        protocol = KubesharkProtocol(name = "http"),
         src = KubesharkEndpoint(ip = srcIp),
-        dst = KubesharkEndpoint(svc = dstSvc, ip = dstIp),
-        method = method,
-        url = url,
-        status = status,
-        reqHeaders = reqHeaders,
-        reqBody = reqBody,
-        respHeaders = respHeaders,
-        respBody = respBody,
+        dst = KubesharkEndpoint(name = dstName, ip = dstIp),
+        request = KubesharkRequest(method = method, url = url, headers = reqHeaders),
+        response =
+            KubesharkResponse(
+                status = status,
+                headers = respHeaders,
+                content = respBody?.let { KubesharkContent(text = it) },
+            ),
     )
 
     @Test
@@ -57,9 +61,14 @@ class TrafficTransformerTest {
             transformer().transform(
                 listOf(
                     httpEntry(
-                        reqHeaders = mapOf("Content-Type" to "application/json"),
-                        reqBody = """{"item": "widget"}""",
-                        respHeaders = mapOf("X-Request-Id" to "abc"),
+                        reqHeaders =
+                            listOf(
+                                KubesharkHeader("Content-Type", "application/json"),
+                            ),
+                        respHeaders =
+                            listOf(
+                                KubesharkHeader("X-Request-Id", "abc"),
+                            ),
                         respBody = """{"id": 1}""",
                     ),
                 ),
@@ -73,7 +82,6 @@ class TrafficTransformerTest {
         assertEquals("/api/orders", captured.url)
         assertEquals(200, captured.responseStatus)
         assertEquals(mapOf("Content-Type" to "application/json"), captured.requestHeaders)
-        assertEquals("""{"item": "widget"}""", captured.requestBody)
         assertEquals(mapOf("X-Request-Id" to "abc"), captured.responseHeaders)
         assertEquals("""{"id": 1}""", captured.responseBody)
         assertEquals("10.0.0.1", captured.sourceIp)
@@ -86,12 +94,11 @@ class TrafficTransformerTest {
         val grpcEntry =
             KubesharkEntry(
                 id = "grpc-1",
-                ts = 1000L,
-                proto = "grpc",
-                dst = KubesharkEndpoint(svc = "order-service"),
-                method = "GetOrder",
-                url = "/orders.OrderService/GetOrder",
-                status = 0,
+                timestamp = 1000L,
+                protocol = KubesharkProtocol(name = "grpc"),
+                dst = KubesharkEndpoint(name = "order-service"),
+                request = KubesharkRequest(method = "GetOrder", url = "/orders.OrderService/GetOrder"),
+                response = KubesharkResponse(status = 0),
             )
 
         val result = transformer().transform(listOf(grpcEntry))
@@ -100,8 +107,8 @@ class TrafficTransformerTest {
     }
 
     @Test
-    fun `filters out entries with no dst svc`() {
-        val result = transformer().transform(listOf(httpEntry(dstSvc = null)))
+    fun `filters out entries with no dst name`() {
+        val result = transformer().transform(listOf(httpEntry(dstName = null)))
 
         assertTrue(result.isEmpty())
     }
@@ -110,7 +117,7 @@ class TrafficTransformerTest {
     fun `filters out entries for non-target services`() {
         val result =
             transformer().transform(
-                listOf(httpEntry(dstSvc = "unknown-service")),
+                listOf(httpEntry(dstName = "unknown-service")),
             )
 
         assertTrue(result.isEmpty())
@@ -138,8 +145,8 @@ class TrafficTransformerTest {
     fun `maps correct service ID for each target service`() {
         val entries =
             listOf(
-                httpEntry(id = "e1", dstSvc = "order-service"),
-                httpEntry(id = "e2", dstSvc = "api-gateway"),
+                httpEntry(id = "e1", dstName = "order-service"),
+                httpEntry(id = "e2", dstName = "api-gateway"),
             )
 
         val result = transformer().transform(entries)

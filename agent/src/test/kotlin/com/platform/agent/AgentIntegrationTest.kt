@@ -1,6 +1,13 @@
 package com.platform.agent
 
 import com.platform.agent.models.BatchCapturedInputRequest
+import com.platform.agent.models.KubesharkContent
+import com.platform.agent.models.KubesharkEndpoint
+import com.platform.agent.models.KubesharkEntry
+import com.platform.agent.models.KubesharkHeader
+import com.platform.agent.models.KubesharkProtocol
+import com.platform.agent.models.KubesharkRequest
+import com.platform.agent.models.KubesharkResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -20,43 +27,76 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Integration test wiring real components with mock HTTP backends.
- * Verifies the full pipeline: Kubeshark response → transformer → collector POST.
+ * Integration test wiring real components with mock backends.
+ * Verifies the full pipeline: TrafficSource entries → transformer → collector POST.
  */
 class AgentIntegrationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val kubesharkResponse = """{
-        "calls": [
-            {
-                "id": "e1", "ts": 1000, "proto": "http",
-                "src": {"ip": "10.0.0.1"},
-                "dst": {"svc": "order-service", "ip": "10.0.0.2"},
-                "method": "GET", "url": "/api/orders/1", "status": 200,
-                "req_headers": {"Accept": "application/json"},
-                "resp_body": "{\"id\": 1}"
-            },
-            {
-                "id": "e2", "ts": 1001, "proto": "http",
-                "src": {"ip": "10.0.0.1"},
-                "dst": {"svc": "order-service", "ip": "10.0.0.2"},
-                "method": "POST", "url": "/api/orders", "status": 201,
-                "req_body": "{\"item\": \"widget\"}"
-            },
-            {
-                "id": "e3", "ts": 1002, "proto": "http",
-                "src": {"ip": "10.0.0.1"},
-                "dst": {"svc": "unknown-service", "ip": "10.0.0.3"},
-                "method": "GET", "url": "/health", "status": 200
-            },
-            {
-                "id": "e4", "ts": 1003, "proto": "grpc",
-                "dst": {"svc": "order-service"},
-                "method": "GetOrder", "url": "/orders.OrderService/GetOrder", "status": 0
-            }
-        ],
-        "truncated": false
-    }"""
+    /** In-memory TrafficSource returning fixed entries. */
+    private class FakeTrafficSource(
+        private val entries: List<KubesharkEntry>,
+    ) : TrafficSource {
+        override suspend fun listHttpCalls(
+            startMs: Long?,
+            limit: Int,
+        ): List<KubesharkEntry> =
+            entries
+                .filter { startMs == null || it.timestamp >= startMs }
+                .take(limit)
+    }
+
+    private val testEntries =
+        listOf(
+            // e1: HTTP GET to order-service — should be captured
+            KubesharkEntry(
+                id = "e1",
+                timestamp = 1000,
+                protocol = KubesharkProtocol(name = "http"),
+                src = KubesharkEndpoint(ip = "10.0.0.1"),
+                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
+                request =
+                    KubesharkRequest(
+                        method = "GET",
+                        url = "/api/orders/1",
+                        headers = listOf(KubesharkHeader("Accept", "application/json")),
+                    ),
+                response =
+                    KubesharkResponse(
+                        status = 200,
+                        content = KubesharkContent(text = """{"id": 1}"""),
+                    ),
+            ),
+            // e2: HTTP POST to order-service — should be captured
+            KubesharkEntry(
+                id = "e2",
+                timestamp = 1001,
+                protocol = KubesharkProtocol(name = "http"),
+                src = KubesharkEndpoint(ip = "10.0.0.1"),
+                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
+                request = KubesharkRequest(method = "POST", url = "/api/orders"),
+                response = KubesharkResponse(status = 201),
+            ),
+            // e3: HTTP to unknown-service — should be filtered out (not a target)
+            KubesharkEntry(
+                id = "e3",
+                timestamp = 1002,
+                protocol = KubesharkProtocol(name = "http"),
+                src = KubesharkEndpoint(ip = "10.0.0.1"),
+                dst = KubesharkEndpoint(name = "unknown-service", ip = "10.0.0.3"),
+                request = KubesharkRequest(method = "GET", url = "/health"),
+                response = KubesharkResponse(status = 200),
+            ),
+            // e4: gRPC to order-service — should be filtered out (not HTTP)
+            KubesharkEntry(
+                id = "e4",
+                timestamp = 1003,
+                protocol = KubesharkProtocol(name = "grpc"),
+                dst = KubesharkEndpoint(name = "order-service"),
+                request = KubesharkRequest(method = "GetOrder", url = "/orders.OrderService/GetOrder"),
+                response = KubesharkResponse(status = 0),
+            ),
+        )
 
     @Test
     fun `full pipeline filters and transforms kubeshark entries to collector batch`() =
@@ -67,8 +107,6 @@ class AgentIntegrationTest {
             val engine =
                 MockEngine { request ->
                     when {
-                        request.url.encodedPath.contains("/api/entries") ->
-                            respondJson(kubesharkResponse)
                         request.url.encodedPath.contains("/api/captured-inputs") -> {
                             collectorRequestCount++
                             collectorRequestBody =
@@ -92,14 +130,13 @@ class AgentIntegrationTest {
                     ),
                 )
 
-            val kubesharkClient = KubesharkClient(httpClient, "http://kubeshark:80")
+            val trafficSource = FakeTrafficSource(testEntries)
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
             val transformer = TrafficTransformer(dynamicConfig)
 
-            // Execute one iteration via the extracted function
             val result =
-                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(null, 100, trafficSource, collectorClient, transformer)
 
             // Cursor advanced past the latest entry timestamp (max of all entries, not just matched)
             assertEquals(1004L, result.cursor)
@@ -121,7 +158,7 @@ class AgentIntegrationTest {
     @Test
     fun `pipeline produces nothing when no target services configured`() =
         runBlocking {
-            val engine = MockEngine { respondJson(kubesharkResponse) }
+            val engine = MockEngine { respondJson("{}") }
             val httpClient =
                 HttpClient(engine) {
                     install(ContentNegotiation) { json(json) }
@@ -132,31 +169,22 @@ class AgentIntegrationTest {
                     DynamicConfig(targetServices = emptyMap()),
                 )
 
-            val kubesharkClient =
-                KubesharkClient(httpClient, "http://kubeshark:80")
+            val trafficSource = FakeTrafficSource(testEntries)
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
             val transformer = TrafficTransformer(dynamicConfig)
 
-            // Even though Kubeshark returns entries, nothing passes the filter
             val result =
-                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(null, 100, trafficSource, collectorClient, transformer)
 
             // Cursor still advances (entries were fetched, just nothing matched)
             assertEquals(1004L, result.cursor)
         }
 
     @Test
-    fun `pipeline handles kubeshark failure gracefully`(): Unit =
+    fun `pipeline handles empty traffic source gracefully`(): Unit =
         runBlocking {
-            val engine =
-                MockEngine {
-                    respond(
-                        content = "Internal Server Error",
-                        status = HttpStatusCode.InternalServerError,
-                        headers = headersOf(HttpHeaders.ContentType, "text/plain"),
-                    )
-                }
+            val engine = MockEngine { respondJson("{}") }
             val httpClient =
                 HttpClient(engine) {
                     install(ContentNegotiation) { json(json) }
@@ -169,14 +197,13 @@ class AgentIntegrationTest {
                     ),
                 )
 
-            val kubesharkClient = KubesharkClient(httpClient, "http://kubeshark:80")
+            val trafficSource = FakeTrafficSource(emptyList())
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
             val transformer = TrafficTransformer(dynamicConfig)
 
-            // Kubeshark failure → cursor unchanged
             val result =
-                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(null, 100, trafficSource, collectorClient, transformer)
 
             assertNull(result.cursor)
         }
