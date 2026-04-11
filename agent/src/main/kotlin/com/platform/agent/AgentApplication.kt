@@ -216,17 +216,17 @@ suspend fun captureOneBatch(
     val captured = transformer.transform(entries)
 
     if (captured.isNotEmpty()) {
-        val sent =
-            collectorClient.sendBatch(
-                BatchCapturedInputRequest(items = captured),
-            )
-        if (sent) {
-            logger.info(
-                "Captured {} entries (from {} raw)",
-                captured.size,
-                entries.size,
-            )
-        }
+        // sendBatch retries transient failures with exponential backoff and
+        // suspends until the POST succeeds (or a 4xx permanent failure drops
+        // the batch). A sustained collector outage therefore backpressures
+        // this entire call, which stops the capture loop from draining the
+        // Kubeshark channel — the right behavior.
+        collectorClient.sendBatch(BatchCapturedInputRequest(items = captured))
+        logger.info(
+            "Captured {} entries (from {} raw)",
+            captured.size,
+            entries.size,
+        )
     }
 
     val maxTimestamp = entries.maxOf { it.timestamp }

@@ -61,6 +61,7 @@ class KubesharkClient(
     baseUrl: String,
     scope: CoroutineScope,
     capacity: Int = DEFAULT_CHANNEL_CAPACITY,
+    private val reconnectDelay: Duration = DEFAULT_RECONNECT_DELAY,
 ) {
     private val logger = LoggerFactory.getLogger(KubesharkClient::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -143,13 +144,13 @@ class KubesharkClient(
             try {
                 runSession()
                 // Clean close from server — reconnect after a short delay
-                logger.info("Kubeshark WebSocket closed by server, reconnecting in {}", RECONNECT_DELAY)
+                logger.info("Kubeshark WebSocket closed by server, reconnecting in {}", reconnectDelay)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                logger.error("Kubeshark WebSocket session failed, reconnecting in {}", RECONNECT_DELAY, e)
+                logger.error("Kubeshark WebSocket session failed, reconnecting in {}", reconnectDelay, e)
             }
-            delay(RECONNECT_DELAY)
+            delay(reconnectDelay)
         }
     }
 
@@ -213,10 +214,11 @@ class KubesharkClient(
 
     companion object {
         /**
-         * How long to wait before reconnecting after a session fails or the
-         * server closes the connection.
+         * Default backoff before reconnecting after a session fails or the
+         * server closes the connection. Tests can override this via the
+         * constructor parameter to avoid slow reconnect waits.
          */
-        val RECONNECT_DELAY: Duration = 5.seconds
+        val DEFAULT_RECONNECT_DELAY: Duration = 5.seconds
 
         /**
          * Default bounded channel capacity. At ~4KB per entry average, 1000
