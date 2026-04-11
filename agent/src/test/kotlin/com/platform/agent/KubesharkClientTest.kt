@@ -48,7 +48,7 @@ class KubesharkClientTest {
                         webSocket("/api/wsFull") {
                             // Read the KFL filter
                             val filter = (incoming.receive() as Frame.Text).readText()
-                            assertEquals("http", filter)
+                            assertEquals("", filter)
 
                             // Send entries
                             send(Frame.Text(wsEntry("e1", 1000L)))

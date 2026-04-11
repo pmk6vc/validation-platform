@@ -38,7 +38,7 @@ class AgentConfigTest {
 
             val config = StaticConfig.fromEnvironment(env::get)
 
-            assertEquals("http://kubeshark-front.kubeshark:80", config.kubesharkUrl)
+            assertEquals("http://kubeshark-front.default:80", config.kubesharkUrl)
         }
 
         @Test

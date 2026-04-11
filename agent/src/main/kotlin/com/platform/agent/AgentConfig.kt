@@ -16,7 +16,7 @@ data class StaticConfig(
             StaticConfig(
                 kubesharkUrl =
                     env("KUBESHARK_URL")
-                        ?: "http://kubeshark-front.kubeshark:80",
+                        ?: "http://kubeshark-front.default:80",
                 collectorUrl = requireEnv("COLLECTOR_URL", env),
                 apiKey = requireEnv("API_KEY", env),
             )
