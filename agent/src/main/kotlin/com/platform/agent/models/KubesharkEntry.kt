@@ -57,8 +57,19 @@ data class KubesharkRequest(
 )
 
 /**
- * HAR postData block carrying the HTTP request body.
- * `text` is the raw body; Kubeshark does NOT base64-encode request bodies.
+ * HAR `postData` block carrying the HTTP request body.
+ *
+ * **The name is a HAR-spec historical quirk, not a method restriction.**
+ * HAR (HTTP Archive, https://w3c.github.io/web-performance/specs/HAR/Overview.html)
+ * calls the request-body wrapper `postData` because HTTP request bodies were
+ * originally associated with POST. In practice, `postData` is populated for
+ * ANY HTTP request that carries a body — POST, PUT, PATCH, and even DELETE
+ * when the client sends one. Kubeshark follows the HAR convention verbatim,
+ * so we do too.
+ *
+ * `text` is the raw body as a string. Unlike [KubesharkContent] (used for
+ * response bodies), Kubeshark does NOT base64-encode request bodies — they
+ * come through as plaintext and can be forwarded directly.
  */
 @Serializable
 data class KubesharkPostData(

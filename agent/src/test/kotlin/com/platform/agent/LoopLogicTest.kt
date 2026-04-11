@@ -26,6 +26,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 class LoopLogicTest {
     private val json = Json { ignoreUnknownKeys = true }
@@ -126,14 +128,19 @@ class LoopLogicTest {
 
     @Nested
     inner class CaptureOneBatchTests {
+        private val defaultMaxWait = 1.seconds
+
+        /**
+         * Build a [KubesharkClient] mock that returns the given [entries] from
+         * [KubesharkClient.drainBatch], capped at `limit`. Since `drainBatch`
+         * in the real client pulls from a Channel, the mock ignores `maxWait`
+         * and just returns whatever fits.
+         */
         private fun fakeKubesharkClient(entries: List<KubesharkEntry> = emptyList()): KubesharkClient {
             val client = mockk<KubesharkClient>()
-            coEvery { client.listHttpCalls(any(), any()) } answers {
-                val startMs = firstArg<Long?>()
-                val limit = secondArg<Int>()
-                entries
-                    .filter { startMs == null || it.timestamp >= startMs }
-                    .take(limit)
+            coEvery { client.drainBatch(any<Int>(), any<Duration>()) } answers {
+                val limit = firstArg<Int>()
+                entries.take(limit)
             }
             return client
         }
@@ -195,44 +202,14 @@ class LoopLogicTest {
             )
 
         @Test
-        fun `returns null cursor and caughtUp when no entries returned`() =
+        fun `returns zero processed and null lag when channel is empty`() =
             runBlocking {
-                val (source, collector, transformer) = mockClients()
+                val (client, collector, transformer) = mockClients()
 
-                val result = captureOneBatch(null, 100, source, collector, transformer)
+                val result = captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
-                assertNull(result.cursor)
                 assertEquals(0, result.entriesProcessed)
                 assertNull(result.lagMs)
-                assertTrue(result.caughtUp)
-            }
-
-        @Test
-        fun `advances cursor to max timestamp plus one`() =
-            runBlocking {
-                val entries =
-                    listOf(
-                        httpEntry(5000L, "order-service"),
-                        httpEntry(3000L, "order-service"),
-                        httpEntry(7000L, "order-service"),
-                    )
-                val (source, collector, transformer) = mockClients(entries = entries)
-
-                val result = captureOneBatch(null, 100, source, collector, transformer)
-
-                assertEquals(7001L, result.cursor)
-                assertEquals(3, result.entriesProcessed)
-            }
-
-        @Test
-        fun `preserves existing cursor when kubeshark returns empty`() =
-            runBlocking {
-                val (source, collector, transformer) = mockClients()
-
-                val result = captureOneBatch(5000L, 100, source, collector, transformer)
-
-                assertEquals(5000L, result.cursor)
-                assertTrue(result.caughtUp)
             }
 
         @Test
@@ -240,27 +217,15 @@ class LoopLogicTest {
             runBlocking {
                 var collectorCalled = false
                 val entries = listOf(httpEntry(1000L, "unknown-service"))
-                val (source, collector, transformer) =
+                val (client, collector, transformer) =
                     mockClients(
                         entries = entries,
                         onCollectorRequest = { collectorCalled = true },
                     )
 
-                captureOneBatch(null, 100, source, collector, transformer)
+                captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
                 assertFalse(collectorCalled)
-            }
-
-        @Test
-        fun `still advances cursor when entries exist but all filtered`() =
-            runBlocking {
-                val entries = listOf(httpEntry(2000L, "unknown-service"))
-                val (source, collector, transformer) =
-                    mockClients(entries = entries)
-
-                val result = captureOneBatch(null, 100, source, collector, transformer)
-
-                assertEquals(2001L, result.cursor)
             }
 
         @Test
@@ -268,13 +233,13 @@ class LoopLogicTest {
             runBlocking {
                 var receivedBody = ""
                 val entries = listOf(httpEntry(1000L, "order-service"))
-                val (source, collector, transformer) =
+                val (client, collector, transformer) =
                     mockClients(
                         entries = entries,
                         onCollectorRequest = { receivedBody = it },
                     )
 
-                captureOneBatch(null, 100, source, collector, transformer)
+                captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
                 val batch = json.decodeFromString<com.platform.agent.models.BatchCapturedInputRequest>(receivedBody)
                 assertEquals(1, batch.items.size)
@@ -282,71 +247,73 @@ class LoopLogicTest {
             }
 
         @Test
-        fun `caughtUp is true when entries less than batchSize`() =
-            runBlocking {
-                val entries = listOf(httpEntry(1000L, "order-service"))
-                val (source, collector, transformer) = mockClients(entries = entries)
-
-                val result = captureOneBatch(null, 100, source, collector, transformer)
-
-                assertTrue(result.caughtUp)
-            }
-
-        @Test
-        fun `caughtUp is false when entries equals batchSize`() =
+        fun `reports entries processed count including filtered-out ones`() =
             runBlocking {
                 val entries =
                     listOf(
                         httpEntry(1000L, "order-service"),
+                        httpEntry(2000L, "unknown-service"),
+                        httpEntry(3000L, "order-service"),
+                    )
+                val (client, collector, transformer) = mockClients(entries = entries)
+
+                val result = captureOneBatch(100, defaultMaxWait, client, collector, transformer)
+
+                // All 3 raw entries were drained — entriesProcessed tracks raw, not filtered
+                assertEquals(3, result.entriesProcessed)
+            }
+
+        @Test
+        fun `reports lag based on newest entry timestamp`() =
+            runBlocking {
+                val entries =
+                    listOf(
+                        httpEntry(1000L, "order-service"),
+                        httpEntry(3000L, "order-service"),
                         httpEntry(2000L, "order-service"),
                     )
-                val (source, collector, transformer) = mockClients(entries = entries)
+                val (client, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 2, source, collector, transformer)
+                val result =
+                    captureOneBatch(
+                        batchSize = 100,
+                        maxWait = defaultMaxWait,
+                        kubesharkClient = client,
+                        collectorClient = collector,
+                        transformer = transformer,
+                        nowMs = 50_000L,
+                    )
 
-                assertFalse(result.caughtUp)
+                // Lag = now - max(timestamps) = 50000 - 3000 = 47000
+                assertEquals(47_000L, result.lagMs)
             }
 
         @Test
-        fun `reports lag when cursor is behind wall clock`() =
+        fun `reports small lag when newest entry is close to wall clock`() =
             runBlocking {
                 val entries = listOf(httpEntry(1000L, "order-service"))
-                val (source, collector, transformer) = mockClients(entries = entries)
+                val (client, collector, transformer) = mockClients(entries = entries)
 
-                val result = captureOneBatch(null, 100, source, collector, transformer, nowMs = 50_000L)
+                val result =
+                    captureOneBatch(
+                        batchSize = 100,
+                        maxWait = defaultMaxWait,
+                        kubesharkClient = client,
+                        collectorClient = collector,
+                        transformer = transformer,
+                        nowMs = 1002L,
+                    )
 
-                assertEquals(48_999L, result.lagMs)
+                assertEquals(2L, result.lagMs)
             }
 
         @Test
-        fun `reports no lag when cursor is close to wall clock`() =
+        fun `lag is null when no entries drained`() =
             runBlocking {
-                val entries = listOf(httpEntry(1000L, "order-service"))
-                val (source, collector, transformer) = mockClients(entries = entries)
+                val (client, collector, transformer) = mockClients()
 
-                val result = captureOneBatch(null, 100, source, collector, transformer, nowMs = 1002L)
+                val result = captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
-                assertEquals(1L, result.lagMs)
-            }
-
-        @Test
-        fun `lag is null when no entries processed`() =
-            runBlocking {
-                val (source, collector, transformer) = mockClients()
-
-                val result = captureOneBatch(null, 100, source, collector, transformer)
-
-                assertNull(result.lagMs)
-            }
-
-        @Test
-        fun `lag is null for sparse traffic with stale cursor`() =
-            runBlocking {
-                val (source, collector, transformer) = mockClients()
-
-                val result = captureOneBatch(1000L, 100, source, collector, transformer, nowMs = 100_000L)
-
-                assertEquals(1000L, result.cursor)
                 assertNull(result.lagMs)
             }
     }

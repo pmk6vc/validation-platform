@@ -27,6 +27,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Integration test wiring real components with mock backends.
@@ -35,15 +37,12 @@ import kotlin.test.assertTrue
 class AgentIntegrationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Build a mock KubesharkClient that returns the given entries, filtering by startMs. */
+    /** Build a mock KubesharkClient whose drainBatch returns the given entries, capped at `limit`. */
     private fun fakeKubesharkClient(entries: List<KubesharkEntry>): KubesharkClient {
         val client = mockk<KubesharkClient>()
-        coEvery { client.listHttpCalls(any(), any()) } answers {
-            val startMs = firstArg<Long?>()
-            val limit = secondArg<Int>()
-            entries
-                .filter { startMs == null || it.timestamp >= startMs }
-                .take(limit)
+        coEvery { client.drainBatch(any<Int>(), any<Duration>()) } answers {
+            val limit = firstArg<Int>()
+            entries.take(limit)
         }
         return client
     }
@@ -138,10 +137,16 @@ class AgentIntegrationTest {
             val transformer = TrafficTransformer(dynamicConfig)
 
             val result =
-                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(
+                    batchSize = 100,
+                    maxWait = 1.seconds,
+                    kubesharkClient = kubesharkClient,
+                    collectorClient = collectorClient,
+                    transformer = transformer,
+                )
 
-            // Cursor advanced past the latest entry timestamp (max of all entries, not just matched)
-            assertEquals(1004L, result.cursor)
+            // All 4 raw entries drained; 2 passed filters and went to collector
+            assertEquals(4, result.entriesProcessed)
 
             // Collector received exactly one batch POST
             assertEquals(1, collectorRequestCount)
@@ -177,10 +182,16 @@ class AgentIntegrationTest {
             val transformer = TrafficTransformer(dynamicConfig)
 
             val result =
-                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(
+                    batchSize = 100,
+                    maxWait = 1.seconds,
+                    kubesharkClient = kubesharkClient,
+                    collectorClient = collectorClient,
+                    transformer = transformer,
+                )
 
-            // Cursor still advances (entries were fetched, just nothing matched)
-            assertEquals(1004L, result.cursor)
+            // All 4 raw entries drained, none matched, nothing sent
+            assertEquals(4, result.entriesProcessed)
         }
 
     @Test
@@ -205,9 +216,16 @@ class AgentIntegrationTest {
             val transformer = TrafficTransformer(dynamicConfig)
 
             val result =
-                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
+                captureOneBatch(
+                    batchSize = 100,
+                    maxWait = 1.seconds,
+                    kubesharkClient = kubesharkClient,
+                    collectorClient = collectorClient,
+                    transformer = transformer,
+                )
 
-            assertNull(result.cursor)
+            assertEquals(0, result.entriesProcessed)
+            assertNull(result.lagMs)
         }
 
     private fun MockRequestHandleScope.respondJson(body: String) =
