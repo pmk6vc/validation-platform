@@ -72,7 +72,7 @@ suspend fun serviceDiscoveryLoop(dynamicConfig: AtomicReference<DynamicConfig>) 
         } catch (e: Exception) {
             logger.error("Service discovery loop failed", e)
         }
-        delay(dynamicConfig.get().discoveryIntervalMs)
+        delay(dynamicConfig.get().discoveryInterval)
     }
 }
 
@@ -86,15 +86,15 @@ suspend fun configPollLoop(
         } catch (e: Exception) {
             logger.error("Config poll loop failed", e)
         }
-        delay(dynamicConfig.get().configPollIntervalMs)
+        delay(dynamicConfig.get().configPollInterval)
     }
 }
 
 /**
  * Drain batches from [KubesharkClient]'s channel and forward them to the
  * collector. No per-iteration sleep is needed — when there is no traffic,
- * [KubesharkClient.drainBatch] waits up to `captureIntervalMs` for the first
- * entry, so an idle agent naturally idles.
+ * [KubesharkClient.drainBatch] waits up to [DynamicConfig.captureInterval]
+ * for the first entry, so an idle agent naturally idles.
  *
  * The only `delay` here is after a transient error (e.g. collector unreachable)
  * to avoid tight-looping on a persistent failure.
@@ -111,24 +111,24 @@ suspend fun trafficCaptureLoop(
             val result =
                 captureOneBatch(
                     batchSize = config.batchSize,
-                    maxWait = config.captureIntervalMs.milliseconds,
+                    maxWait = config.captureInterval,
                     kubesharkClient = kubesharkClient,
                     collectorClient = collectorClient,
                     transformer = transformer,
                 )
 
-            if (result.lagMs != null && result.lagMs > LAG_WARN_THRESHOLD_MS) {
+            if (result.lag != null && result.lag > LAG_WARN_THRESHOLD) {
                 // TODO: Surface lag to the platform (e.g. via config poll or heartbeat)
                 //  so the customer can take action (scale agents, increase sampling, tune batch size)
                 logger.warn(
-                    "Traffic capture lagging: {}ms behind real-time ({} entries this batch)",
-                    result.lagMs,
+                    "Traffic capture lagging: {} behind real-time ({} entries this batch)",
+                    result.lag,
                     result.entriesProcessed,
                 )
             }
         } catch (e: Exception) {
             logger.error("Traffic capture failed", e)
-            delay(config.captureIntervalMs)
+            delay(config.captureInterval)
         }
     }
 }
@@ -138,7 +138,7 @@ suspend fun trafficCaptureLoop(
  */
 data class CaptureResult(
     val entriesProcessed: Int,
-    val lagMs: Long?,
+    val lag: Duration?,
 )
 
 // --- Single-iteration logic (testable without loops) ---
@@ -210,7 +210,7 @@ suspend fun captureOneBatch(
     val entries = kubesharkClient.drainBatch(limit = batchSize, maxWait = maxWait)
 
     if (entries.isEmpty()) {
-        return CaptureResult(entriesProcessed = 0, lagMs = null)
+        return CaptureResult(entriesProcessed = 0, lag = null)
     }
 
     val captured = transformer.transform(entries)
@@ -230,13 +230,13 @@ suspend fun captureOneBatch(
     }
 
     val maxTimestamp = entries.maxOf { it.timestamp }
-    val lagMs = nowMs - maxTimestamp
+    val lag: Duration = (nowMs - maxTimestamp).milliseconds
 
     return CaptureResult(
         entriesProcessed = entries.size,
-        lagMs = lagMs,
+        lag = lag,
     )
 }
 
-/** Warn when the newest drained entry is more than 15s behind wall clock */
-private val LAG_WARN_THRESHOLD_MS: Long = 15.seconds.inWholeMilliseconds
+/** Warn when the newest drained entry is more than this behind wall clock */
+private val LAG_WARN_THRESHOLD: Duration = 15.seconds

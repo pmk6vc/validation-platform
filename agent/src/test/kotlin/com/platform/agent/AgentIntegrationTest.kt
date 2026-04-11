@@ -225,7 +225,7 @@ class AgentIntegrationTest {
                 )
 
             assertEquals(0, result.entriesProcessed)
-            assertNull(result.lagMs)
+            assertNull(result.lag)
         }
 
     private fun MockRequestHandleScope.respondJson(body: String) =

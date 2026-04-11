@@ -27,6 +27,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 class LoopLogicTest {
@@ -209,7 +210,7 @@ class LoopLogicTest {
                 val result = captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
                 assertEquals(0, result.entriesProcessed)
-                assertNull(result.lagMs)
+                assertNull(result.lag)
             }
 
         @Test
@@ -284,8 +285,8 @@ class LoopLogicTest {
                         nowMs = 50_000L,
                     )
 
-                // Lag = now - max(timestamps) = 50000 - 3000 = 47000
-                assertEquals(47_000L, result.lagMs)
+                // Lag = now - max(timestamps) = 50000 - 3000 = 47000ms = 47s
+                assertEquals(47.seconds, result.lag)
             }
 
         @Test
@@ -304,7 +305,7 @@ class LoopLogicTest {
                         nowMs = 1002L,
                     )
 
-                assertEquals(2L, result.lagMs)
+                assertEquals(2.milliseconds, result.lag)
             }
 
         @Test
@@ -314,7 +315,7 @@ class LoopLogicTest {
 
                 val result = captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
-                assertNull(result.lagMs)
+                assertNull(result.lag)
             }
     }
 

@@ -104,6 +104,8 @@ class KubesharkClientTest {
                 delay(500)
             },
             testBlock = { client ->
+                // Give the streamer a moment to move all 3 frames into the channel
+                delay(200)
                 val entries = client.drainBatch(limit = 100, maxWait = 2000.milliseconds)
 
                 assertEquals(3, entries.size)
