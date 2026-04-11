@@ -5,6 +5,7 @@ import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
 import com.platform.agent.models.KubesharkHeader
+import com.platform.agent.models.KubesharkPostData
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
@@ -23,6 +24,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
+import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -47,9 +49,19 @@ class AgentIntegrationTest {
         return client
     }
 
+    // Payloads used to build the test entries and assert against the collector batch.
+    // e1 exercises the plaintext response-body path; e2 exercises both the base64
+    // response-body decode path and the request-body capture from `postData.text`.
+    private val e1ResponseBody = """{"id": 1, "status": "pending"}"""
+    private val e2RequestBody = """{"total": 42.99}"""
+    private val e2ResponseBody = """{"id": 2, "status": "created"}"""
+    private val e2ResponseBodyBase64: String =
+        Base64.getEncoder().encodeToString(e2ResponseBody.toByteArray())
+
     private val testEntries =
         listOf(
-            // e1: HTTP GET to order-service — should be captured
+            // e1: HTTP GET to order-service — should be captured.
+            // Response body is plaintext (encoding == null) to exercise passthrough.
             KubesharkEntry(
                 id = "e1",
                 timestamp = 1000,
@@ -65,18 +77,41 @@ class AgentIntegrationTest {
                 response =
                     KubesharkResponse(
                         status = 200,
-                        content = KubesharkContent(text = """{"id": 1}"""),
+                        content = KubesharkContent(text = e1ResponseBody),
                     ),
             ),
-            // e2: HTTP POST to order-service — should be captured
+            // e2: HTTP POST to order-service — should be captured.
+            // Carries a plaintext request body in postData (like a real Kubeshark
+            // POST) and a base64-encoded response body (the default for Kubeshark
+            // since it's binary-safe). The integration test verifies both the
+            // request body is forwarded verbatim AND the response body is decoded
+            // before reaching the collector.
             KubesharkEntry(
                 id = "e2",
                 timestamp = 1001,
                 protocol = KubesharkProtocol(name = "http"),
                 src = KubesharkEndpoint(ip = "10.0.0.1"),
                 dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
-                request = KubesharkRequest(method = "POST", url = "/api/orders"),
-                response = KubesharkResponse(status = 201),
+                request =
+                    KubesharkRequest(
+                        method = "POST",
+                        url = "/api/orders",
+                        postData =
+                            KubesharkPostData(
+                                text = e2RequestBody,
+                                mimeType = "application/json",
+                            ),
+                    ),
+                response =
+                    KubesharkResponse(
+                        status = 201,
+                        content =
+                            KubesharkContent(
+                                text = e2ResponseBodyBase64,
+                                encoding = "base64",
+                                mimeType = "application/json",
+                            ),
+                    ),
             ),
             // e3: HTTP to unknown-service — should be filtered out (not a target)
             KubesharkEntry(
@@ -155,11 +190,41 @@ class AgentIntegrationTest {
             val batch =
                 json.decodeFromString<BatchCapturedInputRequest>(collectorRequestBody)
             assertEquals(2, batch.items.size)
-            assertEquals("GET", batch.items[0].method)
-            assertEquals("/api/orders/1", batch.items[0].url)
-            assertEquals("POST", batch.items[1].method)
-            assertEquals("/api/orders", batch.items[1].url)
-            assertTrue(batch.items.all { it.serviceId == "svc-123" })
+
+            // e1 — GET request, plaintext response body should pass through verbatim
+            val item1 = batch.items[0]
+            assertEquals("GET", item1.method)
+            assertEquals("/api/orders/1", item1.url)
+            assertEquals("svc-123", item1.serviceId)
+            assertNull(item1.requestBody, "GET has no request body")
+            assertEquals(
+                e1ResponseBody,
+                item1.responseBody,
+                "plaintext response body should pass through without modification",
+            )
+
+            // e2 — POST with request body AND base64-encoded response body.
+            // The transformer must capture postData.text verbatim AND decode
+            // the base64 response content before the collector sees it.
+            val item2 = batch.items[1]
+            assertEquals("POST", item2.method)
+            assertEquals("/api/orders", item2.url)
+            assertEquals("svc-123", item2.serviceId)
+            assertEquals(
+                e2RequestBody,
+                item2.requestBody,
+                "request body should be captured from postData.text",
+            )
+            assertEquals(
+                e2ResponseBody,
+                item2.responseBody,
+                "base64-encoded response body should be decoded before forwarding",
+            )
+            // Sanity check: the raw base64 string must NOT leak through to the collector
+            assertTrue(
+                item2.responseBody != e2ResponseBodyBase64,
+                "collector should receive decoded bytes, not the base64 ciphertext",
+            )
         }
 
     @Test
