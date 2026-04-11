@@ -221,7 +221,7 @@ class CollectorClientTest {
                 val sendJob = async { client.sendBatch(testBatch()) }
 
                 // Let it retry a few times
-                delay(50)
+                delay(50.milliseconds)
                 assertTrue(attempts >= 2, "should have retried at least twice during outage")
                 assertFalse(sendJob.isCompleted, "sendBatch should still be suspending")
 

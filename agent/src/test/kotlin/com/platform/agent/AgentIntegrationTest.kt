@@ -30,8 +30,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
-import io.mockk.coEvery
-import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -55,15 +53,12 @@ import kotlin.time.Duration.Companion.seconds
 class AgentIntegrationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Build a mock KubesharkClient whose drainBatch returns the given entries, capped at `limit`. */
-    private fun fakeKubesharkClient(entries: List<KubesharkEntry>): KubesharkClient {
-        val client = mockk<KubesharkClient>()
-        coEvery { client.drainBatch(any<Int>(), any<Duration>()) } answers {
-            val limit = firstArg<Int>()
-            entries.take(limit)
-        }
-        return client
-    }
+    /**
+     * Serialize a [KubesharkEntry] to the wire format the real Kubeshark
+     * server emits. Tests use this to push typed fixtures through the
+     * embedded WebSocket server as JSON text frames.
+     */
+    private fun entryJson(entry: KubesharkEntry): String = json.encodeToString(KubesharkEntry.serializer(), entry)
 
     // Payloads used to build the test entries and assert against the collector batch.
     // e1 exercises the plaintext response-body path; e2 exercises both the base64
@@ -152,65 +147,32 @@ class AgentIntegrationTest {
 
     @Test
     fun `full pipeline filters and transforms kubeshark entries to collector batch`() =
-        runBlocking {
-            var collectorRequestCount = 0
-            var collectorRequestBody = ""
-
-            val engine =
-                MockEngine { request ->
-                    when {
-                        request.url.encodedPath.contains("/api/captured-inputs") -> {
-                            collectorRequestCount++
-                            collectorRequestBody =
-                                String(request.body.toByteArray(), Charsets.UTF_8)
-                            respondJson("""{"accepted": true}""")
-                        }
-                        else -> respondJson("{}")
-                    }
+        withWiredPipeline(
+            wsHandler = { index ->
+                if (index != 1) {
+                    delay(2_000.milliseconds)
+                    return@withWiredPipeline
                 }
-
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) { json(json) }
+                testEntries.forEach { send(Frame.Text(entryJson(it))) }
+                delay(500.milliseconds)
+            },
+        ) { pipeline ->
+            // Drain in a loop until we've seen both expected captured items
+            // (or time out). The raw stream has 4 frames; 2 pass filters.
+            val deadline = System.currentTimeMillis() + 3_000
+            var capturedItems: List<com.platform.agent.models.CapturedInputRequest> = emptyList()
+            while (capturedItems.size < 2 && System.currentTimeMillis() < deadline) {
+                pipeline.captureBatch(maxWait = 200.milliseconds)
+                synchronized(pipeline.collectorRequests) {
+                    capturedItems = pipeline.collectorRequests.flatMap { it.items }
                 }
+            }
 
-            val dynamicConfig =
-                AtomicReference(
-                    DynamicConfig(
-                        targetServices = mapOf("order-service" to "svc-123"),
-                        samplingRate = 1.0,
-                    ),
-                )
+            assertEquals(2, capturedItems.size, "only e1 and e2 should pass filters")
 
-            val kubesharkClient = fakeKubesharkClient(testEntries)
-            val collectorClient =
-                CollectorClient(httpClient, "http://collector:8081", "key")
-            val transformer = TrafficTransformer(dynamicConfig)
-
-            val result =
-                captureOneBatch(
-                    batchSize = 100,
-                    maxWait = 1.seconds,
-                    kubesharkClient = kubesharkClient,
-                    collectorClient = collectorClient,
-                    transformer = transformer,
-                )
-
-            // All 4 raw entries drained; 2 passed filters and went to collector
-            assertEquals(4, result.entriesProcessed)
-
-            // Collector received exactly one batch POST
-            assertEquals(1, collectorRequestCount)
-
-            // Verify the batch body has 2 items (e1 + e2, filtered e3 + e4)
-            val batch =
-                json.decodeFromString<BatchCapturedInputRequest>(collectorRequestBody)
-            assertEquals(2, batch.items.size)
-
-            // e1 — GET request, plaintext response body should pass through verbatim
-            val item1 = batch.items[0]
+            // e1 — GET, plaintext response body pass-through
+            val item1 = capturedItems.find { it.url == "/api/orders/1" }!!
             assertEquals("GET", item1.method)
-            assertEquals("/api/orders/1", item1.url)
             assertEquals("svc-123", item1.serviceId)
             assertNull(item1.requestBody, "GET has no request body")
             assertEquals(
@@ -219,12 +181,9 @@ class AgentIntegrationTest {
                 "plaintext response body should pass through without modification",
             )
 
-            // e2 — POST with request body AND base64-encoded response body.
-            // The transformer must capture postData.text verbatim AND decode
-            // the base64 response content before the collector sees it.
-            val item2 = batch.items[1]
+            // e2 — POST with postData + base64 response body
+            val item2 = capturedItems.find { it.url == "/api/orders" }!!
             assertEquals("POST", item2.method)
-            assertEquals("/api/orders", item2.url)
             assertEquals("svc-123", item2.serviceId)
             assertEquals(
                 e2RequestBody,
@@ -236,7 +195,6 @@ class AgentIntegrationTest {
                 item2.responseBody,
                 "base64-encoded response body should be decoded before forwarding",
             )
-            // Sanity check: the raw base64 string must NOT leak through to the collector
             assertTrue(
                 item2.responseBody != e2ResponseBodyBase64,
                 "collector should receive decoded bytes, not the base64 ciphertext",
@@ -244,69 +202,46 @@ class AgentIntegrationTest {
         }
 
     @Test
-    fun `pipeline produces nothing when no target services configured`() =
-        runBlocking {
-            val engine = MockEngine { respondJson("{}") }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) { json(json) }
+    fun `pipeline posts nothing when no target services configured`() =
+        withWiredPipeline(
+            wsHandler = { index ->
+                if (index != 1) {
+                    delay(2_000.milliseconds)
+                    return@withWiredPipeline
                 }
+                testEntries.forEach { send(Frame.Text(entryJson(it))) }
+                delay(500.milliseconds)
+            },
+            dynamicConfig = DynamicConfig(targetServices = emptyMap()),
+        ) { pipeline ->
+            // Drain repeatedly; all entries should be filtered out by the
+            // (empty) targetServices map, so the collector should never be
+            // called at all.
+            repeat(4) { pipeline.captureBatch(maxWait = 200.milliseconds) }
 
-            val dynamicConfig =
-                AtomicReference(
-                    DynamicConfig(targetServices = emptyMap()),
+            synchronized(pipeline.collectorRequests) {
+                assertEquals(
+                    0,
+                    pipeline.collectorRequests.size,
+                    "no collector POSTs should happen when no target services match",
                 )
-
-            val kubesharkClient = fakeKubesharkClient(testEntries)
-            val collectorClient =
-                CollectorClient(httpClient, "http://collector:8081", "key")
-            val transformer = TrafficTransformer(dynamicConfig)
-
-            val result =
-                captureOneBatch(
-                    batchSize = 100,
-                    maxWait = 1.seconds,
-                    kubesharkClient = kubesharkClient,
-                    collectorClient = collectorClient,
-                    transformer = transformer,
-                )
-
-            // All 4 raw entries drained, none matched, nothing sent
-            assertEquals(4, result.entriesProcessed)
+            }
         }
 
     @Test
-    fun `pipeline handles empty traffic source gracefully`(): Unit =
-        runBlocking {
-            val engine = MockEngine { respondJson("{}") }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) { json(json) }
-                }
-
-            val dynamicConfig =
-                AtomicReference(
-                    DynamicConfig(
-                        targetServices = mapOf("order-service" to "svc-123"),
-                    ),
-                )
-
-            val kubesharkClient = fakeKubesharkClient(emptyList())
-            val collectorClient =
-                CollectorClient(httpClient, "http://collector:8081", "key")
-            val transformer = TrafficTransformer(dynamicConfig)
-
-            val result =
-                captureOneBatch(
-                    batchSize = 100,
-                    maxWait = 1.seconds,
-                    kubesharkClient = kubesharkClient,
-                    collectorClient = collectorClient,
-                    transformer = transformer,
-                )
+    fun `pipeline handles an idle traffic stream gracefully`(): Unit =
+        withWiredPipeline(
+            // Server accepts the connection, reads the KFL filter, but never
+            // sends any frames — models an idle cluster.
+            wsHandler = { delay(2_000.milliseconds) },
+        ) { pipeline ->
+            val result = pipeline.captureBatch(maxWait = 200.milliseconds)
 
             assertEquals(0, result.entriesProcessed)
             assertNull(result.lag)
+            synchronized(pipeline.collectorRequests) {
+                assertEquals(0, pipeline.collectorRequests.size)
+            }
         }
 
     private fun MockRequestHandleScope.respondJson(
@@ -527,9 +462,9 @@ class AgentIntegrationTest {
                         // the documented dedup trade-off, not tested here.
                         send(Frame.Text(entry("far-old", 100_000L)))
                         send(Frame.Text(entry("d", 1_003_000L)))
-                        delay(500)
+                        delay(500.milliseconds)
                     }
-                    else -> delay(1_000)
+                    else -> delay(1_000.milliseconds)
                 }
             },
         ) { pipeline ->
@@ -567,7 +502,7 @@ class AgentIntegrationTest {
             wsHandler = { index ->
                 // Only the first session blasts entries; subsequent reconnects idle.
                 if (index != 1) {
-                    delay(2_000)
+                    delay(2_000.milliseconds)
                     return@withWiredPipeline
                 }
                 // Fire 50 entries as fast as the server can push them. With
@@ -578,7 +513,7 @@ class AgentIntegrationTest {
                 }
                 // Hold the session open long enough for the capture loop to
                 // finish draining everything
-                delay(1_500)
+                delay(1_500.milliseconds)
             },
             channelCapacity = 5,
         ) { pipeline ->
@@ -594,7 +529,7 @@ class AgentIntegrationTest {
                         batch.items.forEach { seenIds.add(it.url.substringAfterLast("/")) }
                     }
                 }
-                if (result.entriesProcessed == 0) delay(50)
+                if (result.entriesProcessed == 0) delay(50.milliseconds)
             }
 
             // No drops: the bounded channel + TCP backpressure should preserve
@@ -613,12 +548,12 @@ class AgentIntegrationTest {
         withWiredPipeline(
             wsHandler = { index ->
                 if (index != 1) {
-                    delay(2_000)
+                    delay(2_000.milliseconds)
                     return@withWiredPipeline
                 }
                 send(Frame.Text(entry("a", 3_000_000L)))
                 send(Frame.Text(entry("b", 3_001_000L)))
-                delay(500)
+                delay(500.milliseconds)
             },
             collectorResponder = { requestIndex ->
                 // First 2 POST attempts fail with 503; the 3rd succeeds.
@@ -626,7 +561,7 @@ class AgentIntegrationTest {
                 if (requestIndex < 3) HttpStatusCode.ServiceUnavailable else HttpStatusCode.OK
             },
         ) { pipeline ->
-            delay(200)
+            delay(200.milliseconds)
 
             // captureOneBatch will suspend inside sendBatch while it retries
             // the 503s, then resume when the 3rd attempt succeeds. No loss.
@@ -661,24 +596,24 @@ class AgentIntegrationTest {
         withWiredPipeline(
             wsHandler = { index ->
                 if (index != 1) {
-                    delay(2_000)
+                    delay(2_000.milliseconds)
                     return@withWiredPipeline
                 }
                 // First batch: 2 entries that will hit a 4xx and be dropped
                 send(Frame.Text(entry("bad1", 4_000_000L)))
                 send(Frame.Text(entry("bad2", 4_001_000L)))
-                delay(300)
+                delay(300.milliseconds)
                 // Second batch: 2 entries after the server switches to 200
                 send(Frame.Text(entry("ok1", 4_002_000L)))
                 send(Frame.Text(entry("ok2", 4_003_000L)))
-                delay(500)
+                delay(500.milliseconds)
             },
             collectorResponder = { requestIndex ->
                 // First POST gets a 400 (e.g., schema mismatch); subsequent OK
                 if (requestIndex == 1) HttpStatusCode.BadRequest else HttpStatusCode.OK
             },
         ) { pipeline ->
-            delay(200)
+            delay(200.milliseconds)
 
             // First batch — collector returns 400. CollectorClient treats 4xx
             // as permanent (retrying won't help a malformed request). The
@@ -688,7 +623,7 @@ class AgentIntegrationTest {
             assertEquals(2, first.entriesProcessed)
             assertEquals(1, pipeline.collectorFailureCount.get(), "the 400 should be counted once")
 
-            delay(400)
+            delay(400.milliseconds)
 
             // Second batch — collector accepts. Agent is still working; the
             // previous 4xx did not crash anything or block subsequent batches.

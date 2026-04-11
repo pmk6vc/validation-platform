@@ -101,11 +101,11 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e2", 2000L)))
                 send(Frame.Text(wsEntry("e3", 3000L)))
                 // Hold the connection open long enough for the client to drain
-                delay(500)
+                delay(500.milliseconds)
             },
             testBlock = { client ->
                 // Give the streamer a moment to move all 3 frames into the channel
-                delay(200)
+                delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 2000.milliseconds)
 
                 assertEquals(3, entries.size)
@@ -124,11 +124,11 @@ class KubesharkClientTest {
                 repeat(10) { i ->
                     send(Frame.Text(wsEntry("e$i", (i + 1) * 1000L)))
                 }
-                delay(500)
+                delay(500.milliseconds)
             },
             testBlock = { client ->
                 // Wait briefly so the streamer has time to move everything into the channel
-                delay(200)
+                delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 3, maxWait = 2000.milliseconds)
 
                 assertEquals(3, entries.size)
@@ -140,7 +140,7 @@ class KubesharkClientTest {
         withClient(
             serverBlock = {
                 // Server accepts the connection, reads the filter, but sends nothing
-                delay(2000)
+                delay(2000.milliseconds)
             },
             testBlock = { client ->
                 val entries = client.drainBatch(limit = 100, maxWait = 200.milliseconds)
@@ -154,19 +154,19 @@ class KubesharkClientTest {
             serverBlock = {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text(wsEntry("e2", 2000L)))
-                delay(500)
+                delay(500.milliseconds)
                 // Second burst after the first batch has been drained
                 send(Frame.Text(wsEntry("e3", 3000L)))
                 send(Frame.Text(wsEntry("e4", 4000L)))
-                delay(500)
+                delay(500.milliseconds)
             },
             testBlock = { client ->
-                delay(200)
+                delay(200.milliseconds)
                 val firstBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
                 assertEquals(2, firstBatch.size)
                 assertEquals("e1", firstBatch[0].id)
 
-                delay(300)
+                delay(300.milliseconds)
                 val secondBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
                 assertEquals(2, secondBatch.size)
                 assertEquals("e3", secondBatch[0].id)
@@ -181,10 +181,10 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text("{incomplete"))
                 send(Frame.Text(wsEntry("e2", 2000L)))
-                delay(500)
+                delay(500.milliseconds)
             },
             testBlock = { client ->
-                delay(200)
+                delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
                 // The two valid entries survive; the malformed frames are dropped silently
@@ -203,10 +203,10 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1_000_000L)))
                 send(Frame.Text(wsEntry("replay", 900_000L))) // 100s old — dropped
                 send(Frame.Text(wsEntry("e2", 1_001_000L)))
-                delay(500)
+                delay(500.milliseconds)
             },
             testBlock = { client ->
-                delay(200)
+                delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
                 assertEquals(2, entries.size)
@@ -226,10 +226,10 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e2", 12_000L)))
                 send(Frame.Text(wsEntry("e3", 9_000L))) // 3s behind e2, within 5s window
                 send(Frame.Text(wsEntry("e4", 13_000L)))
-                delay(500)
+                delay(500.milliseconds)
             },
             testBlock = { client ->
-                delay(200)
+                delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
                 // All four entries survive — e3 is within the 5s lookback window
