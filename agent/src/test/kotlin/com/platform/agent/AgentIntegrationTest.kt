@@ -18,6 +18,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import io.mockk.coEvery
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
@@ -28,22 +30,22 @@ import kotlin.test.assertTrue
 
 /**
  * Integration test wiring real components with mock backends.
- * Verifies the full pipeline: TrafficSource entries → transformer → collector POST.
+ * Verifies the full pipeline: Kubeshark entries → transformer → collector POST.
  */
 class AgentIntegrationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** In-memory TrafficSource returning fixed entries. */
-    private class FakeTrafficSource(
-        private val entries: List<KubesharkEntry>,
-    ) : TrafficSource {
-        override suspend fun listHttpCalls(
-            startMs: Long?,
-            limit: Int,
-        ): List<KubesharkEntry> =
+    /** Build a mock KubesharkClient that returns the given entries, filtering by startMs. */
+    private fun fakeKubesharkClient(entries: List<KubesharkEntry>): KubesharkClient {
+        val client = mockk<KubesharkClient>()
+        coEvery { client.listHttpCalls(any(), any()) } answers {
+            val startMs = firstArg<Long?>()
+            val limit = secondArg<Int>()
             entries
                 .filter { startMs == null || it.timestamp >= startMs }
                 .take(limit)
+        }
+        return client
     }
 
     private val testEntries =
@@ -130,13 +132,13 @@ class AgentIntegrationTest {
                     ),
                 )
 
-            val trafficSource = FakeTrafficSource(testEntries)
+            val kubesharkClient = fakeKubesharkClient(testEntries)
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
             val transformer = TrafficTransformer(dynamicConfig)
 
             val result =
-                captureOneBatch(null, 100, trafficSource, collectorClient, transformer)
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             // Cursor advanced past the latest entry timestamp (max of all entries, not just matched)
             assertEquals(1004L, result.cursor)
@@ -169,13 +171,13 @@ class AgentIntegrationTest {
                     DynamicConfig(targetServices = emptyMap()),
                 )
 
-            val trafficSource = FakeTrafficSource(testEntries)
+            val kubesharkClient = fakeKubesharkClient(testEntries)
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
             val transformer = TrafficTransformer(dynamicConfig)
 
             val result =
-                captureOneBatch(null, 100, trafficSource, collectorClient, transformer)
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             // Cursor still advances (entries were fetched, just nothing matched)
             assertEquals(1004L, result.cursor)
@@ -197,13 +199,13 @@ class AgentIntegrationTest {
                     ),
                 )
 
-            val trafficSource = FakeTrafficSource(emptyList())
+            val kubesharkClient = fakeKubesharkClient(emptyList())
             val collectorClient =
                 CollectorClient(httpClient, "http://collector:8081", "key")
             val transformer = TrafficTransformer(dynamicConfig)
 
             val result =
-                captureOneBatch(null, 100, trafficSource, collectorClient, transformer)
+                captureOneBatch(null, 100, kubesharkClient, collectorClient, transformer)
 
             assertNull(result.cursor)
         }

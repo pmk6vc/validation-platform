@@ -4,12 +4,15 @@ import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
 import com.platform.agent.models.KubesharkHeader
+import com.platform.agent.models.KubesharkPostData
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
 import org.junit.jupiter.api.Test
+import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TrafficTransformerTest {
@@ -36,8 +39,9 @@ class TrafficTransformerTest {
         status: Int? = 200,
         timestamp: Long = 1000L,
         reqHeaders: List<KubesharkHeader>? = null,
+        reqBody: KubesharkPostData? = null,
         respHeaders: List<KubesharkHeader>? = null,
-        respBody: String? = null,
+        respContent: KubesharkContent? = null,
         srcIp: String? = "10.0.0.1",
         dstIp: String? = "10.0.0.2",
     ) = KubesharkEntry(
@@ -46,12 +50,18 @@ class TrafficTransformerTest {
         protocol = KubesharkProtocol(name = "http"),
         src = KubesharkEndpoint(ip = srcIp),
         dst = KubesharkEndpoint(name = dstName, ip = dstIp),
-        request = KubesharkRequest(method = method, url = url, headers = reqHeaders),
+        request =
+            KubesharkRequest(
+                method = method,
+                url = url,
+                headers = reqHeaders,
+                postData = reqBody,
+            ),
         response =
             KubesharkResponse(
                 status = status,
                 headers = respHeaders,
-                content = respBody?.let { KubesharkContent(text = it) },
+                content = respContent,
             ),
     )
 
@@ -69,7 +79,7 @@ class TrafficTransformerTest {
                             listOf(
                                 KubesharkHeader("X-Request-Id", "abc"),
                             ),
-                        respBody = """{"id": 1}""",
+                        respContent = KubesharkContent(text = """{"id": 1}"""),
                     ),
                 ),
             )
@@ -87,6 +97,98 @@ class TrafficTransformerTest {
         assertEquals("10.0.0.1", captured.sourceIp)
         assertEquals("10.0.0.2", captured.destinationIp)
         assertEquals("1970-01-01T00:00:01Z", captured.capturedAt)
+    }
+
+    @Test
+    fun `captures request body from postData text`() {
+        val result =
+            transformer().transform(
+                listOf(
+                    httpEntry(
+                        method = "POST",
+                        reqBody =
+                            KubesharkPostData(
+                                text = """{"total": 222.21}""",
+                                mimeType = "application/json",
+                            ),
+                    ),
+                ),
+            )
+
+        assertEquals(1, result.size)
+        assertEquals("""{"total": 222.21}""", result[0].requestBody)
+    }
+
+    @Test
+    fun `request body is null when postData is absent`() {
+        val result = transformer().transform(listOf(httpEntry()))
+
+        assertEquals(1, result.size)
+        assertNull(result[0].requestBody)
+    }
+
+    @Test
+    fun `decodes base64-encoded response body`() {
+        val plaintext = """{"id": 1, "status": "pending"}"""
+        val base64 = Base64.getEncoder().encodeToString(plaintext.toByteArray())
+
+        val result =
+            transformer().transform(
+                listOf(
+                    httpEntry(
+                        respContent =
+                            KubesharkContent(
+                                text = base64,
+                                encoding = "base64",
+                                mimeType = "application/json",
+                            ),
+                    ),
+                ),
+            )
+
+        assertEquals(1, result.size)
+        assertEquals(plaintext, result[0].responseBody)
+    }
+
+    @Test
+    fun `passes through plaintext response body when no encoding set`() {
+        val result =
+            transformer().transform(
+                listOf(
+                    httpEntry(
+                        respContent = KubesharkContent(text = "hello world"),
+                    ),
+                ),
+            )
+
+        assertEquals("hello world", result[0].responseBody)
+    }
+
+    @Test
+    fun `response body is null when content is absent`() {
+        val result = transformer().transform(listOf(httpEntry()))
+
+        assertEquals(1, result.size)
+        assertNull(result[0].responseBody)
+    }
+
+    @Test
+    fun `drops response body when base64 is malformed but keeps entry`() {
+        val result =
+            transformer().transform(
+                listOf(
+                    httpEntry(
+                        respContent =
+                            KubesharkContent(
+                                text = "!!! not valid base64 !!!",
+                                encoding = "base64",
+                            ),
+                    ),
+                ),
+            )
+
+        assertEquals(1, result.size, "entry should still be captured")
+        assertNull(result[0].responseBody, "body should be dropped on decode failure")
     }
 
     @Test

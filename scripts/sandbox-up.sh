@@ -69,7 +69,10 @@ echo "Building test service images (amd64 for GKE)..."
 cd "$PROJECT_ROOT"
 ./gradlew testServicesBuild -Djib.arch=amd64
 
-IMAGES=("test-api-gateway" "test-order-service" "test-notification-service" "test-webhook-stub" "test-traffic-generator")
+echo "Building agent image (amd64 for GKE)..."
+./gradlew :agent:jibDockerBuild -Djib.arch=amd64
+
+IMAGES=("test-api-gateway" "test-order-service" "test-notification-service" "test-webhook-stub" "test-traffic-generator" "validation-agent")
 REGISTRY="gcr.io/$PROJECT"
 
 echo "Pushing images to $REGISTRY..."
@@ -90,6 +93,17 @@ kubectl wait --for=condition=available deployment --all -n infrastructure --time
 kubectl wait --for=condition=available deployment --all -n external --timeout=60s 2>/dev/null || true
 kubectl wait --for=condition=available deployment --all -n production --timeout=180s 2>/dev/null || true
 
+# Deploy the validation agent.
+# k8s/agent/agent.yaml is minikube-oriented (imagePullPolicy: Never, unqualified image).
+# Rewrite the image reference to the GCR-pushed image and drop the Never pull policy.
+echo "Deploying validation agent..."
+sed -e "s|image: validation-agent:latest|image: $REGISTRY/validation-agent:latest|" \
+    -e "/imagePullPolicy: Never/d" \
+    "$PROJECT_ROOT/k8s/agent/agent.yaml" \
+  | kubectl apply -f -
+
+kubectl wait --for=condition=available deployment --all -n validation --timeout=120s 2>/dev/null || true
+
 echo ""
 echo "=== Sandbox is ready ==="
 kubectl get pods -A --no-headers | grep -v kube-system
@@ -97,5 +111,10 @@ echo ""
 echo "To access the API Gateway:"
 echo "  kubectl port-forward -n production svc/api-gateway 8080:8080"
 echo "  curl http://localhost:8080/api/health"
+echo ""
+echo "The validation-agent is deployed but requires Kubeshark to be running"
+echo "in the same cluster. Start it in a separate terminal with:"
+echo "  kubeshark tap"
+echo "(The agent expects kubeshark-front in the 'default' namespace.)"
 echo ""
 echo "To shut down (stop paying): ./scripts/sandbox-down.sh"

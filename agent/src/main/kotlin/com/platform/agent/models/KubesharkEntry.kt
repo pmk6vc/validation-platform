@@ -44,6 +44,7 @@ data class KubesharkEndpoint(
 /**
  * HTTP request from the WebSocket stream.
  * Headers are in HAR format: list of {name, value} objects.
+ * Request body is in `postData.text` (HAR format, plaintext).
  */
 @Serializable
 data class KubesharkRequest(
@@ -51,7 +52,18 @@ data class KubesharkRequest(
     val url: String? = null,
     val path: String? = null,
     val headers: List<KubesharkHeader>? = null,
+    val postData: KubesharkPostData? = null,
     val bodySize: Long? = null,
+)
+
+/**
+ * HAR postData block carrying the HTTP request body.
+ * `text` is the raw body; Kubeshark does NOT base64-encode request bodies.
+ */
+@Serializable
+data class KubesharkPostData(
+    val text: String? = null,
+    val mimeType: String? = null,
 )
 
 /**
@@ -73,9 +85,15 @@ data class KubesharkHeader(
     val value: String,
 )
 
+/**
+ * HAR content block carrying the HTTP response body.
+ * Kubeshark base64-encodes response bodies (binary-safe) and sets
+ * [encoding] to "base64"; the client must decode before use.
+ */
 @Serializable
 data class KubesharkContent(
     val text: String? = null,
     val mimeType: String? = null,
+    val encoding: String? = null,
     val size: Long? = null,
 )

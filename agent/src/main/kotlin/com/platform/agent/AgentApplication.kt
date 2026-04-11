@@ -86,7 +86,7 @@ suspend fun configPollLoop(
 
 suspend fun trafficCaptureLoop(
     dynamicConfig: AtomicReference<DynamicConfig>,
-    kubesharkClient: TrafficSource,
+    kubesharkClient: KubesharkClient,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
 ) {
@@ -180,13 +180,13 @@ suspend fun pollConfig(
 suspend fun captureOneBatch(
     cursor: Long?,
     batchSize: Int,
-    trafficSource: TrafficSource,
+    kubesharkClient: KubesharkClient,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
     nowMs: Long = System.currentTimeMillis(),
 ): CaptureResult {
     val entries =
-        trafficSource.listHttpCalls(
+        kubesharkClient.listHttpCalls(
             startMs = cursor,
             limit = batchSize,
         )

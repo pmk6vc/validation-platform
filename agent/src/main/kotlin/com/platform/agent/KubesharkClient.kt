@@ -11,6 +11,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.net.URI
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Client that connects to Kubeshark's WebSocket /wsFull endpoint to receive
@@ -32,7 +34,7 @@ import java.net.URI
 class KubesharkClient(
     private val httpClient: HttpClient,
     private val baseUrl: String,
-) : TrafficSource {
+) {
     private val logger = LoggerFactory.getLogger(KubesharkClient::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -53,14 +55,14 @@ class KubesharkClient(
      * @param limit Maximum number of entries to return
      * @return List of Kubeshark entries (unfiltered — caller handles service filtering)
      */
-    override suspend fun listHttpCalls(
-        startMs: Long?,
-        limit: Int,
+    suspend fun listHttpCalls(
+        startMs: Long? = null,
+        limit: Int = 100,
     ): List<KubesharkEntry> =
         try {
             collectEntries(startMs, limit)
         } catch (e: Exception) {
-            logger.warn("Kubeshark WebSocket error: {}", e.message)
+            logger.error("Kubeshark WebSocket error", e)
             emptyList()
         }
 
@@ -74,7 +76,7 @@ class KubesharkClient(
 
         // Wrap entire WebSocket operation in a timeout to prevent indefinite hanging
         val result =
-            withTimeoutOrNull(SESSION_TIMEOUT_MS) {
+            withTimeoutOrNull(SESSION_TIMEOUT) {
                 httpClient.webSocket(
                     method = HttpMethod.Get,
                     host = wsHost,
@@ -84,12 +86,18 @@ class KubesharkClient(
                     // Send empty KFL filter — we filter in TrafficTransformer instead.
                     // Non-empty KFL strings like "http" are parsed as queries and may
                     // match nothing if the syntax doesn't match Kubeshark's expectations.
+                    //
+                    // TODO: Figure out the right KFL syntax and push HTTP protocol +
+                    //  target-service filtering to the server. At high traffic, streaming
+                    //  every L7 entry only to discard most of them in TrafficTransformer
+                    //  wastes agent CPU (JSON parsing dominates). See Kubeshark docs for
+                    //  KFL query reference — https://docs.kubeshark.co/en/filtering
                     send(Frame.Text(""))
 
                     try {
                         while (entries.size < limit) {
                             val frame =
-                                withTimeoutOrNull(COLLECT_TIMEOUT_MS) {
+                                withTimeoutOrNull(COLLECT_TIMEOUT) {
                                     incoming.receive()
                                 } ?: break // No more entries within timeout
 
@@ -111,7 +119,7 @@ class KubesharkClient(
             }
 
         if (result == null) {
-            logger.warn("WebSocket session timed out after {}ms", SESSION_TIMEOUT_MS)
+            logger.error("WebSocket session timed out after {}", SESSION_TIMEOUT)
         }
 
         return entries
@@ -131,12 +139,12 @@ class KubesharkClient(
          * Short enough to keep the capture loop responsive, long enough to collect
          * entries that arrive in bursts.
          */
-        const val COLLECT_TIMEOUT_MS = 2_000L
+        val COLLECT_TIMEOUT: Duration = 2.seconds
 
         /**
          * Maximum time for the entire WebSocket session (connect + collect).
          * Prevents the capture loop from hanging indefinitely if the connection stalls.
          */
-        const val SESSION_TIMEOUT_MS = 30_000L
+        val SESSION_TIMEOUT: Duration = 30.seconds
     }
 }

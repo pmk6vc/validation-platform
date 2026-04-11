@@ -15,6 +15,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import io.mockk.coEvery
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Nested
@@ -124,22 +126,23 @@ class LoopLogicTest {
 
     @Nested
     inner class CaptureOneBatchTests {
-        private fun fakeTrafficSource(entries: List<KubesharkEntry> = emptyList()): TrafficSource =
-            object : TrafficSource {
-                override suspend fun listHttpCalls(
-                    startMs: Long?,
-                    limit: Int,
-                ): List<KubesharkEntry> =
-                    entries
-                        .filter { startMs == null || it.timestamp >= startMs }
-                        .take(limit)
+        private fun fakeKubesharkClient(entries: List<KubesharkEntry> = emptyList()): KubesharkClient {
+            val client = mockk<KubesharkClient>()
+            coEvery { client.listHttpCalls(any(), any()) } answers {
+                val startMs = firstArg<Long?>()
+                val limit = secondArg<Int>()
+                entries
+                    .filter { startMs == null || it.timestamp >= startMs }
+                    .take(limit)
             }
+            return client
+        }
 
         private fun mockClients(
             entries: List<KubesharkEntry> = emptyList(),
             collectorStatus: HttpStatusCode = HttpStatusCode.OK,
             onCollectorRequest: ((String) -> Unit)? = null,
-        ): Triple<TrafficSource, CollectorClient, TrafficTransformer> {
+        ): Triple<KubesharkClient, CollectorClient, TrafficTransformer> {
             val engine =
                 MockEngine { request ->
                     when {
@@ -172,7 +175,7 @@ class LoopLogicTest {
                     ),
                 )
             return Triple(
-                fakeTrafficSource(entries),
+                fakeKubesharkClient(entries),
                 CollectorClient(httpClient, "http://collector:8081", "key"),
                 TrafficTransformer(dynamicConfig),
             )

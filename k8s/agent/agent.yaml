@@ -1,3 +1,26 @@
+# Reference Kubernetes manifest for deploying the validation agent.
+#
+# What it does:
+#   Creates the `validation` namespace and runs a single-replica Deployment of
+#   the agent. The agent polls Kubeshark's WebSocket /api/wsFull endpoint and
+#   forwards captured HTTP traffic to the collector.
+#
+# Assumptions:
+#   - Kubeshark is already running in the cluster (kubeshark-front Service
+#     reachable at kubeshark-front.default.svc.cluster.local:80). Deploy with:
+#       kubeshark tap
+#   - A collector Service is reachable at the URL in COLLECTOR_URL below.
+#     The platform's collector isn't in-cluster yet, so this is a placeholder:
+#     the agent's config-poll loop will log warnings, but the capture loop
+#     still runs (it just has no target services, so everything is filtered).
+#
+# Usage:
+#   minikube:
+#     minikube image load validation-agent:latest
+#     kubectl apply -f k8s/agent/agent.yaml
+#   GKE (or any registry-backed cluster):
+#     scripts/sandbox-up.sh rewrites the image reference to point at GCR and
+#     drops imagePullPolicy: Never. See that script for the transformation.
 apiVersion: v1
 kind: Namespace
 metadata:
