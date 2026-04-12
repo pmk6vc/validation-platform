@@ -4,6 +4,7 @@ rootProject.name = "validation-platform"
 include("shared")
 include("app")
 include("collector")
+include("agent")
 
 // Test services - standalone microservices for k3s integration testing
 include("test-services:api-gateway")

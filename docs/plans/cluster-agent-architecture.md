@@ -320,7 +320,7 @@ class KubernetesAdapter(...) : ServiceAdapter {
 5. Verify services appear in `GET /api/services` with `provider: AGENT`
 6. Verify cluster status changes to `CONNECTED`
 
-**Test file**: `src/test/kotlin/com/platform/agent/AgentIntegrationTest.kt`
+**Test file**: `src/test/kotlin/com/platform/agent/CapturePipelineIntegrationTest.kt`
 
 ---
 

@@ -1,0 +1,11 @@
+# Build stage
+FROM gradle:8.11-jdk21 AS build
+WORKDIR /app
+COPY --chown=gradle:gradle . .
+RUN gradle :agent:installDist --no-daemon
+
+# Run stage
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /app/agent/build/install/agent/ .
+ENTRYPOINT ["./bin/agent"]

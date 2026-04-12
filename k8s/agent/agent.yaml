@@ -1,0 +1,63 @@
+# Reference Kubernetes manifest for deploying the validation agent.
+#
+# What it does:
+#   Creates the `validation` namespace and runs a single-replica Deployment of
+#   the agent. The agent polls Kubeshark's WebSocket /api/wsFull endpoint and
+#   forwards captured HTTP traffic to the collector.
+#
+# Assumptions:
+#   - Kubeshark is already running in the cluster (kubeshark-front Service
+#     reachable at kubeshark-front.default.svc.cluster.local:80). Deploy with:
+#       kubeshark tap
+#   - A collector Service is reachable at the URL in COLLECTOR_URL below.
+#     The platform's collector isn't in-cluster yet, so this is a placeholder:
+#     the agent's config-poll loop will log warnings, but the capture loop
+#     still runs (it just has no target services, so everything is filtered).
+#
+# Usage:
+#   minikube:
+#     minikube image load validation-agent:latest
+#     kubectl apply -f k8s/agent/agent.yaml
+#   GKE (or any registry-backed cluster):
+#     scripts/sandbox-up.sh rewrites the image reference to point at GCR and
+#     drops imagePullPolicy: Never. See that script for the transformation.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: validation
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: validation-agent
+  namespace: validation
+  labels:
+    app: validation-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: validation-agent
+  template:
+    metadata:
+      labels:
+        app: validation-agent
+    spec:
+      containers:
+        - name: agent
+          image: validation-agent:latest
+          imagePullPolicy: Never
+          env:
+            - name: KUBESHARK_URL
+              value: "http://kubeshark-front.default.svc.cluster.local:80"
+            - name: COLLECTOR_URL
+              value: "http://collector.validation.svc.cluster.local:8081"
+            - name: API_KEY
+              value: "test-api-key"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
