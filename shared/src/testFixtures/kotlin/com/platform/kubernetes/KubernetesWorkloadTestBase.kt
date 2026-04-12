@@ -3,6 +3,7 @@ package com.platform.kubernetes
 import io.fabric8.kubernetes.client.KubernetesClient
 import org.junit.jupiter.api.BeforeAll
 import org.slf4j.LoggerFactory
+import org.testcontainers.containers.output.Slf4jLogConsumer
 import org.testcontainers.k3s.K3sContainer
 import org.testcontainers.utility.DockerImageName
 import org.testcontainers.utility.MountableFile
@@ -75,6 +76,7 @@ abstract class KubernetesWorkloadTestBase {
 
             k3s =
                 K3sContainer(DockerImageName.parse("rancher/k3s:v1.27.9-k3s1"))
+                    .withLogConsumer(Slf4jLogConsumer(logger).withPrefix("k3s"))
                     .withExposedPorts(6443, API_GATEWAY_NODE_PORT)
                     .withCommand(
                         "server",

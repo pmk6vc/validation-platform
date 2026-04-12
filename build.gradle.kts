@@ -35,6 +35,8 @@ subprojects {
 
         tasks.withType<Test> {
             finalizedBy(tasks.withType<JacocoReport>())
+            reports.junitXml.includeSystemOutLog.set(false)
+            reports.junitXml.includeSystemErrLog.set(false)
         }
     }
 }
