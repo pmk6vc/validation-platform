@@ -12,6 +12,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
+import java.io.IOException
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -91,7 +92,7 @@ class ConfigClientTest {
         runBlocking {
             val engine =
                 MockEngine {
-                    throw java.io.IOException("Connection refused")
+                    throw IOException("Connection refused")
                 }
             val httpClient =
                 HttpClient(engine) {

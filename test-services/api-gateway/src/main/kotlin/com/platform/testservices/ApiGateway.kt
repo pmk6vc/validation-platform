@@ -8,6 +8,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import java.net.URI
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
@@ -136,7 +137,7 @@ private fun waitForDependencies() {
     retries = 0
     while (retries < maxRetries) {
         try {
-            java.net.URI("$orderServiceUrl/api/health").toURL().readText()
+            URI("$orderServiceUrl/api/health").toURL().readText()
             logger.info("Order Service is ready")
             break
         } catch (e: Exception) {

@@ -19,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -123,7 +124,7 @@ class CollectorClientTest {
                 MockEngine {
                     attempts++
                     if (attempts < 3) {
-                        throw java.io.IOException("Connection refused")
+                        throw IOException("Connection refused")
                     }
                     respond(
                         content = "{}",
