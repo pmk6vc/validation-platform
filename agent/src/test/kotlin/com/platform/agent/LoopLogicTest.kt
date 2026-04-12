@@ -99,14 +99,21 @@ class LoopLogicTest {
             }
 
         @Test
-        fun `replaces entire config not just changed fields`() =
+        fun `fields omitted from new config revert to defaults, not old values`() =
             runBlocking {
+                // Old config has a non-default batchSize (200). The new
+                // config JSON does NOT mention batchSize at all. If the
+                // update is a full replacement (decode JSON -> new object),
+                // batchSize must revert to the default (100). A merge
+                // strategy would instead preserve the old 200.
+                //
+                // Same trick for discoveryInterval: old is 120s (non-default),
+                // new JSON omits it, so it should revert to default 60s.
                 val configClient =
                     configClientReturning(
                         body = """{
                             "targetServices": {"new-service": "svc-999"},
-                            "samplingRate": 0.1,
-                            "batchSize": 50
+                            "samplingRate": 0.1
                         }""",
                     )
                 val dynamicConfig =
@@ -115,15 +122,27 @@ class LoopLogicTest {
                             targetServices = mapOf("old-service" to "svc-111"),
                             samplingRate = 1.0,
                             batchSize = 200,
+                            discoveryInterval = 120.seconds,
                         ),
                     )
 
                 pollConfig(configClient, dynamicConfig)
 
                 val config = dynamicConfig.get()
+                // Changed fields take the new values
                 assertEquals(mapOf("new-service" to "svc-999"), config.targetServices)
                 assertEquals(0.1, config.samplingRate)
-                assertEquals(50, config.batchSize)
+                // Omitted fields revert to defaults (this is the actual assertion)
+                assertEquals(
+                    DynamicConfig().batchSize,
+                    config.batchSize,
+                    "omitted batchSize should revert to default, not stay at the old 200",
+                )
+                assertEquals(
+                    DynamicConfig().discoveryInterval,
+                    config.discoveryInterval,
+                    "omitted discoveryInterval should revert to default, not stay at the old 120s",
+                )
             }
     }
 
