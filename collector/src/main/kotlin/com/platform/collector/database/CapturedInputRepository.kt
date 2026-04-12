@@ -91,7 +91,8 @@ object CapturedInputRepository {
                 conditions.add(CapturedInputs.inputType eq it)
             }
             cursor?.let {
-                val (cursorTimestamp, cursorId) = decodeCursor(it)
+                val (cursorTimestamp, cursorId) =
+                    decodeCursor(it) ?: throw IllegalArgumentException("Invalid cursor")
                 conditions.add(
                     (CapturedInputs.capturedAt greater cursorTimestamp) or
                         ((CapturedInputs.capturedAt eq cursorTimestamp) and (CapturedInputs.id greater cursorId)),

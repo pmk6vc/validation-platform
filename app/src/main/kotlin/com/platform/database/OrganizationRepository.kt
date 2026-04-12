@@ -59,7 +59,8 @@ object OrganizationRepository {
 
             val query =
                 if (cursor != null) {
-                    val (cursorTimestamp, cursorId) = decodeCursor(cursor)
+                    val (cursorTimestamp, cursorId) =
+                        decodeCursor(cursor) ?: throw IllegalArgumentException("Invalid cursor")
                     val cursorCondition: Op<Boolean> =
                         (Organizations.createdAt greater cursorTimestamp) or
                             ((Organizations.createdAt eq cursorTimestamp) and (Organizations.id greater cursorId))

@@ -81,7 +81,8 @@ object ServiceRepository {
                 conditions.add(Services.namespace eq it)
             }
             cursor?.let {
-                val (cursorTimestamp, cursorId) = decodeCursor(it)
+                val (cursorTimestamp, cursorId) =
+                    decodeCursor(it) ?: throw IllegalArgumentException("Invalid cursor")
                 conditions.add(
                     (Services.discoveredAt greater cursorTimestamp) or
                         ((Services.discoveredAt eq cursorTimestamp) and (Services.id greater cursorId)),
