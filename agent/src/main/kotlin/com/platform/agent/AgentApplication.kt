@@ -244,8 +244,8 @@ suspend fun captureOneBatch(
 /** Warn when the newest drained entry is more than this behind wall clock */
 private val LAG_WARN_THRESHOLD: Duration = 15.seconds
 
-/** Liveness probe heartbeat file. Kubernetes checks this file's mtime. */
-val HEARTBEAT_FILE: File = File(System.getenv("HEARTBEAT_FILE") ?: "/tmp/agent-alive")
+/** Liveness probe heartbeat file. Path must match the liveness probe in k8s/agent/agent.yaml. */
+val HEARTBEAT_FILE: File = File("/tmp/agent-alive")
 
 fun touchHeartbeat() {
     HEARTBEAT_FILE.writeText(System.currentTimeMillis().toString())
