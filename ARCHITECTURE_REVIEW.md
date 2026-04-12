@@ -16,15 +16,6 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ## Critical Issues (Bugs or Security Vulnerabilities)
 
-### CRITICAL-1: The Agent Has No Endpoint to POST To — The Capture Pipeline Is Non-Functional End-to-End
-
-- **Location**: `collector/src/main/kotlin/com/platform/collector/api/Routes.kt`; `agent/src/main/kotlin/com/platform/agent/CollectorClient.kt`, line 113
-- **Issue**: `CollectorClient.sendBatch` posts to `$baseUrl/api/captured-inputs`, but the collector's `Routes.kt` defines only `GET /api/captured-inputs`, `GET /api/captured-inputs/{id}`, and `DELETE /api/captured-inputs`. There is no `POST` route. Every batch the agent successfully transforms will receive a 405 Method Not Allowed response, which falls into the `400..499` range, be classified as `PermanentFailure`, and be silently dropped.
-- **Impact**: The entire traffic capture pipeline is a dead end. Data is captured, transformed, and then discarded. The end-to-end minikube verification in CLAUDE.md claiming "100 entries/batch every ~2s via kubeshark-front" almost certainly means the agent is running but silently dropping every batch.
-- **Fix**: Implement `POST /api/captured-inputs` in the collector. The collector already has `createBatch` in `CapturedInputRepository`. The route needs to accept a `BatchCapturedInputRequest`-equivalent body, validate `serviceId` referential integrity via the FK constraint, generate IDs, and call `createBatch`. This is the highest-priority gap in the platform.
-
----
-
 ### CRITICAL-2: API Key Hardcoded in Plain Text in Kubernetes Manifest
 
 - **Location**: `k8s/agent/agent.yaml`, line 56
@@ -107,10 +98,6 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 ---
 
 ## Test Coverage Gaps
-
-### GAP-1: No Test for `POST /api/captured-inputs` — Which Doesn't Exist Yet (CRITICAL)
-
-- The collector batch endpoint is the core integration point. When implemented, needs tests for: valid batch, FK violation, empty batch, malformed JSON, oversized batch, idempotency.
 
 ### GAP-4: No Test for `KubernetesAdapter.close()` Resource Cleanup (LOW)
 

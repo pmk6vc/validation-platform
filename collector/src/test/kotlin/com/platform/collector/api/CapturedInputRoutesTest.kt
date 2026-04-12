@@ -3,15 +3,26 @@ package com.platform.collector.api
 import com.platform.collector.database.AppApiTestHelper
 import com.platform.collector.database.CapturedInputRepository
 import com.platform.collector.database.CollectorDatabaseTestBase
+import com.platform.collector.models.BatchCreateCapturedInputRequest
+import com.platform.collector.models.BatchCreateCapturedInputResponse
 import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.CreateCapturedInputRequest
 import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import com.platform.collector.module
 import com.platform.models.Page
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -27,6 +38,13 @@ import kotlin.test.assertTrue
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private val lenientJson = Json { ignoreUnknownKeys = true }
     private lateinit var testServiceId: String
+
+    private fun ApplicationTestBuilder.createJsonClient(): HttpClient =
+        createClient {
+            install(ContentNegotiation) {
+                json(Json { ignoreUnknownKeys = true })
+            }
+        }
 
     @BeforeEach
     fun setupServiceFixture() {
@@ -312,5 +330,110 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             assertEquals(HttpStatusCode.OK, response.status)
             val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
             assertEquals(0, result.deleted)
+        }
+
+    private fun createTestBatchRequest(
+        serviceId: String = testServiceId,
+        count: Int = 1,
+    ): BatchCreateCapturedInputRequest =
+        BatchCreateCapturedInputRequest(
+            items =
+                (1..count).map { i ->
+                    CreateCapturedInputRequest(
+                        serviceId = serviceId,
+                        inputType = InputType.HTTP,
+                        method = "GET",
+                        url = "/api/orders/$i",
+                        responseStatus = 200,
+                        responseBody = """{"id":$i}""",
+                        capturedAt = Instant.now(),
+                    )
+                },
+        )
+
+    @Test
+    fun `POST captured-inputs with valid batch should return 201 with count`() =
+        testApplication {
+            application { module(initDatabase = false) }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/captured-inputs") {
+                    contentType(ContentType.Application.Json)
+                    setBody(createTestBatchRequest(count = 3))
+                }
+
+            assertEquals(HttpStatusCode.Created, response.status)
+            val result = lenientJson.decodeFromString<BatchCreateCapturedInputResponse>(response.bodyAsText())
+            assertEquals(3, result.created)
+
+            val listResponse = client.get("/api/captured-inputs?serviceId=$testServiceId")
+            assertEquals(HttpStatusCode.OK, listResponse.status)
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    listResponse.bodyAsText(),
+                )
+            assertEquals(3, page.items.size)
+        }
+
+    @Test
+    fun `POST captured-inputs with empty batch should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/captured-inputs") {
+                    contentType(ContentType.Application.Json)
+                    setBody(BatchCreateCapturedInputRequest(items = emptyList()))
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
+    fun `POST captured-inputs with invalid serviceId should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+            val jsonClient = createJsonClient()
+
+            val nonExistentServiceId = UUID.randomUUID().toString()
+            val response =
+                jsonClient.post("/api/captured-inputs") {
+                    contentType(ContentType.Application.Json)
+                    setBody(createTestBatchRequest(serviceId = nonExistentServiceId))
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
+    fun `POST captured-inputs with malformed JSON should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response =
+                client.post("/api/captured-inputs") {
+                    contentType(ContentType.Application.Json)
+                    setBody("not valid json")
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
+    fun `POST captured-inputs with missing required fields should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response =
+                client.post("/api/captured-inputs") {
+                    contentType(ContentType.Application.Json)
+                    // missing method, url, responseStatus, capturedAt
+                    setBody("""{"items":[{"serviceId":"$testServiceId"}]}""")
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 }
