@@ -1,6 +1,7 @@
 package com.platform.agent
 
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
@@ -8,6 +9,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
@@ -18,6 +20,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 /**
  * Tests for [KubesharkClient]'s persistent WebSocket session and drainBatch API.
@@ -57,12 +60,12 @@ class KubesharkClientTest {
      * so cancelling the scope (via `runBlocking` exit) tears everything down.
      */
     private fun withClient(
-        serverBlock: suspend io.ktor.server.websocket.DefaultWebSocketServerSession.() -> Unit,
+        serverBlock: suspend DefaultWebSocketServerSession.() -> Unit,
         testBlock: suspend CoroutineScope.(KubesharkClient) -> Unit,
     ) = runBlocking {
         val server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
             embeddedServer(Netty, port = 0) {
-                install(io.ktor.server.websocket.WebSockets)
+                install(ServerWebSockets)
                 routing {
                     webSocket("/api/wsFull") {
                         // Read the KFL filter and assert it's empty
@@ -80,7 +83,7 @@ class KubesharkClientTest {
                 .port
 
         val httpClient =
-            HttpClient(io.ktor.client.engine.cio.CIO) {
+            HttpClient(CIO) {
                 install(WebSockets)
             }
 
@@ -136,15 +139,31 @@ class KubesharkClientTest {
         )
 
     @Test
-    fun `drainBatch returns empty list when no entries arrive within maxWait`() =
+    fun `drainBatch returns empty on timeout but recovers when traffic arrives later`() =
         withClient(
             serverBlock = {
-                // Server accepts the connection, reads the filter, but sends nothing
-                delay(2000.milliseconds)
+                // First drainBatch has maxWait=200ms; the server waits 400ms
+                // before sending so the first call times out with an empty
+                // list. Then it sends an entry, which the second drainBatch
+                // call should pick up — proving the empty-timeout path does
+                // not leave the channel in a bad state.
+                delay(400.milliseconds)
+                send(Frame.Text(wsEntry("delayed-1", 5000L)))
+                delay(500.milliseconds)
             },
             testBlock = { client ->
-                val entries = client.drainBatch(limit = 100, maxWait = 200.milliseconds)
-                assertTrue(entries.isEmpty())
+                // First drain — server hasn't sent anything yet, times out
+                val empty = client.drainBatch(limit = 100, maxWait = 200.milliseconds)
+                assertTrue(empty.isEmpty(), "drainBatch should return empty when no entries arrive within maxWait")
+
+                // Second drain — server has since sent an entry, we should get it
+                val afterTimeout = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                assertEquals(
+                    1,
+                    afterTimeout.size,
+                    "drainBatch should still pick up entries that arrive after a prior timeout",
+                )
+                assertEquals("delayed-1", afterTimeout[0].id)
             },
         )
 

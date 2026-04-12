@@ -10,6 +10,7 @@ import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
@@ -45,6 +46,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 /**
  * Integration test wiring real components with mock backends.
@@ -319,7 +321,7 @@ class AgentIntegrationTest {
         val connectionCounter = AtomicInteger(0)
         val server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
             embeddedServer(Netty, port = 0) {
-                install(io.ktor.server.websocket.WebSockets)
+                install(ServerWebSockets)
                 routing {
                     webSocket("/api/wsFull") {
                         // Consume the KFL filter frame (empty string from our client)
@@ -338,7 +340,7 @@ class AgentIntegrationTest {
 
         // Real WebSocket client for KubesharkClient
         val wsHttpClient =
-            HttpClient(io.ktor.client.engine.cio.CIO) {
+            HttpClient(CIO) {
                 install(WebSockets)
             }
 
