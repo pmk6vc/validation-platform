@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ktor) apply false
     alias(libs.plugins.ktlint)
+    jacoco
 }
 
 group = "com.platform"
@@ -14,14 +15,69 @@ repositories {
 
 val ktlintVersion = versionCatalogs.named("libs").findVersion("ktlint").get().requiredVersion
 
-// Apply ktlint to all subprojects (except test-services which have their own conventions)
+// Apply ktlint and JaCoCo to all subprojects (except test-services which have their own conventions)
 subprojects {
     if (!path.startsWith(":test-services")) {
         apply(plugin = "org.jlleitschuh.gradle.ktlint")
+        apply(plugin = "jacoco")
 
         configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
             version.set(ktlintVersion)
         }
+
+        tasks.withType<JacocoReport> {
+            dependsOn(tasks.named("test"))
+            reports {
+                xml.required.set(true)
+                html.required.set(true)
+            }
+        }
+
+        tasks.withType<Test> {
+            finalizedBy(tasks.withType<JacocoReport>())
+            reports.junitXml.includeSystemOutLog.set(false)
+            reports.junitXml.includeSystemErrLog.set(false)
+        }
+    }
+}
+
+// Aggregated JaCoCo coverage report across all platform modules
+val platformModules = listOf(":shared", ":app", ":collector", ":agent")
+
+tasks.register<JacocoReport>("jacocoAggregatedReport") {
+    group = "verification"
+    description = "Generates an aggregated JaCoCo coverage report for all platform modules"
+
+    dependsOn(platformModules.map { "$it:jacocoTestReport" })
+
+    executionData.setFrom(
+        platformModules.map { modulePath ->
+            fileTree(project(modulePath).layout.buildDirectory) {
+                include("jacoco/test.exec")
+            }
+        },
+    )
+
+    sourceDirectories.setFrom(
+        platformModules.map { modulePath ->
+            files("${project(modulePath).projectDir}/src/main/kotlin")
+        },
+    )
+
+    classDirectories.setFrom(
+        platformModules.map { modulePath ->
+            fileTree(project(modulePath).layout.buildDirectory) {
+                include("classes/kotlin/main/**")
+                exclude("**/generated/**")
+            }
+        },
+    )
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        xml.outputLocation.set(layout.buildDirectory.file("reports/jacoco/aggregated/jacocoAggregatedReport.xml"))
+        html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco/aggregated/html"))
     }
 }
 
