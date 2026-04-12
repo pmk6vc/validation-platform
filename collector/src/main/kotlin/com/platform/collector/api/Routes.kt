@@ -13,7 +13,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 
-fun Application.configureRouting(capturedInputRepository: CapturedInputRepository) {
+fun Application.configureRouting() {
     routing {
         get("/health") {
             call.respondText("OK")
@@ -35,7 +35,7 @@ fun Application.configureRouting(capturedInputRepository: CapturedInputRepositor
                         }
 
                     val page =
-                        capturedInputRepository.find(
+                        CapturedInputRepository.find(
                             serviceId = call.request.queryParameters["serviceId"],
                             inputType = inputType,
                             limit = limit,
@@ -49,7 +49,7 @@ fun Application.configureRouting(capturedInputRepository: CapturedInputRepositor
                         call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
 
-                    val input = capturedInputRepository.findById(id)
+                    val input = CapturedInputRepository.findById(id)
                     if (input != null) {
                         call.respond(input)
                     } else {
@@ -64,7 +64,7 @@ fun Application.configureRouting(capturedInputRepository: CapturedInputRepositor
                         return@delete
                     }
 
-                    val deleted = capturedInputRepository.deleteByService(serviceId)
+                    val deleted = CapturedInputRepository.deleteByService(serviceId)
                     call.respond(DeleteResponse(deleted = deleted))
                 }
             }

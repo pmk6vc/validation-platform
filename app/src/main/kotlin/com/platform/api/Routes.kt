@@ -17,10 +17,7 @@ import io.ktor.server.routing.routing
 import java.time.Instant
 import java.util.UUID
 
-fun Application.configureRouting(
-    organizationRepository: OrganizationRepository,
-    serviceRepository: ServiceRepository,
-) {
+fun Application.configureRouting() {
     routing {
         get("/") {
             call.respondText("Validation Platform API")
@@ -38,7 +35,7 @@ fun Application.configureRouting(
                             ?: OrganizationRepository.DEFAULT_PAGE_SIZE
                     val cursor = call.request.queryParameters["cursor"]
 
-                    val page = organizationRepository.find(limit = limit, cursor = cursor)
+                    val page = OrganizationRepository.find(limit = limit, cursor = cursor)
                     call.respond(page)
                 }
 
@@ -50,7 +47,7 @@ fun Application.configureRouting(
                             name = request.name,
                             createdAt = Instant.now(),
                         )
-                    val created = organizationRepository.create(organization)
+                    val created = OrganizationRepository.create(organization)
                     call.respond(HttpStatusCode.Created, created)
                 }
 
@@ -59,7 +56,7 @@ fun Application.configureRouting(
                         call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
 
-                    val organization = organizationRepository.findById(id)
+                    val organization = OrganizationRepository.findById(id)
                     if (organization != null) {
                         call.respond(organization)
                     } else {
@@ -76,7 +73,7 @@ fun Application.configureRouting(
                     val cursor = call.request.queryParameters["cursor"]
 
                     val page =
-                        serviceRepository.find(
+                        ServiceRepository.find(
                             organizationId = call.request.queryParameters["organizationId"],
                             cluster = call.request.queryParameters["cluster"],
                             namespace = call.request.queryParameters["namespace"],
@@ -101,7 +98,7 @@ fun Application.configureRouting(
                             lastSeenAt = now,
                             metadata = request.metadata,
                         )
-                    val created = serviceRepository.create(service)
+                    val created = ServiceRepository.create(service)
                     call.respond(HttpStatusCode.Created, created)
                 }
 
@@ -110,7 +107,7 @@ fun Application.configureRouting(
                         call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
 
-                    val service = serviceRepository.findById(id)
+                    val service = ServiceRepository.findById(id)
                     if (service != null) {
                         call.respond(service)
                     } else {

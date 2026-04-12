@@ -25,8 +25,6 @@ import kotlin.test.assertNull
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 
 class OrganizationRoutesTest : AppDatabaseTestBase() {
-    private val organizationRepository = OrganizationRepository()
-
     private fun ApplicationTestBuilder.createJsonClient() =
         createClient {
             install(ClientContentNegotiation) {
@@ -58,8 +56,8 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             val org1 = Organization(UUID.randomUUID().toString(), "Org 1", Instant.now())
             val org2 = Organization(UUID.randomUUID().toString(), "Org 2", Instant.now())
-            organizationRepository.create(org1)
-            organizationRepository.create(org2)
+            OrganizationRepository.create(org1)
+            OrganizationRepository.create(org2)
 
             val response = client.get("/api/organizations")
 
@@ -79,7 +77,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             val org = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
-            organizationRepository.create(org)
+            OrganizationRepository.create(org)
 
             val response = client.get("/api/organizations/${org.id}")
 

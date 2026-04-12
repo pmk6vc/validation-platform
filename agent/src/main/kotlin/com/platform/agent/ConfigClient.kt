@@ -5,6 +5,7 @@ import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
@@ -38,6 +39,8 @@ class ConfigClient(
             }
 
             json.decodeFromString<DynamicConfig>(response.bodyAsText())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("Failed to fetch config from platform", e)
             null

@@ -28,9 +28,6 @@ import kotlin.test.assertTrue
  * Total discoverable services: 7
  */
 class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
-    private val organizationRepository = OrganizationRepository()
-    private val serviceRepository = ServiceRepository()
-
     private lateinit var testOrg: Organization
 
     @BeforeEach
@@ -42,7 +39,7 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
                     name = "Test Organization",
                     createdAt = Instant.now(),
                 )
-            organizationRepository.create(testOrg)
+            OrganizationRepository.create(testOrg)
         }
     }
 
@@ -65,10 +62,10 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
                 // Persist all discovered services
                 discoveredServices.forEach { service ->
-                    serviceRepository.create(service)
+                    ServiceRepository.create(service)
                 }
 
-                val page = serviceRepository.find(organizationId = testOrg.id, limit = 100)
+                val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
                 assertEquals(7, page.items.size)
                 assertEquals(
                     page.items.size,
@@ -114,11 +111,11 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
             try {
                 val discoveredServices = adapter.discoverServices(testOrg.id)
-                discoveredServices.forEach { service -> serviceRepository.create(service) }
+                discoveredServices.forEach { service -> ServiceRepository.create(service) }
 
                 // infrastructure: orders-db, redis, kafka
                 val infraServices =
-                    serviceRepository.find(
+                    ServiceRepository.find(
                         organizationId = testOrg.id,
                         namespace = "infrastructure",
                         limit = 100,
@@ -130,7 +127,7 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
                 // production: api-gateway, order-service, notification-service
                 val prodServices =
-                    serviceRepository.find(
+                    ServiceRepository.find(
                         organizationId = testOrg.id,
                         namespace = "production",
                         limit = 100,
@@ -142,7 +139,7 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
                 // external: webhook-stub
                 val externalServices =
-                    serviceRepository.find(
+                    ServiceRepository.find(
                         organizationId = testOrg.id,
                         namespace = "external",
                         limit = 100,
@@ -187,10 +184,10 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
             try {
                 val discoveredServices = adapter.discoverServices(testOrg.id)
-                discoveredServices.forEach { service -> serviceRepository.create(service) }
+                discoveredServices.forEach { service -> ServiceRepository.create(service) }
 
                 val clusterServices =
-                    serviceRepository.find(
+                    ServiceRepository.find(
                         organizationId = testOrg.id,
                         cluster = "k3s-test-cluster",
                         limit = 100,
@@ -211,16 +208,16 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
             try {
                 val firstDiscovery = adapter.discoverServices(testOrg.id)
-                firstDiscovery.forEach { service -> serviceRepository.create(service) }
+                firstDiscovery.forEach { service -> ServiceRepository.create(service) }
 
                 val initialCount =
-                    serviceRepository.find(organizationId = testOrg.id, limit = 100).items.size
+                    ServiceRepository.find(organizationId = testOrg.id, limit = 100).items.size
                 assertEquals(7, initialCount)
 
                 val secondDiscovery = adapter.discoverServices(testOrg.id)
-                secondDiscovery.forEach { service -> serviceRepository.upsert(service) }
+                secondDiscovery.forEach { service -> ServiceRepository.upsert(service) }
 
-                val finalPage = serviceRepository.find(organizationId = testOrg.id, limit = 100)
+                val finalPage = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
                 assertEquals(initialCount, finalPage.items.size)
             } finally {
                 adapter.close()

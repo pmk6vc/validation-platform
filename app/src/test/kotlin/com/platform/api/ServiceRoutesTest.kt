@@ -31,16 +31,13 @@ import kotlin.test.assertTrue
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 
 class ServiceRoutesTest : AppDatabaseTestBase() {
-    private val organizationRepository = OrganizationRepository()
-    private val serviceRepository = ServiceRepository()
-
     private lateinit var testOrg: Organization
 
     @BeforeEach
     fun setupOrg() {
         runBlocking {
             testOrg = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
-            organizationRepository.create(testOrg)
+            OrganizationRepository.create(testOrg)
         }
     }
 
@@ -93,8 +90,8 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
             val svc1 = createService(name = "order-service")
             val svc2 = createService(name = "payment-service")
-            serviceRepository.create(svc1)
-            serviceRepository.create(svc2)
+            ServiceRepository.create(svc1)
+            ServiceRepository.create(svc2)
 
             val response = client.get("/api/services")
 
@@ -114,7 +111,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             val otherOrg = Organization(UUID.randomUUID().toString(), "Other Org", Instant.now())
-            organizationRepository.create(otherOrg)
+            OrganizationRepository.create(otherOrg)
 
             val svc1 = createService(name = "my-service")
             val svc2 =
@@ -129,8 +126,8 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
                     lastSeenAt = Instant.now(),
                     metadata = null,
                 )
-            serviceRepository.create(svc1)
-            serviceRepository.create(svc2)
+            ServiceRepository.create(svc1)
+            ServiceRepository.create(svc2)
 
             val response = client.get("/api/services?organizationId=${testOrg.id}")
 
@@ -151,8 +148,8 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
             val svc1 = createService(name = "prod-service", cluster = "prod-us-east")
             val svc2 = createService(name = "staging-service", cluster = "staging")
-            serviceRepository.create(svc1)
-            serviceRepository.create(svc2)
+            ServiceRepository.create(svc1)
+            ServiceRepository.create(svc2)
 
             val response = client.get("/api/services?organizationId=${testOrg.id}&cluster=prod-us-east")
 
@@ -173,8 +170,8 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
-            serviceRepository.create(svc1)
-            serviceRepository.create(svc2)
+            ServiceRepository.create(svc1)
+            ServiceRepository.create(svc2)
 
             val response = client.get("/api/services?organizationId=${testOrg.id}&cluster=prod&namespace=payments")
 
@@ -196,9 +193,9 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "payments-worker", cluster = "staging", namespace = "payments")
             val svc3 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
-            serviceRepository.create(svc1)
-            serviceRepository.create(svc2)
-            serviceRepository.create(svc3)
+            ServiceRepository.create(svc1)
+            ServiceRepository.create(svc2)
+            ServiceRepository.create(svc3)
 
             val response = client.get("/api/services?namespace=payments")
 
@@ -220,9 +217,9 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val svc1 = createService(name = "prod-service-1", cluster = "prod")
             val svc2 = createService(name = "prod-service-2", cluster = "prod", namespace = "other")
             val svc3 = createService(name = "staging-service", cluster = "staging")
-            serviceRepository.create(svc1)
-            serviceRepository.create(svc2)
-            serviceRepository.create(svc3)
+            ServiceRepository.create(svc1)
+            ServiceRepository.create(svc2)
+            ServiceRepository.create(svc3)
 
             val response = client.get("/api/services?cluster=prod")
 
@@ -261,7 +258,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             val svc = createService(name = "my-service", metadata = mapOf("version" to "1.0"))
-            serviceRepository.create(svc)
+            ServiceRepository.create(svc)
 
             val response = client.get("/api/services/${svc.id}")
 
@@ -429,7 +426,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
                     provider = Provider.KUBERNETES,
                     metadata = mapOf("team" to "platform", "tier" to "critical"),
                 )
-            serviceRepository.create(svc)
+            ServiceRepository.create(svc)
 
             val response = client.get("/api/services/${svc.id}")
 
@@ -449,7 +446,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             repeat(5) { i ->
-                serviceRepository.create(createService(name = "service-$i"))
+                ServiceRepository.create(createService(name = "service-$i"))
             }
 
             val response = client.get("/api/services?limit=3")
@@ -470,7 +467,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             repeat(5) { i ->
-                serviceRepository.create(createService(name = "service-$i"))
+                ServiceRepository.create(createService(name = "service-$i"))
             }
 
             // Get first page

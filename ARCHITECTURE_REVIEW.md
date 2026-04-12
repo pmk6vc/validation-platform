@@ -45,6 +45,15 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ---
 
+### ARCH-2: Repositories Are `object` Singletons — Untestable Without a Live Database
+
+- **Location**: `app/src/main/kotlin/com/platform/database/OrganizationRepository.kt`, `app/src/main/kotlin/com/platform/database/ServiceRepository.kt`, `collector/src/main/kotlin/com/platform/collector/database/CapturedInputRepository.kt`
+- **Issue**: All three repositories are Kotlin `object` singletons. Routes call them as global state. It's impossible to inject mock repositories for unit testing routes without a real database. Every route test requires a PostgreSQL container.
+- **Impact**: Every route test requires TestContainers and Docker. The architecture cannot evolve to support repository interfaces without a breaking refactor.
+- **Fix**: Convert repositories to classes and inject them through the Ktor `Application` extension function. Low-urgency but the pattern should not spread to new modules.
+
+---
+
 ### ARCH-4: `DatabaseFactory` Has No Connection Pool Configuration — Uses Exposed Defaults
 
 - **Location**: `shared/src/main/kotlin/com/platform/database/DatabaseFactory.kt`

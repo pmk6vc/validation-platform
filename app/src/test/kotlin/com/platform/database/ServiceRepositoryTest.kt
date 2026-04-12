@@ -15,9 +15,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ServiceRepositoryTest : AppDatabaseTestBase() {
-    private val organizationRepository = OrganizationRepository()
-    private val serviceRepository = ServiceRepository()
-
     private lateinit var testOrg: Organization
     private lateinit var testOrg2: Organization
 
@@ -36,8 +33,8 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     name = "Another Organization",
                     createdAt = Instant.now(),
                 )
-            organizationRepository.create(testOrg)
-            organizationRepository.create(testOrg2)
+            OrganizationRepository.create(testOrg)
+            OrganizationRepository.create(testOrg2)
         }
     }
 
@@ -68,7 +65,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
         runBlocking {
             val service = createTestService(name = "order-service")
 
-            val created = serviceRepository.create(service)
+            val created = ServiceRepository.create(service)
 
             assertEquals(service.id, created.id)
             assertEquals("order-service", created.name)
@@ -81,8 +78,8 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val metadata = mapOf("version" to "1.0.0", "team" to "platform")
             val service = createTestService(name = "order-service", metadata = metadata)
 
-            serviceRepository.create(service)
-            val found = serviceRepository.findById(service.id)
+            ServiceRepository.create(service)
+            val found = ServiceRepository.findById(service.id)
 
             assertNotNull(found)
             assertNotNull(found.metadata)
@@ -94,9 +91,9 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `findById should return service when exists`() =
         runBlocking {
             val service = createTestService(name = "payment-service")
-            serviceRepository.create(service)
+            ServiceRepository.create(service)
 
-            val found = serviceRepository.findById(service.id)
+            val found = ServiceRepository.findById(service.id)
 
             assertNotNull(found)
             assertEquals(service.id, found.id)
@@ -108,7 +105,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `findById should return null when not exists`() =
         runBlocking {
-            val found = serviceRepository.findById(UUID.randomUUID().toString())
+            val found = ServiceRepository.findById(UUID.randomUUID().toString())
 
             assertNull(found)
         }
@@ -120,11 +117,11 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val service2 = createTestService(name = "service-2", organizationId = testOrg.id)
             val service3 = createTestService(name = "service-3", organizationId = testOrg2.id)
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
-            serviceRepository.create(service3)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
+            ServiceRepository.create(service3)
 
-            val page = serviceRepository.find(organizationId = testOrg.id)
+            val page = ServiceRepository.find(organizationId = testOrg.id)
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.organizationId == testOrg.id })
@@ -137,11 +134,11 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val service2 = createTestService(name = "service-2", cluster = "prod-us-east")
             val service3 = createTestService(name = "service-3", cluster = "prod-eu-west")
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
-            serviceRepository.create(service3)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
+            ServiceRepository.create(service3)
 
-            val page = serviceRepository.find(cluster = "prod-us-east")
+            val page = ServiceRepository.find(cluster = "prod-us-east")
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.cluster == "prod-us-east" })
@@ -154,11 +151,11 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val service2 = createTestService(name = "service-2", cluster = "staging", namespace = "payments")
             val service3 = createTestService(name = "service-3", cluster = "prod", namespace = "orders")
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
-            serviceRepository.create(service3)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
+            ServiceRepository.create(service3)
 
-            val page = serviceRepository.find(namespace = "payments")
+            val page = ServiceRepository.find(namespace = "payments")
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.namespace == "payments" })
@@ -171,11 +168,11 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val service2 = createTestService(name = "service-2", cluster = "prod", namespace = "orders")
             val service3 = createTestService(name = "service-3", cluster = "staging", namespace = "payments")
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
-            serviceRepository.create(service3)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
+            ServiceRepository.create(service3)
 
-            val page = serviceRepository.find(cluster = "prod", namespace = "payments")
+            val page = ServiceRepository.find(cluster = "prod", namespace = "payments")
 
             assertEquals(1, page.items.size)
             assertEquals("service-1", page.items[0].name)
@@ -185,10 +182,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `find with limit should return at most limit items`() =
         runBlocking {
             repeat(5) { i ->
-                serviceRepository.create(createTestService(name = "service-$i"))
+                ServiceRepository.create(createTestService(name = "service-$i"))
             }
 
-            val page = serviceRepository.find(limit = 3)
+            val page = ServiceRepository.find(limit = 3)
 
             assertEquals(3, page.items.size)
         }
@@ -197,10 +194,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `find should return nextCursor when more items exist`() {
         runBlocking {
             repeat(5) { i ->
-                serviceRepository.create(createTestService(name = "service-$i"))
+                ServiceRepository.create(createTestService(name = "service-$i"))
             }
 
-            val page = serviceRepository.find(limit = 3)
+            val page = ServiceRepository.find(limit = 3)
 
             assertEquals(3, page.items.size)
             assertNotNull(page.nextCursor)
@@ -211,10 +208,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `find should return null nextCursor when no more items`() =
         runBlocking {
             repeat(3) { i ->
-                serviceRepository.create(createTestService(name = "service-$i"))
+                ServiceRepository.create(createTestService(name = "service-$i"))
             }
 
-            val page = serviceRepository.find(limit = 5)
+            val page = ServiceRepository.find(limit = 5)
 
             assertEquals(3, page.items.size)
             assertNull(page.nextCursor)
@@ -224,14 +221,14 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `find with cursor should return items after cursor`() =
         runBlocking {
             repeat(5) { i ->
-                serviceRepository.create(createTestService(name = "service-$i"))
+                ServiceRepository.create(createTestService(name = "service-$i"))
             }
 
-            val firstPage = serviceRepository.find(limit = 2)
+            val firstPage = ServiceRepository.find(limit = 2)
             assertEquals(2, firstPage.items.size)
             assertNotNull(firstPage.nextCursor)
 
-            val secondPage = serviceRepository.find(limit = 2, cursor = firstPage.nextCursor)
+            val secondPage = ServiceRepository.find(limit = 2, cursor = firstPage.nextCursor)
             assertEquals(2, secondPage.items.size)
             assertNotNull(secondPage.nextCursor)
 
@@ -240,7 +237,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val secondPageIds = secondPage.items.map { it.id }.toSet()
             assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
 
-            val thirdPage = serviceRepository.find(limit = 2, cursor = secondPage.nextCursor)
+            val thirdPage = ServiceRepository.find(limit = 2, cursor = secondPage.nextCursor)
             assertEquals(1, thirdPage.items.size)
             assertNull(thirdPage.nextCursor)
         }
@@ -249,10 +246,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `find should enforce max page size`() =
         runBlocking {
             repeat(150) { i ->
-                serviceRepository.create(createTestService(name = "service-$i"))
+                ServiceRepository.create(createTestService(name = "service-$i"))
             }
 
-            val page = serviceRepository.find(limit = 200)
+            val page = ServiceRepository.find(limit = 200)
 
             assertEquals(ServiceRepository.MAX_PAGE_SIZE, page.items.size)
         }
@@ -261,18 +258,18 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     fun `delete should remove service`() =
         runBlocking {
             val service = createTestService()
-            serviceRepository.create(service)
+            ServiceRepository.create(service)
 
-            val deleted = serviceRepository.delete(service.id)
+            val deleted = ServiceRepository.delete(service.id)
 
             assertTrue(deleted)
-            assertNull(serviceRepository.findById(service.id))
+            assertNull(ServiceRepository.findById(service.id))
         }
 
     @Test
     fun `delete should return false when service not exists`() =
         runBlocking {
-            val deleted = serviceRepository.delete(UUID.randomUUID().toString())
+            val deleted = ServiceRepository.delete(UUID.randomUUID().toString())
 
             assertTrue(!deleted)
         }
@@ -282,9 +279,9 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
         runBlocking {
             val service = createTestService(name = "new-service")
 
-            val result = serviceRepository.upsert(service)
+            val result = ServiceRepository.upsert(service)
 
-            assertNotNull(serviceRepository.findById(result.id))
+            assertNotNull(ServiceRepository.findById(result.id))
             assertEquals("new-service", result.name)
         }
 
@@ -302,7 +299,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     lastSeenAt = originalTime,
                     metadata = mapOf("version" to "1.0", "team" to "platform"),
                 )
-            serviceRepository.create(original)
+            ServiceRepository.create(original)
 
             val laterTime = Instant.parse("2024-06-15T12:00:00Z")
             val updated =
@@ -313,12 +310,12 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     metadata = mapOf("version" to "2.0", "region" to "us-east"),
                 )
 
-            val result = serviceRepository.upsert(updated)
+            val result = ServiceRepository.upsert(updated)
 
             // Should return the original ID since identity matched
             assertEquals(original.id, result.id)
 
-            val found = serviceRepository.findById(original.id)
+            val found = ServiceRepository.findById(original.id)
             assertNotNull(found)
 
             // Identity fields should be unchanged
@@ -350,10 +347,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     namespace = "orders",
                 )
 
-            serviceRepository.create(service1)
+            ServiceRepository.create(service1)
 
             assertThrows<Exception> {
-                runBlocking { serviceRepository.create(service2) }
+                runBlocking { ServiceRepository.create(service2) }
             }
         }
     }
@@ -374,10 +371,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     namespace = "ns-2",
                 )
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
 
-            val page = serviceRepository.find(limit = 100)
+            val page = ServiceRepository.find(limit = 100)
             assertEquals(2, page.items.size)
         }
 
@@ -397,10 +394,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     namespace = "default",
                 )
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
 
-            val page = serviceRepository.find(limit = 100)
+            val page = ServiceRepository.find(limit = 100)
             assertEquals(2, page.items.size)
         }
 
@@ -418,10 +415,10 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
                     organizationId = testOrg2.id,
                 )
 
-            serviceRepository.create(service1)
-            serviceRepository.create(service2)
+            ServiceRepository.create(service1)
+            ServiceRepository.create(service2)
 
-            val page = serviceRepository.find(limit = 100)
+            val page = ServiceRepository.find(limit = 100)
             assertEquals(2, page.items.size)
         }
 
@@ -430,8 +427,8 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
         runBlocking {
             val service = createTestService(name = "unknown-provider-service", provider = Provider.UNKNOWN)
 
-            serviceRepository.create(service)
-            val found = serviceRepository.findById(service.id)
+            ServiceRepository.create(service)
+            val found = ServiceRepository.findById(service.id)
 
             assertNotNull(found)
             assertEquals(Provider.UNKNOWN, found.provider)
@@ -442,8 +439,8 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
         runBlocking {
             val service = createTestService(name = "no-metadata-service", metadata = null)
 
-            serviceRepository.create(service)
-            val found = serviceRepository.findById(service.id)
+            ServiceRepository.create(service)
+            val found = ServiceRepository.findById(service.id)
 
             assertNotNull(found)
             assertNull(found.metadata)

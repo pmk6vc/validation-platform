@@ -1,7 +1,6 @@
 package com.platform.collector
 
 import com.platform.collector.api.configureRouting
-import com.platform.collector.database.CapturedInputRepository
 import com.platform.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -18,10 +17,7 @@ fun main(args: Array<String>) {
         .main(args)
 }
 
-fun Application.module(
-    initDatabase: Boolean = true,
-    capturedInputRepository: CapturedInputRepository = CapturedInputRepository(),
-) {
+fun Application.module(initDatabase: Boolean = true) {
     if (initDatabase) {
         DatabaseFactory.initFromEnvironment()
     }
@@ -47,5 +43,5 @@ fun Application.module(
         )
     }
 
-    configureRouting(capturedInputRepository = capturedInputRepository)
+    configureRouting()
 }

@@ -2,8 +2,6 @@ package com.platform
 
 import com.platform.api.configureRouting
 import com.platform.database.DatabaseFactory
-import com.platform.database.OrganizationRepository
-import com.platform.database.ServiceRepository
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -19,11 +17,7 @@ fun main(args: Array<String>) {
         .main(args)
 }
 
-fun Application.module(
-    initDatabase: Boolean = true,
-    organizationRepository: OrganizationRepository = OrganizationRepository(),
-    serviceRepository: ServiceRepository = ServiceRepository(),
-) {
+fun Application.module(initDatabase: Boolean = true) {
     if (initDatabase) {
         DatabaseFactory.initFromEnvironment()
     }
@@ -49,8 +43,5 @@ fun Application.module(
         )
     }
 
-    configureRouting(
-        organizationRepository = organizationRepository,
-        serviceRepository = serviceRepository,
-    )
+    configureRouting()
 }

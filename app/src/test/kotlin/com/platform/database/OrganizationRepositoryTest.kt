@@ -12,8 +12,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class OrganizationRepositoryTest : AppDatabaseTestBase() {
-    private val repository = OrganizationRepository()
-
     private fun createTestOrganization(
         id: String = UUID.randomUUID().toString(),
         name: String = "Test Organization",
@@ -25,7 +23,7 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
         runBlocking {
             val org = createTestOrganization(name = "Acme Corp")
 
-            val created = repository.create(org)
+            val created = OrganizationRepository.create(org)
 
             assertEquals(org.id, created.id)
             assertEquals("Acme Corp", created.name)
@@ -35,9 +33,9 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `findById should return organization when exists`() =
         runBlocking {
             val org = createTestOrganization(name = "Acme Corp")
-            repository.create(org)
+            OrganizationRepository.create(org)
 
-            val found = repository.findById(org.id)
+            val found = OrganizationRepository.findById(org.id)
 
             assertNotNull(found)
             assertEquals(org.id, found.id)
@@ -47,7 +45,7 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `findById should return null when not exists`() =
         runBlocking {
-            val found = repository.findById(UUID.randomUUID().toString())
+            val found = OrganizationRepository.findById(UUID.randomUUID().toString())
 
             assertNull(found)
         }
@@ -56,18 +54,18 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `delete should remove organization`() =
         runBlocking {
             val org = createTestOrganization()
-            repository.create(org)
+            OrganizationRepository.create(org)
 
-            val deleted = repository.delete(org.id)
+            val deleted = OrganizationRepository.delete(org.id)
 
             assertTrue(deleted)
-            assertNull(repository.findById(org.id))
+            assertNull(OrganizationRepository.findById(org.id))
         }
 
     @Test
     fun `delete should return false when organization not exists`() =
         runBlocking {
-            val deleted = repository.delete(UUID.randomUUID().toString())
+            val deleted = OrganizationRepository.delete(UUID.randomUUID().toString())
 
             assertTrue(!deleted)
         }
@@ -79,10 +77,10 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
             val org1 = createTestOrganization(id = id, name = "Org 1")
             val org2 = createTestOrganization(id = id, name = "Org 2")
 
-            repository.create(org1)
+            OrganizationRepository.create(org1)
 
             assertThrows<Exception> {
-                runBlocking { repository.create(org2) }
+                runBlocking { OrganizationRepository.create(org2) }
             }
         }
     }
@@ -91,10 +89,10 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `find with limit should return at most limit items`() =
         runBlocking {
             repeat(5) { i ->
-                repository.create(createTestOrganization(name = "Org $i"))
+                OrganizationRepository.create(createTestOrganization(name = "Org $i"))
             }
 
-            val page = repository.find(limit = 3)
+            val page = OrganizationRepository.find(limit = 3)
 
             assertEquals(3, page.items.size)
         }
@@ -103,10 +101,10 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `find should return nextCursor when more items exist`() {
         runBlocking {
             repeat(5) { i ->
-                repository.create(createTestOrganization(name = "Org $i"))
+                OrganizationRepository.create(createTestOrganization(name = "Org $i"))
             }
 
-            val page = repository.find(limit = 3)
+            val page = OrganizationRepository.find(limit = 3)
 
             assertEquals(3, page.items.size)
             assertNotNull(page.nextCursor)
@@ -117,10 +115,10 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `find should return null nextCursor when no more items`() =
         runBlocking {
             repeat(3) { i ->
-                repository.create(createTestOrganization(name = "Org $i"))
+                OrganizationRepository.create(createTestOrganization(name = "Org $i"))
             }
 
-            val page = repository.find(limit = 5)
+            val page = OrganizationRepository.find(limit = 5)
 
             assertEquals(3, page.items.size)
             assertNull(page.nextCursor)
@@ -130,14 +128,14 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `find with cursor should return items after cursor`() =
         runBlocking {
             repeat(5) { i ->
-                repository.create(createTestOrganization(name = "Org $i"))
+                OrganizationRepository.create(createTestOrganization(name = "Org $i"))
             }
 
-            val firstPage = repository.find(limit = 2)
+            val firstPage = OrganizationRepository.find(limit = 2)
             assertEquals(2, firstPage.items.size)
             assertNotNull(firstPage.nextCursor)
 
-            val secondPage = repository.find(limit = 2, cursor = firstPage.nextCursor)
+            val secondPage = OrganizationRepository.find(limit = 2, cursor = firstPage.nextCursor)
             assertEquals(2, secondPage.items.size)
             assertNotNull(secondPage.nextCursor)
 
@@ -146,7 +144,7 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
             val secondPageIds = secondPage.items.map { it.id }.toSet()
             assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
 
-            val thirdPage = repository.find(limit = 2, cursor = secondPage.nextCursor)
+            val thirdPage = OrganizationRepository.find(limit = 2, cursor = secondPage.nextCursor)
             assertEquals(1, thirdPage.items.size)
             assertNull(thirdPage.nextCursor)
         }
@@ -155,10 +153,10 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     fun `find should enforce max page size`() =
         runBlocking {
             repeat(150) { i ->
-                repository.create(createTestOrganization(name = "Org $i"))
+                OrganizationRepository.create(createTestOrganization(name = "Org $i"))
             }
 
-            val page = repository.find(limit = 200)
+            val page = OrganizationRepository.find(limit = 200)
 
             assertEquals(OrganizationRepository.MAX_PAGE_SIZE, page.items.size)
         }

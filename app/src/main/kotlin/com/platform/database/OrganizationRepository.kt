@@ -20,11 +20,9 @@ import java.util.UUID
 /**
  * Repository for Organization CRUD operations.
  */
-class OrganizationRepository {
-    companion object {
-        const val DEFAULT_PAGE_SIZE = 20
-        const val MAX_PAGE_SIZE = 100
-    }
+object OrganizationRepository {
+    const val DEFAULT_PAGE_SIZE = 20
+    const val MAX_PAGE_SIZE = 100
 
     suspend fun create(organization: Organization): Organization =
         newSuspendedTransaction {

@@ -22,9 +22,6 @@ import kotlin.test.assertTrue
  */
 class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
     private val adapter = ManualSeedAdapter()
-    private val organizationRepository = OrganizationRepository()
-    private val serviceRepository = ServiceRepository()
-
     private lateinit var testOrg: Organization
 
     @BeforeEach
@@ -36,7 +33,7 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
                     name = "Test Organization",
                     createdAt = Instant.now(),
                 )
-            organizationRepository.create(testOrg)
+            OrganizationRepository.create(testOrg)
         }
     }
 
@@ -48,11 +45,11 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
 
             // Persist all discovered services
             discoveredServices.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
             // Verify services were persisted
-            val page = serviceRepository.find(organizationId = testOrg.id, limit = 100)
+            val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
             assertEquals(discoveredServices.size, page.items.size)
         }
 
@@ -62,10 +59,10 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
             val discoveredServices = adapter.discoverServices(testOrg.id)
 
             discoveredServices.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
-            val page = serviceRepository.find(organizationId = testOrg.id, limit = 100)
+            val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
             assertTrue(page.items.all { it.provider == Provider.MANUAL_SEED })
         }
 
@@ -75,14 +72,14 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
             val discoveredServices = adapter.discoverServices(testOrg.id)
 
             discoveredServices.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
             // Find a specific service and verify metadata
             val orderService = discoveredServices.find { it.name == "order-service" }
             assertNotNull(orderService)
 
-            val persisted = serviceRepository.findById(orderService.id)
+            val persisted = ServiceRepository.findById(orderService.id)
             assertNotNull(persisted)
             assertNotNull(persisted.metadata)
             assertEquals(orderService.metadata, persisted.metadata)
@@ -94,12 +91,12 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
             val discoveredServices = adapter.discoverServices(testOrg.id)
 
             discoveredServices.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
             // Filter by backend namespace
             val backendServices =
-                serviceRepository.find(
+                ServiceRepository.find(
                     organizationId = testOrg.id,
                     namespace = "backend",
                     limit = 100,
@@ -117,12 +114,12 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
             val discoveredServices = adapter.discoverServices(testOrg.id)
 
             discoveredServices.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
             // Filter by cluster
             val clusterServices =
-                serviceRepository.find(
+                ServiceRepository.find(
                     organizationId = testOrg.id,
                     cluster = "prod-us-east",
                     limit = 100,
@@ -138,7 +135,7 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
             // First discovery and persist
             val firstDiscovery = adapter.discoverServices(testOrg.id)
             firstDiscovery.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
             // Second discovery (simulating re-running discovery)
@@ -146,11 +143,11 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
 
             // Upsert should update existing services
             secondDiscovery.forEach { service ->
-                serviceRepository.upsert(service)
+                ServiceRepository.upsert(service)
             }
 
             // Should still have the same number of services (no duplicates)
-            val page = serviceRepository.find(organizationId = testOrg.id, limit = 100)
+            val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
             assertEquals(firstDiscovery.size, page.items.size)
         }
 
@@ -160,11 +157,11 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
             val discoveredServices = adapter.discoverServices(testOrg.id)
 
             discoveredServices.forEach { service ->
-                serviceRepository.create(service)
+                ServiceRepository.create(service)
             }
 
             // Find Kafka service
-            val allServices = serviceRepository.find(organizationId = testOrg.id, limit = 100)
+            val allServices = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
             val kafka = allServices.items.find { it.name == "kafka" }
 
             assertNotNull(kafka)

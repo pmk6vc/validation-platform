@@ -13,8 +13,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
-    private val repository = CapturedInputRepository()
-
     private lateinit var testServiceId: String
     private lateinit var otherServiceId: String
 
@@ -76,7 +74,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             val input = createTestInput(method = "GET", url = "/api/orders")
 
-            val created = repository.create(input)
+            val created = CapturedInputRepository.create(input)
 
             assertEquals(input.id, created.id)
             assertEquals(testServiceId, created.serviceId)
@@ -94,9 +92,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                     responseStatus = 201,
                     latencyMs = 125L,
                 )
-            repository.create(input)
+            CapturedInputRepository.create(input)
 
-            val found = repository.findById(input.id)
+            val found = CapturedInputRepository.findById(input.id)
 
             assertNotNull(found)
             assertEquals(input.id, found.id)
@@ -110,7 +108,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `findById should return null when not exists`() =
         runBlocking {
-            val found = repository.findById(UUID.randomUUID().toString())
+            val found = CapturedInputRepository.findById(UUID.randomUUID().toString())
 
             assertNull(found)
         }
@@ -127,9 +125,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                     sourceIp = "192.168.1.10",
                     destinationIp = "192.168.1.20",
                 )
-            repository.create(input)
+            CapturedInputRepository.create(input)
 
-            val found = repository.findById(input.id)
+            val found = CapturedInputRepository.findById(input.id)
 
             assertNotNull(found)
             assertEquals(requestHeaders, found.requestHeaders)
@@ -151,9 +149,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                     sourceIp = null,
                     destinationIp = null,
                 )
-            repository.create(input)
+            CapturedInputRepository.create(input)
 
-            val found = repository.findById(input.id)
+            val found = CapturedInputRepository.findById(input.id)
 
             assertNotNull(found)
             assertNull(found.requestHeaders)
@@ -173,9 +171,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                     createTestInput(url = "/api/orders/$i")
                 }
 
-            repository.createBatch(inputs)
+            CapturedInputRepository.createBatch(inputs)
 
-            val page = repository.find(serviceId = testServiceId)
+            val page = CapturedInputRepository.find(serviceId = testServiceId)
             assertEquals(5, page.items.size)
         }
 
@@ -184,7 +182,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             val inputs = (1..3).map { createTestInput() }
 
-            val result = repository.createBatch(inputs)
+            val result = CapturedInputRepository.createBatch(inputs)
 
             assertEquals(inputs.map { it.id }.toSet(), result.map { it.id }.toSet())
         }
@@ -195,11 +193,11 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
             val input1 = createTestInput(serviceId = testServiceId)
             val input2 = createTestInput(serviceId = testServiceId)
             val input3 = createTestInput(serviceId = otherServiceId)
-            repository.create(input1)
-            repository.create(input2)
-            repository.create(input3)
+            CapturedInputRepository.create(input1)
+            CapturedInputRepository.create(input2)
+            CapturedInputRepository.create(input3)
 
-            val page = repository.find(serviceId = testServiceId)
+            val page = CapturedInputRepository.find(serviceId = testServiceId)
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.serviceId == testServiceId })
@@ -210,10 +208,10 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             val httpInput1 = createTestInput(inputType = InputType.HTTP)
             val httpInput2 = createTestInput(inputType = InputType.HTTP)
-            repository.create(httpInput1)
-            repository.create(httpInput2)
+            CapturedInputRepository.create(httpInput1)
+            CapturedInputRepository.create(httpInput2)
 
-            val page = repository.find(inputType = InputType.HTTP)
+            val page = CapturedInputRepository.find(inputType = InputType.HTTP)
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.inputType == InputType.HTTP })
@@ -232,11 +230,11 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                     serviceId = otherServiceId,
                     inputType = InputType.HTTP,
                 )
-            repository.create(match)
-            repository.create(wrongService)
+            CapturedInputRepository.create(match)
+            CapturedInputRepository.create(wrongService)
 
             val page =
-                repository.find(
+                CapturedInputRepository.find(
                     serviceId = testServiceId,
                     inputType = InputType.HTTP,
                 )
@@ -248,9 +246,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `find with limit should return at most limit items`() =
         runBlocking {
-            repeat(5) { repository.create(createTestInput()) }
+            repeat(5) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = repository.find(limit = 3)
+            val page = CapturedInputRepository.find(limit = 3)
 
             assertEquals(3, page.items.size)
         }
@@ -258,9 +256,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `find should return nextCursor when more items exist`() =
         runBlocking {
-            repeat(5) { repository.create(createTestInput()) }
+            repeat(5) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = repository.find(limit = 3)
+            val page = CapturedInputRepository.find(limit = 3)
 
             assertEquals(3, page.items.size)
             assertNotNull(page.nextCursor)
@@ -269,9 +267,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `find should return null nextCursor when no more items`() =
         runBlocking {
-            repeat(3) { repository.create(createTestInput()) }
+            repeat(3) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = repository.find(limit = 5)
+            val page = CapturedInputRepository.find(limit = 5)
 
             assertEquals(3, page.items.size)
             assertNull(page.nextCursor)
@@ -280,13 +278,13 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `find with cursor should return items after cursor`() =
         runBlocking {
-            repeat(5) { repository.create(createTestInput()) }
+            repeat(5) { CapturedInputRepository.create(createTestInput()) }
 
-            val firstPage = repository.find(limit = 2)
+            val firstPage = CapturedInputRepository.find(limit = 2)
             assertEquals(2, firstPage.items.size)
             assertNotNull(firstPage.nextCursor)
 
-            val secondPage = repository.find(limit = 2, cursor = firstPage.nextCursor)
+            val secondPage = CapturedInputRepository.find(limit = 2, cursor = firstPage.nextCursor)
             assertEquals(2, secondPage.items.size)
             assertNotNull(secondPage.nextCursor)
 
@@ -294,7 +292,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
             val secondPageIds = secondPage.items.map { it.id }.toSet()
             assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
 
-            val thirdPage = repository.find(limit = 2, cursor = secondPage.nextCursor)
+            val thirdPage = CapturedInputRepository.find(limit = 2, cursor = secondPage.nextCursor)
             assertEquals(1, thirdPage.items.size)
             assertNull(thirdPage.nextCursor)
         }
@@ -302,9 +300,9 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `find should enforce max page size`() =
         runBlocking {
-            repeat(150) { repository.create(createTestInput()) }
+            repeat(150) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = repository.find(limit = 200)
+            val page = CapturedInputRepository.find(limit = 200)
 
             assertEquals(CapturedInputRepository.MAX_PAGE_SIZE, page.items.size)
         }
@@ -312,10 +310,10 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `countByService should return correct count`() =
         runBlocking {
-            repeat(4) { repository.create(createTestInput(serviceId = testServiceId)) }
-            repeat(2) { repository.create(createTestInput(serviceId = otherServiceId)) }
+            repeat(4) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId)) }
+            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherServiceId)) }
 
-            val count = repository.countByService(testServiceId)
+            val count = CapturedInputRepository.countByService(testServiceId)
 
             assertEquals(4L, count)
         }
@@ -323,7 +321,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `countByService should return zero when no inputs exist`() =
         runBlocking {
-            val count = repository.countByService(testServiceId)
+            val count = CapturedInputRepository.countByService(testServiceId)
 
             assertEquals(0L, count)
         }
@@ -331,20 +329,20 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `deleteByService should remove all inputs for that service`() =
         runBlocking {
-            repeat(3) { repository.create(createTestInput(serviceId = testServiceId)) }
-            repeat(2) { repository.create(createTestInput(serviceId = otherServiceId)) }
+            repeat(3) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId)) }
+            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherServiceId)) }
 
-            val deleted = repository.deleteByService(testServiceId)
+            val deleted = CapturedInputRepository.deleteByService(testServiceId)
 
             assertEquals(3L, deleted)
-            assertEquals(0L, repository.countByService(testServiceId))
-            assertEquals(2L, repository.countByService(otherServiceId))
+            assertEquals(0L, CapturedInputRepository.countByService(testServiceId))
+            assertEquals(2L, CapturedInputRepository.countByService(otherServiceId))
         }
 
     @Test
     fun `deleteByService should return zero when no inputs exist`() =
         runBlocking {
-            val deleted = repository.deleteByService(testServiceId)
+            val deleted = CapturedInputRepository.deleteByService(testServiceId)
 
             assertEquals(0L, deleted)
         }
