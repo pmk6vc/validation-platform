@@ -74,10 +74,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("\"items\""))
-            assertTrue(body.contains("[]"))
-            assertTrue(body.contains("\"nextCursor\""))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(emptyList(), page.items)
+            assertNull(page.nextCursor)
         }
 
     @Test
@@ -93,9 +96,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("order-service"))
-            assertTrue(body.contains("payment-service"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(2, page.items.size)
+            assertEquals(setOf("order-service", "payment-service"), page.items.map { it.name }.toSet())
         }
 
     @Test
@@ -125,9 +132,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services?organizationId=${testOrg.id}")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("my-service"))
-            assertTrue(!body.contains("other-service"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("my-service", page.items[0].name)
         }
 
     @Test
@@ -143,9 +154,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services?organizationId=${testOrg.id}&cluster=prod-us-east")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("prod-service"))
-            assertTrue(!body.contains("staging-service"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("prod-service", page.items[0].name)
         }
 
     @Test
@@ -161,9 +176,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services?organizationId=${testOrg.id}&cluster=prod&namespace=payments")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("payments-api"))
-            assertTrue(!body.contains("orders-api"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("payments-api", page.items[0].name)
         }
 
     @Test
@@ -181,10 +200,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services?namespace=payments")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("payments-api"))
-            assertTrue(body.contains("payments-worker"))
-            assertTrue(!body.contains("orders-api"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(2, page.items.size)
+            assertEquals(setOf("payments-api", "payments-worker"), page.items.map { it.name }.toSet())
         }
 
     @Test
@@ -202,10 +224,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services?cluster=prod")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("prod-service-1"))
-            assertTrue(body.contains("prod-service-2"))
-            assertTrue(!body.contains("staging-service"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(2, page.items.size)
+            assertEquals(setOf("prod-service-1", "prod-service-2"), page.items.map { it.name }.toSet())
         }
 
     @Test
@@ -238,11 +263,10 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services/${svc.id}")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("my-service"))
-            assertTrue(body.contains(svc.id))
-            assertTrue(body.contains("version"))
-            assertTrue(body.contains("1.0"))
+            val result = Json.decodeFromString<Service>(response.bodyAsText())
+            assertEquals("my-service", result.name)
+            assertEquals(svc.id, result.id)
+            assertEquals(mapOf("version" to "1.0"), result.metadata)
         }
 
     @Test
@@ -286,11 +310,11 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
                 }
 
             assertEquals(HttpStatusCode.Created, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("new-service"))
-            assertTrue(body.contains("\"id\""))
-            assertTrue(body.contains("KUBERNETES"))
-            assertTrue(body.contains(testOrg.id))
+            val svc = Json.decodeFromString<Service>(response.bodyAsText())
+            assertEquals("new-service", svc.name)
+            assertNotNull(svc.id)
+            assertEquals(Provider.KUBERNETES, svc.provider)
+            assertEquals(testOrg.id, svc.organizationId)
         }
 
     @Test
@@ -318,9 +342,10 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
             val getResponse = jsonClient.get("/api/services/${created.id}")
             assertEquals(HttpStatusCode.OK, getResponse.status)
-            val body = getResponse.bodyAsText()
-            assertTrue(body.contains("persist-service"))
-            assertTrue(body.contains("platform"))
+            val fetched = Json.decodeFromString<Service>(getResponse.bodyAsText())
+            assertEquals("persist-service", fetched.name)
+            assertEquals(created.id, fetched.id)
+            assertEquals(mapOf("team" to "platform"), fetched.metadata)
         }
 
     @Test
@@ -406,14 +431,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/services/${svc.id}")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("full-service"))
-            assertTrue(body.contains("production"))
-            assertTrue(body.contains("backend"))
-            assertTrue(body.contains("KUBERNETES"))
-            assertTrue(body.contains("platform"))
-            assertTrue(body.contains("critical"))
-            assertTrue(body.contains(testOrg.id))
+            val result = Json.decodeFromString<Service>(response.bodyAsText())
+            assertEquals("full-service", result.name)
+            assertEquals("production", result.cluster)
+            assertEquals("backend", result.namespace)
+            assertEquals(Provider.KUBERNETES, result.provider)
+            assertEquals(mapOf("team" to "platform", "tier" to "critical"), result.metadata)
+            assertEquals(testOrg.id, result.organizationId)
         }
 
     @Test

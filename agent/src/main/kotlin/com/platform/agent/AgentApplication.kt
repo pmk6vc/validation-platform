@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -116,6 +117,8 @@ suspend fun trafficCaptureLoop(
                     collectorClient = collectorClient,
                     transformer = transformer,
                 )
+
+            touchHeartbeat()
 
             if (result.lag != null && result.lag > LAG_WARN_THRESHOLD) {
                 // TODO: Surface lag to the platform (e.g. via config poll or heartbeat)
@@ -240,3 +243,10 @@ suspend fun captureOneBatch(
 
 /** Warn when the newest drained entry is more than this behind wall clock */
 private val LAG_WARN_THRESHOLD: Duration = 15.seconds
+
+/** Liveness probe heartbeat file. Kubernetes checks this file's mtime. */
+val HEARTBEAT_FILE: File = File(System.getenv("HEARTBEAT_FILE") ?: "/tmp/agent-alive")
+
+fun touchHeartbeat() {
+    HEARTBEAT_FILE.writeText(System.currentTimeMillis().toString())
+}

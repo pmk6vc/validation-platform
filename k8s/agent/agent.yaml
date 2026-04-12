@@ -54,6 +54,12 @@ spec:
               value: "http://collector.validation.svc.cluster.local:8081"
             - name: API_KEY
               value: "test-api-key"
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "find /tmp/agent-alive -mmin -1 | grep -q ."]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
           resources:
             requests:
               memory: "64Mi"

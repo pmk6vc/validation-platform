@@ -6,6 +6,8 @@ RUN gradle :agent:installDist --no-daemon
 
 # Run stage
 FROM eclipse-temurin:21-jre-alpine
+RUN addgroup -S agent && adduser -S agent -G agent
 WORKDIR /app
 COPY --from=build /app/agent/build/install/agent/ .
+USER agent
 ENTRYPOINT ["./bin/agent"]
