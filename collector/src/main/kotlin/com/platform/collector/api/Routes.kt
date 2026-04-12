@@ -1,6 +1,7 @@
 package com.platform.collector.api
 
 import com.platform.collector.database.CapturedInputRepository
+import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
@@ -64,7 +65,7 @@ fun Application.configureRouting() {
                     }
 
                     val deleted = CapturedInputRepository.deleteByService(serviceId)
-                    call.respond(mapOf("deleted" to deleted))
+                    call.respond(DeleteResponse(deleted = deleted))
                 }
             }
         }

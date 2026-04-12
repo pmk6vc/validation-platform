@@ -3,6 +3,7 @@ package com.platform.api
 import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.models.Organization
+import com.platform.models.Page
 import com.platform.module
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -19,7 +20,8 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 
 class OrganizationRoutesTest : AppDatabaseTestBase() {
@@ -38,10 +40,13 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/organizations")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("\"items\""))
-            assertTrue(body.contains("[]"))
-            assertTrue(body.contains("\"nextCursor\""))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Organization.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(emptyList(), page.items)
+            assertNull(page.nextCursor)
         }
 
     @Test
@@ -57,9 +62,13 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/organizations")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("Org 1"))
-            assertTrue(body.contains("Org 2"))
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Organization.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(2, page.items.size)
+            assertEquals(setOf("Org 1", "Org 2"), page.items.map { it.name }.toSet())
         }
 
     @Test
@@ -73,9 +82,9 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             val response = client.get("/api/organizations/${org.id}")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("Test Org"))
-            assertTrue(body.contains(org.id))
+            val result = Json.decodeFromString<Organization>(response.bodyAsText())
+            assertEquals("Test Org", result.name)
+            assertEquals(org.id, result.id)
         }
 
     @Test
@@ -130,10 +139,10 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
                 }
 
             assertEquals(HttpStatusCode.Created, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("Acme Corp"))
-            assertTrue(body.contains("\"id\""))
-            assertTrue(body.contains("\"createdAt\""))
+            val org = Json.decodeFromString<Organization>(response.bodyAsText())
+            assertEquals("Acme Corp", org.name)
+            assertNotNull(org.id)
+            assertNotNull(org.createdAt)
         }
 
     @Test
@@ -153,7 +162,9 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             val getResponse = jsonClient.get("/api/organizations/${created.id}")
             assertEquals(HttpStatusCode.OK, getResponse.status)
-            assertTrue(getResponse.bodyAsText().contains("Persist Corp"))
+            val fetched = Json.decodeFromString<Organization>(getResponse.bodyAsText())
+            assertEquals("Persist Corp", fetched.name)
+            assertEquals(created.id, fetched.id)
         }
 
     @Test

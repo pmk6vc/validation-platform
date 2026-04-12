@@ -85,9 +85,7 @@ class KubesharkClient(
      * replay), while entries within the lookback window are accepted to
      * preserve in-session out-of-order traffic.
      *
-     * Only read/written from the single streamer coroutine, but marked
-     * `@Volatile` to make the memory-model behavior explicit and allow
-     * future observability hooks to read it from other threads.
+     * Only read/written from the single streamer coroutine.
      *
      * Trade-off vs an ID-based LRU cache:
      *   - Constant memory (one Long) — no sizing, no hidden failure at high rates
@@ -96,7 +94,6 @@ class KubesharkClient(
      *   - Drops in-session entries whose regression exceeds the lookback
      *     (measured on our test cluster: max regression 4.8s, so 5s covers all)
      */
-    @Volatile
     private var lastSeenTimestamp: Long = 0L
 
     /** Handle to the background streamer, exposed for test/shutdown introspection. */

@@ -4,6 +4,7 @@ import com.platform.collector.database.AppApiTestHelper
 import com.platform.collector.database.CapturedInputRepository
 import com.platform.collector.database.CollectorDatabaseTestBase
 import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import com.platform.collector.module
 import com.platform.models.Page
@@ -20,9 +21,11 @@ import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
+    private val lenientJson = Json { ignoreUnknownKeys = true }
     private lateinit var testServiceId: String
 
     @BeforeEach
@@ -65,10 +68,13 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("\"items\""))
-            assertTrue(body.contains("[]"))
-            assertTrue(body.contains("\"nextCursor\""))
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(emptyList(), page.items)
+            assertNull(page.nextCursor)
         }
 
     @Test
@@ -84,9 +90,13 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("/api/orders/1"))
-            assertTrue(body.contains("/api/orders/2"))
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(2, page.items.size)
+            assertEquals(setOf("/api/orders/1", "/api/orders/2"), page.items.map { it.url }.toSet())
         }
 
     @Test
@@ -111,9 +121,13 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs?serviceId=$testServiceId")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("/api/mine"))
-            assertTrue(!body.contains("/api/other"))
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("/api/mine", page.items[0].url)
         }
 
     @Test
@@ -127,8 +141,14 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs?inputType=HTTP")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("/api/http"))
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("/api/http", page.items[0].url)
+            assertEquals(InputType.HTTP, page.items[0].inputType)
         }
 
     @Test
@@ -153,10 +173,13 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs?limit=3")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("\"nextCursor\""))
-            // Should not contain null nextCursor since there are more items
-            assertTrue(!body.contains("\"nextCursor\" : null"))
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(3, page.items.size)
+            assertNotNull(page.nextCursor)
         }
 
     @Test
@@ -170,12 +193,10 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
             val firstResponse = client.get("/api/captured-inputs?limit=2")
             assertEquals(HttpStatusCode.OK, firstResponse.status)
-            val firstBody = firstResponse.bodyAsText()
-            val lenientJson = Json { ignoreUnknownKeys = true }
             val firstPage =
                 lenientJson.decodeFromString(
                     Page.serializer(CapturedInput.serializer()),
-                    firstBody,
+                    firstResponse.bodyAsText(),
                 )
             assertEquals(2, firstPage.items.size)
             assertNotNull(firstPage.nextCursor)
@@ -230,11 +251,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.get("/api/captured-inputs/${input.id}")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains(input.id))
-            assertTrue(body.contains("POST"))
-            assertTrue(body.contains("/api/orders"))
-            assertTrue(body.contains("201"))
+            val result = lenientJson.decodeFromString<CapturedInput>(response.bodyAsText())
+            assertEquals(input.id, result.id)
+            assertEquals("POST", result.method)
+            assertEquals("/api/orders", result.url)
+            assertEquals(201, result.responseStatus)
         }
 
     @Test
@@ -267,9 +288,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.delete("/api/captured-inputs?serviceId=$testServiceId")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("\"deleted\""))
-            assertTrue(body.contains("3"))
+            val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
+            assertEquals(3, result.deleted)
         }
 
     @Test
@@ -290,8 +310,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val response = client.delete("/api/captured-inputs?serviceId=${UUID.randomUUID()}")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val body = response.bodyAsText()
-            assertTrue(body.contains("\"deleted\""))
-            assertTrue(body.contains("0"))
+            val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
+            assertEquals(0, result.deleted)
         }
 }
