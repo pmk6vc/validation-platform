@@ -30,12 +30,15 @@ class TrafficTransformer(
      * 3. Only keep entries with required fields (method, url, status)
      * 4. Apply sampling rate
      *
-     * TODO: Push the HTTP protocol filter into the KFL query sent to Kubeshark
-     *       (KubesharkClient.collectEntries) so the server stops streaming
-     *       non-HTTP entries we would discard anyway. At full production traffic,
-     *       client-side filtering burns agent CPU parsing entries the agent
-     *       immediately throws away. Same goes for the `dst.name` service filter
-     *       once we know KFL syntax for it.
+     * Filters 1 and 2 are also pushed to Kubeshark as a KFL query via
+     * [KubesharkClient.buildKflQuery], so the server only streams entries that
+     * would pass these filters. The checks here are kept as a safety net for
+     * two cases:
+     *   - The brief window between a config change (new targetServices) and the
+     *     next WebSocket reconnect, during which the old KFL filter is still
+     *     active on the server.
+     *   - Any Kubeshark version or configuration where the KFL query is not
+     *     honoured as expected.
      *
      * TODO: Support configurable header stripping (e.g. Authorization, Cookie)
      *       via DynamicConfig so customers can redact sensitive headers before

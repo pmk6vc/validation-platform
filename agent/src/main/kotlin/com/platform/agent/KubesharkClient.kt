@@ -18,6 +18,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.net.URI
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -47,14 +48,28 @@ import kotlin.time.Duration.Companion.seconds
  * passed to the constructor. When that scope is cancelled, the streamer and
  * the WebSocket session are cancelled with it. No explicit shutdown is needed.
  *
- * **Filtering:** The client sends an empty KFL filter on connect, so Kubeshark
- * streams every L7 entry. Protocol and target-service filtering is handled
- * client-side in [TrafficTransformer].
+ * **KFL filtering:** The client sends a KFL query as the first WebSocket text
+ * frame. Kubeshark hub parses the query and only streams matching entries,
+ * reducing the volume of JSON the agent must parse and discard.
  *
- * TODO: Figure out the right KFL syntax and push HTTP protocol + target-service
- *  filtering to the server. At high traffic, streaming every L7 entry only to
- *  discard most of them wastes agent CPU (JSON parsing dominates). See
- *  https://docs.kubeshark.co/en/filtering for KFL reference.
+ * The initial query is [buildKflQuery] of whatever [targetServices] are known
+ * at construction. When target services change (config poll), callers invoke
+ * [updateKflQuery] with the new query string. The updated query takes effect
+ * on the next reconnect — changing the filter mid-session is not supported by
+ * the Kubeshark protocol, so we rely on the persistent-session reconnect cycle
+ * to pick up the change.
+ *
+ * **Why not reconnect immediately on filter change?** Reconnects pay the
+ * 4–10s history-replay cost. If `targetServices` changes infrequently (every
+ * ~60s config poll), waiting for a natural reconnect is fine. The client-side
+ * filter in [TrafficTransformer] continues to dedup entries that Kubeshark
+ * streams between the config change and the next reconnect.
+ *
+ * **Safe KFL syntax (validated 2026-04-11):** An empty string means "no
+ * filter, stream everything". The `http` keyword limits the stream to HTTP
+ * entries. `dst.name == "svc"` limits to a specific destination service.
+ * Non-empty strings that fail KFL parsing cause the hub to silently stream
+ * nothing — use [buildKflQuery] rather than constructing raw strings.
  */
 class KubesharkClient(
     private val httpClient: HttpClient,
@@ -62,6 +77,7 @@ class KubesharkClient(
     scope: CoroutineScope,
     capacity: Int = DEFAULT_CHANNEL_CAPACITY,
     private val reconnectDelay: Duration = DEFAULT_RECONNECT_DELAY,
+    initialKflQuery: String = "",
 ) {
     private val logger = LoggerFactory.getLogger(KubesharkClient::class.java)
     private val json = Json { ignoreUnknownKeys = true }
@@ -70,6 +86,29 @@ class KubesharkClient(
     private val parsedUri = URI.create(baseUrl)
     private val wsHost: String = parsedUri.host
     private val wsPort: Int = if (parsedUri.port > 0) parsedUri.port else 80
+
+    /**
+     * The KFL query sent to Kubeshark at the start of each WebSocket session.
+     * Updated atomically by [updateKflQuery]; the new query takes effect on the
+     * next reconnect. Each [runSession] reads this once on entry.
+     */
+    private val kflQueryRef = AtomicReference(initialKflQuery)
+
+    /**
+     * Replace the KFL query used for future WebSocket sessions.
+     *
+     * The change takes effect the next time the streamer reconnects (e.g. after
+     * a server-side close or a network failure). Until then, the old session
+     * continues streaming under the old filter — but [TrafficTransformer]
+     * continues to filter client-side as a safety net, so no spurious entries
+     * reach the collector during the transition window.
+     *
+     * Calling this with the same query that is already set is a no-op with
+     * respect to reconnect behavior.
+     */
+    fun updateKflQuery(query: String) {
+        kflQueryRef.set(query)
+    }
 
     /**
      * Bounded channel between the background streamer (producer) and the
@@ -152,12 +191,16 @@ class KubesharkClient(
     }
 
     /**
-     * Run one WebSocket session. Opens the connection, sends the empty KFL
-     * filter, and forwards every text frame (parsed as [KubesharkEntry]) into
-     * the channel. Returns when the server closes the stream (`incoming`
-     * iteration ends) or throws on error.
+     * Run one WebSocket session. Opens the connection, sends the current KFL
+     * query as the first text frame, then forwards every subsequent text frame
+     * (parsed as [KubesharkEntry]) into the channel. Returns when the server
+     * closes the stream (`incoming` iteration ends) or throws on error.
+     *
+     * The KFL query is read once from [kflQueryRef] at session start; changes
+     * made via [updateKflQuery] take effect on the next reconnect.
      */
     private suspend fun runSession() {
+        val kflQuery = kflQueryRef.get()
         logger.info("Connecting to Kubeshark WebSocket at {}:{}/api/wsFull", wsHost, wsPort)
         httpClient.webSocket(
             method = HttpMethod.Get,
@@ -165,12 +208,16 @@ class KubesharkClient(
             port = wsPort,
             path = "/api/wsFull",
         ) {
-            // Send empty KFL filter — non-empty strings like "http" are parsed as
-            // queries and the hub will silently stream nothing if the syntax is
-            // wrong. Empty = "no filter, send everything"; TrafficTransformer
-            // filters client-side. See class-level TODO for server-side filtering.
-            send(Frame.Text(""))
-            logger.info("Kubeshark WebSocket session open, streaming entries")
+            // Send the KFL query as the first frame. Kubeshark hub parses it and
+            // streams only matching entries. An empty string means "no filter,
+            // stream everything". The TrafficTransformer still filters client-side
+            // as a safety net for the window between a config change and the next
+            // reconnect.
+            send(Frame.Text(kflQuery))
+            logger.info(
+                "Kubeshark WebSocket session open, KFL filter: {}",
+                kflQuery.ifEmpty { "(none — streaming all)" },
+            )
 
             for (frame in incoming) {
                 if (frame !is Frame.Text) continue
@@ -239,5 +286,54 @@ class KubesharkClient(
          * out-of-order would happen every second.
          */
         val DEDUP_LOOKBACK: Duration = 5.seconds
+
+        /**
+         * Build a KFL query string that limits Kubeshark to HTTP entries
+         * destined for the given target services.
+         *
+         * KFL syntax (validated against Kubeshark docs):
+         *   - `http` — bare keyword, filters to HTTP protocol only
+         *   - `dst.name == "svc"` — matches entries where the destination
+         *     pod/service name equals the given string
+         *   - Multiple services are combined with `or` inside parentheses
+         *
+         * Examples:
+         * ```
+         * buildKflQuery(emptyMap())
+         *   → "http"
+         *
+         * buildKflQuery(mapOf("order-service" to "svc-1"))
+         *   → "http and dst.name == \"order-service\""
+         *
+         * buildKflQuery(mapOf("order-service" to "svc-1", "api-gateway" to "svc-2"))
+         *   → "http and (dst.name == \"order-service\" or dst.name == \"api-gateway\")"
+         * ```
+         *
+         * When [targetServices] is empty we emit `http` rather than an empty
+         * string. An empty string means "no filter" in KFL (stream everything),
+         * but when the agent has no target services configured it should still
+         * restrict to HTTP to reduce the parsing load — [TrafficTransformer]'s
+         * destination filter will then drop everything until services appear.
+         *
+         * @param targetServices K8s service name → platform service ID map
+         *   (only the keys matter for the KFL query)
+         */
+        fun buildKflQuery(targetServices: Map<String, String>): String {
+            if (targetServices.isEmpty()) return "http"
+
+            val serviceNames = targetServices.keys.toList()
+            val dstFilter =
+                if (serviceNames.size == 1) {
+                    """dst.name == "${serviceNames[0]}""""
+                } else {
+                    serviceNames.joinToString(
+                        separator = " or ",
+                        prefix = "(",
+                        postfix = ")",
+                    ) { name -> """dst.name == "$name"""" }
+                }
+
+            return "http and $dstFilter"
+        }
     }
 }

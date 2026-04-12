@@ -16,19 +16,23 @@ import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 /**
- * Tests for [KubesharkClient]'s persistent WebSocket session and drainBatch API.
+ * Tests for [KubesharkClient]'s persistent WebSocket session, drainBatch API,
+ * KFL query management ([updateKflQuery]), and [KubesharkClient.buildKflQuery].
  *
- * Each test spins up an embedded Ktor Netty server on a random port that
- * implements a fake `/api/wsFull` handler. The real [KubesharkClient] connects
- * to it over a real WebSocket, so we're exercising the full transport stack
- * (Ktor CIO client → TCP → Ktor Netty server) without mocking.
+ * Each transport test spins up an embedded Ktor Netty server on a random port
+ * that implements a fake `/api/wsFull` handler. The real [KubesharkClient]
+ * connects to it over a real WebSocket, so we're exercising the full transport
+ * stack (Ktor CIO client → TCP → Ktor Netty server) without mocking.
  */
 class KubesharkClientTest {
     private fun wsEntry(
@@ -58,19 +62,28 @@ class KubesharkClientTest {
      * Handles server startup/teardown and HTTP client creation. The test body
      * runs inside the [CoroutineScope] that owns the client's streamer job,
      * so cancelling the scope (via `runBlocking` exit) tears everything down.
+     *
+     * @param initialKflQuery KFL query to pass as [KubesharkClient.initialKflQuery].
+     * @param captureReceivedFilter When true, the server records the KFL filter
+     *   frame it receives into [receivedFilters] so tests can assert on it.
+     * @param receivedFilters Mutable list populated with each KFL filter the
+     *   server receives (one per WebSocket session the client opens).
      */
     private fun withClient(
         serverBlock: suspend DefaultWebSocketServerSession.() -> Unit,
         testBlock: suspend CoroutineScope.(KubesharkClient) -> Unit,
+        initialKflQuery: String = "",
+        reconnectDelay: Duration = KubesharkClient.DEFAULT_RECONNECT_DELAY,
+        receivedFilters: MutableList<String> = mutableListOf(),
     ) = runBlocking {
         val server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
             embeddedServer(Netty, port = 0) {
                 install(ServerWebSockets)
                 routing {
                     webSocket("/api/wsFull") {
-                        // Read the KFL filter and assert it's empty
+                        // Read the KFL filter frame and record it for the test to assert on
                         val filter = (incoming.receive() as Frame.Text).readText()
-                        assertEquals("", filter)
+                        synchronized(receivedFilters) { receivedFilters.add(filter) }
                         serverBlock()
                     }
                 }
@@ -88,13 +101,170 @@ class KubesharkClientTest {
             }
 
         try {
-            val client = KubesharkClient(httpClient, "http://127.0.0.1:$port", this)
+            val client =
+                KubesharkClient(
+                    httpClient = httpClient,
+                    baseUrl = "http://127.0.0.1:$port",
+                    scope = this,
+                    initialKflQuery = initialKflQuery,
+                    reconnectDelay = reconnectDelay,
+                )
             testBlock(client)
         } finally {
             httpClient.close()
             server.stop(100, 100)
         }
     }
+
+    // -----------------------------------------------------------------------
+    // KFL filter transmission — assert what the server actually receives
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `sends empty KFL filter when constructed with default`() {
+        val receivedFilters = mutableListOf<String>()
+        withClient(
+            serverBlock = { delay(300.milliseconds) },
+            testBlock = { delay(200.milliseconds) },
+            receivedFilters = receivedFilters,
+        )
+        assertEquals(listOf(""), receivedFilters)
+    }
+
+    @Test
+    fun `sends provided KFL query on connect`() {
+        val kflQuery = """http and dst.name == "order-service""""
+        val receivedFilters = mutableListOf<String>()
+        withClient(
+            serverBlock = { delay(300.milliseconds) },
+            testBlock = { delay(200.milliseconds) },
+            initialKflQuery = kflQuery,
+            receivedFilters = receivedFilters,
+        )
+        assertEquals(listOf(kflQuery), receivedFilters)
+    }
+
+    @Test
+    fun `updateKflQuery takes effect on the next reconnect`() {
+        // Co-ordinate via a flag so there are no timing races:
+        //   1. First session opens → server waits for flag before closing
+        //   2. testBlock updates the query, then sets the flag
+        //   3. Server sees the flag, returns (closes session) → client reconnects
+        //   4. Second session opens and sends the updated KFL query
+        val allowFirstSessionToClose = AtomicBoolean(false)
+        val receivedFilters = mutableListOf<String>()
+
+        withClient(
+            serverBlock = {
+                val sessionIndex = synchronized(receivedFilters) { receivedFilters.size }
+                when (sessionIndex) {
+                    1 -> {
+                        // First session: poll the flag; once set, return to close
+                        val deadline = System.currentTimeMillis() + 2_000
+                        while (!allowFirstSessionToClose.get() && System.currentTimeMillis() < deadline) {
+                            delay(10.milliseconds)
+                        }
+                        // Returning closes the session and triggers a reconnect
+                    }
+                    else -> {
+                        // Second session: hold open so the test can assert
+                        delay(500.milliseconds)
+                    }
+                }
+            },
+            testBlock = { client ->
+                // Wait for first session to record its filter
+                val firstFilterDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
+                    System.currentTimeMillis() < firstFilterDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+
+                // Update the query before closing the first session, so the
+                // reconnect picks up the new value
+                client.updateKflQuery("""http and dst.name == "api-gateway"""")
+                allowFirstSessionToClose.set(true)
+
+                // Wait for second session to open and record its filter
+                val secondFilterDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 2 &&
+                    System.currentTimeMillis() < secondFilterDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+            },
+            initialKflQuery = "http",
+            reconnectDelay = 50.milliseconds,
+            receivedFilters = receivedFilters,
+        )
+
+        // First session used the initial query; second session used the updated one
+        assertEquals(2, receivedFilters.size)
+        assertEquals("http", receivedFilters[0])
+        assertEquals("""http and dst.name == "api-gateway"""", receivedFilters[1])
+    }
+
+    // -----------------------------------------------------------------------
+    // buildKflQuery — pure function, no server needed
+    // -----------------------------------------------------------------------
+
+    @Nested
+    inner class BuildKflQueryTests {
+        @Test
+        fun `empty target services returns http only`() {
+            assertEquals("http", KubesharkClient.buildKflQuery(emptyMap()))
+        }
+
+        @Test
+        fun `single service returns http and dst name filter`() {
+            val query = KubesharkClient.buildKflQuery(mapOf("order-service" to "svc-1"))
+            assertEquals("""http and dst.name == "order-service"""", query)
+        }
+
+        @Test
+        fun `two services returns http and parenthesised or filter`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf("order-service" to "svc-1", "api-gateway" to "svc-2"),
+                )
+            // Both service names must appear; order is map iteration order
+            assertTrue(query.startsWith("http and ("), "should start with 'http and ('")
+            assertTrue(query.endsWith(")"), "should end with ')'")
+            assertTrue(query.contains("""dst.name == "order-service""""))
+            assertTrue(query.contains("""dst.name == "api-gateway""""))
+            assertTrue(query.contains(" or "))
+        }
+
+        @Test
+        fun `three services returns http and parenthesised or filter`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        "svc-a" to "id-1",
+                        "svc-b" to "id-2",
+                        "svc-c" to "id-3",
+                    ),
+                )
+            assertTrue(query.startsWith("http and ("))
+            assertTrue(query.contains("""dst.name == "svc-a""""))
+            assertTrue(query.contains("""dst.name == "svc-b""""))
+            assertTrue(query.contains("""dst.name == "svc-c""""))
+        }
+
+        @Test
+        fun `service ID values are not included in the KFL query`() {
+            // Only the K8s service name (key) should appear in the query,
+            // not the platform service ID (value).
+            val query = KubesharkClient.buildKflQuery(mapOf("my-svc" to "platform-id-xyz"))
+            assertTrue(query.contains("my-svc"))
+            assertTrue(!query.contains("platform-id-xyz"))
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // drainBatch — transport and channel behaviour
+    // -----------------------------------------------------------------------
 
     @Test
     fun `drainBatch returns entries produced by the streamer`() =

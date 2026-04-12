@@ -138,7 +138,7 @@ class CapturePipelineIntegrationTest {
                 install(ServerWebSockets)
                 routing {
                     webSocket("/api/wsFull") {
-                        // Consume the KFL filter frame (empty string from our client)
+                        // Consume the KFL filter frame sent by KubesharkClient
                         incoming.receive()
                         val index = connectionCounter.incrementAndGet()
                         wsHandler(index)
