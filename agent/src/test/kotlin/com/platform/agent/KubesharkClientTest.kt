@@ -1,169 +1,262 @@
 package com.platform.agent
 
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.mock.MockEngine
-import io.ktor.client.engine.mock.respond
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
-import io.ktor.http.headersOf
-import io.ktor.serialization.kotlinx.json.json
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.server.application.install
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
+import io.ktor.server.netty.NettyApplicationEngine
+import io.ktor.server.routing.routing
+import io.ktor.server.websocket.DefaultWebSocketServerSession
+import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
+/**
+ * Tests for [KubesharkClient]'s persistent WebSocket session and drainBatch API.
+ *
+ * Each test spins up an embedded Ktor Netty server on a random port that
+ * implements a fake `/api/wsFull` handler. The real [KubesharkClient] connects
+ * to it over a real WebSocket, so we're exercising the full transport stack
+ * (Ktor CIO client → TCP → Ktor Netty server) without mocking.
+ */
 class KubesharkClientTest {
-    private fun mockKubesharkClient(
-        status: HttpStatusCode = HttpStatusCode.OK,
-        body: String = """{"calls": [], "truncated": false}""",
-    ): KubesharkClient {
-        val engine =
-            MockEngine {
-                respond(
-                    content = body,
-                    status = status,
-                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
-                )
-            }
-        val httpClient =
-            HttpClient(engine) {
-                install(ContentNegotiation) {
-                    json(Json { ignoreUnknownKeys = true })
+    private fun wsEntry(
+        id: String,
+        timestamp: Long,
+        method: String = "GET",
+        url: String = "/api/test",
+        status: Int = 200,
+        dstName: String = "order-service",
+    ): String =
+        """{
+        "id": "$id",
+        "timestamp": $timestamp,
+        "protocol": {"name": "http", "abbr": "HTTP"},
+        "tls": false,
+        "src": {"ip": "10.0.0.1", "port": "45678", "name": "client-pod", "namespace": "production"},
+        "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production"},
+        "request": {"method": "$method", "url": "$url", "headers": []},
+        "response": {"status": $status, "headers": []},
+        "requestSize": 100,
+        "responseSize": 200,
+        "elapsedTime": 50
+    }"""
+
+    /**
+     * Run a test scoped around an embedded Ktor server + a [KubesharkClient].
+     * Handles server startup/teardown and HTTP client creation. The test body
+     * runs inside the [CoroutineScope] that owns the client's streamer job,
+     * so cancelling the scope (via `runBlocking` exit) tears everything down.
+     */
+    private fun withClient(
+        serverBlock: suspend DefaultWebSocketServerSession.() -> Unit,
+        testBlock: suspend CoroutineScope.(KubesharkClient) -> Unit,
+    ) = runBlocking {
+        val server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
+            embeddedServer(Netty, port = 0) {
+                install(ServerWebSockets)
+                routing {
+                    webSocket("/api/wsFull") {
+                        // Read the KFL filter and assert it's empty
+                        val filter = (incoming.receive() as Frame.Text).readText()
+                        assertEquals("", filter)
+                        serverBlock()
+                    }
                 }
             }
-        return KubesharkClient(httpClient, "http://kubeshark:80")
+        server.start(wait = false)
+        val port =
+            server.engine
+                .resolvedConnectors()
+                .first()
+                .port
+
+        val httpClient =
+            HttpClient(CIO) {
+                install(WebSockets)
+            }
+
+        try {
+            val client = KubesharkClient(httpClient, "http://127.0.0.1:$port", this)
+            testBlock(client)
+        } finally {
+            httpClient.close()
+            server.stop(100, 100)
+        }
     }
 
     @Test
-    fun `returns entries from successful response`() =
-        runBlocking {
-            val responseBody = """{
-            "calls": [
-                {
-                    "id": "entry-1",
-                    "ts": 1000,
-                    "proto": "http",
-                    "method": "GET",
-                    "url": "/api/orders",
-                    "status": 200
-                }
-            ],
-            "truncated": false
-        }"""
+    fun `drainBatch returns entries produced by the streamer`() =
+        withClient(
+            serverBlock = {
+                send(Frame.Text(wsEntry("e1", 1000L)))
+                send(Frame.Text(wsEntry("e2", 2000L)))
+                send(Frame.Text(wsEntry("e3", 3000L)))
+                // Hold the connection open long enough for the client to drain
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                // Give the streamer a moment to move all 3 frames into the channel
+                delay(200.milliseconds)
+                val entries = client.drainBatch(limit = 100, maxWait = 2000.milliseconds)
 
-            val client = mockKubesharkClient(body = responseBody)
-            val entries = client.listHttpCalls()
-
-            assertEquals(1, entries.size)
-            assertEquals("entry-1", entries[0].id)
-            assertEquals("GET", entries[0].method)
-            assertEquals("/api/orders", entries[0].url)
-            assertEquals(200, entries[0].status)
-        }
+                assertEquals(3, entries.size)
+                assertEquals("e1", entries[0].id)
+                assertEquals(1000L, entries[0].timestamp)
+                assertEquals("GET", entries[0].request?.method)
+                assertEquals("/api/test", entries[0].request?.url)
+                assertEquals(200, entries[0].response?.status)
+            },
+        )
 
     @Test
-    fun `returns empty list on non-success status`() =
-        runBlocking {
-            val client =
-                mockKubesharkClient(
-                    status = HttpStatusCode.InternalServerError,
-                    body = "server error",
+    fun `drainBatch respects the limit parameter`() =
+        withClient(
+            serverBlock = {
+                repeat(10) { i ->
+                    send(Frame.Text(wsEntry("e$i", (i + 1) * 1000L)))
+                }
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                // Wait briefly so the streamer has time to move everything into the channel
+                delay(200.milliseconds)
+                val entries = client.drainBatch(limit = 3, maxWait = 2000.milliseconds)
+
+                assertEquals(3, entries.size)
+            },
+        )
+
+    @Test
+    fun `drainBatch returns empty on timeout but recovers when traffic arrives later`() =
+        withClient(
+            serverBlock = {
+                // First drainBatch has maxWait=200ms; the server waits 400ms
+                // before sending so the first call times out with an empty
+                // list. Then it sends an entry, which the second drainBatch
+                // call should pick up — proving the empty-timeout path does
+                // not leave the channel in a bad state.
+                delay(400.milliseconds)
+                send(Frame.Text(wsEntry("delayed-1", 5000L)))
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                // First drain — server hasn't sent anything yet, times out
+                val empty = client.drainBatch(limit = 100, maxWait = 200.milliseconds)
+                assertTrue(empty.isEmpty(), "drainBatch should return empty when no entries arrive within maxWait")
+
+                // Second drain — server has since sent an entry, we should get it
+                val afterTimeout = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                assertEquals(
+                    1,
+                    afterTimeout.size,
+                    "drainBatch should still pick up entries that arrive after a prior timeout",
                 )
-
-            val entries = client.listHttpCalls()
-
-            assertTrue(entries.isEmpty())
-        }
+                assertEquals("delayed-1", afterTimeout[0].id)
+            },
+        )
 
     @Test
-    fun `returns empty list on malformed JSON`() =
-        runBlocking {
-            val client = mockKubesharkClient(body = "not json at all")
+    fun `drainBatch yields multiple batches from a single persistent session`() =
+        withClient(
+            serverBlock = {
+                send(Frame.Text(wsEntry("e1", 1000L)))
+                send(Frame.Text(wsEntry("e2", 2000L)))
+                delay(500.milliseconds)
+                // Second burst after the first batch has been drained
+                send(Frame.Text(wsEntry("e3", 3000L)))
+                send(Frame.Text(wsEntry("e4", 4000L)))
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                delay(200.milliseconds)
+                val firstBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                assertEquals(2, firstBatch.size)
+                assertEquals("e1", firstBatch[0].id)
 
-            val entries = client.listHttpCalls()
-
-            assertTrue(entries.isEmpty())
-        }
-
-    @Test
-    fun `passes query parameters correctly`() =
-        runBlocking {
-            var capturedUrl = ""
-            val engine =
-                MockEngine { request ->
-                    capturedUrl = request.url.toString()
-                    respond(
-                        content = """{"calls": [], "truncated": false}""",
-                        status = HttpStatusCode.OK,
-                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
-                    )
-                }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) {
-                        json(Json { ignoreUnknownKeys = true })
-                    }
-                }
-            val client = KubesharkClient(httpClient, "http://kubeshark:80")
-
-            client.listHttpCalls(startMs = 5000L, limit = 50)
-
-            assertTrue(capturedUrl.contains("start=5000"))
-            assertTrue(capturedUrl.contains("limit=50"))
-            assertTrue(capturedUrl.contains("q=http"))
-            assertTrue(capturedUrl.contains("format=full"))
-        }
+                delay(300.milliseconds)
+                val secondBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                assertEquals(2, secondBatch.size)
+                assertEquals("e3", secondBatch[0].id)
+            },
+        )
 
     @Test
-    fun `omits start parameter when null`() =
-        runBlocking {
-            var capturedUrl = ""
-            val engine =
-                MockEngine { request ->
-                    capturedUrl = request.url.toString()
-                    respond(
-                        content = """{"calls": [], "truncated": false}""",
-                        status = HttpStatusCode.OK,
-                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
-                    )
-                }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) {
-                        json(Json { ignoreUnknownKeys = true })
-                    }
-                }
-            val client = KubesharkClient(httpClient, "http://kubeshark:80")
+    fun `drainBatch skips unparseable JSON messages`() =
+        withClient(
+            serverBlock = {
+                send(Frame.Text("not valid json"))
+                send(Frame.Text(wsEntry("e1", 1000L)))
+                send(Frame.Text("{incomplete"))
+                send(Frame.Text(wsEntry("e2", 2000L)))
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                delay(200.milliseconds)
+                val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
-            client.listHttpCalls(startMs = null, limit = 100)
-
-            assertTrue(!capturedUrl.contains("start="))
-        }
+                // The two valid entries survive; the malformed frames are dropped silently
+                assertEquals(2, entries.size)
+                assertEquals("e1", entries[0].id)
+                assertEquals("e2", entries[1].id)
+            },
+        )
 
     @Test
-    fun `handles entries with unknown fields gracefully`() =
-        runBlocking {
-            val responseBody = """{
-            "calls": [
-                {
-                    "id": "entry-1",
-                    "ts": 1000,
-                    "proto": "http",
-                    "newField": "should be ignored",
-                    "method": "POST",
-                    "url": "/api/orders",
-                    "status": 201
-                }
-            ],
-            "truncated": false
-        }"""
+    fun `drainBatch drops entries older than the dedup lookback window`() =
+        withClient(
+            serverBlock = {
+                // DEDUP_LOOKBACK is 5 seconds. After we've seen ts=1_000_000, any
+                // entry with ts < 995_000 must be dropped as reconnect-replay noise.
+                send(Frame.Text(wsEntry("e1", 1_000_000L)))
+                send(Frame.Text(wsEntry("replay", 900_000L))) // 100s old — dropped
+                send(Frame.Text(wsEntry("e2", 1_001_000L)))
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                delay(200.milliseconds)
+                val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
-            val client = mockKubesharkClient(body = responseBody)
-            val entries = client.listHttpCalls()
+                assertEquals(2, entries.size)
+                assertEquals("e1", entries[0].id)
+                assertEquals("e2", entries[1].id)
+            },
+        )
 
-            assertEquals(1, entries.size)
-            assertEquals("POST", entries[0].method)
-        }
+    @Test
+    fun `drainBatch preserves entries that are out of order within the lookback window`() =
+        withClient(
+            serverBlock = {
+                // DEDUP_LOOKBACK is 5 seconds. In-session out-of-order entries
+                // within that window must still be forwarded even though they're
+                // older than lastSeen.
+                send(Frame.Text(wsEntry("e1", 10_000L)))
+                send(Frame.Text(wsEntry("e2", 12_000L)))
+                send(Frame.Text(wsEntry("e3", 9_000L))) // 3s behind e2, within 5s window
+                send(Frame.Text(wsEntry("e4", 13_000L)))
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                delay(200.milliseconds)
+                val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+
+                // All four entries survive — e3 is within the 5s lookback window
+                assertEquals(4, entries.size)
+                assertEquals("e1", entries[0].id)
+                assertEquals("e2", entries[1].id)
+                assertEquals("e3", entries[2].id)
+                assertEquals("e4", entries[3].id)
+            },
+        )
 }

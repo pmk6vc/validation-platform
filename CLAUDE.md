@@ -319,14 +319,14 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 |------|----------|----------------|
 | Service discovery | ~60s | Query K8s API for services → diff against in-memory map → register new services with platform via `POST /api/services` → receive service ID map |
 | Config polling | ~60s | `GET /api/agent/config` → update sampling rate, namespace filters, batch size, poll interval |
-| Traffic capture | ~5s | Poll Kubeshark `list_api_calls` → filter by namespace + registered services → sample → `POST /api/captured-inputs` to collector |
+| Traffic capture | continuous | Drain up to batchSize entries from `KubesharkClient`'s persistent WebSocket channel (waits up to captureIntervalMs for the first entry) → filter by target services → sample → `POST /api/captured-inputs` to collector |
 
 **Concurrency model:** Each loop writes to an `AtomicReference`. The traffic capture loop reads the latest snapshot of the service map and config. No locks, no coordination.
 
 **Static config (env vars, set at deploy time):**
 - `COLLECTOR_URL` — platform collector endpoint
 - `COLLECTOR_AUTH_TOKEN` — bearer token for authentication
-- `KUBESHARK_URL` — in-cluster Kubeshark API (default: `http://kubeshark-hub:80`)
+- `KUBESHARK_URL` — in-cluster Kubeshark front URL (default: `http://kubeshark-front.default:80`)
 - `CLUSTER` — cluster name (deployment-time fact)
 
 **Dynamic config (polled from platform):**
@@ -335,13 +335,20 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 - Batch size
 - Poll intervals
 
+**Kubeshark WebSocket transport (validated 2026-04-11):**
+- Kubeshark v53+ removed the REST `/api/entries` endpoint. Traffic data is served exclusively over WebSocket at `/api/wsFull` (proxied through `kubeshark-front` nginx to `kubeshark-hub`).
+- The server accepts a KFL (Kubeshark Filter Language) query as the first text frame. **Empty filter** = stream all entries; any non-empty string is parsed as a KFL query and the hub will silently stream nothing if the syntax doesn't match. The agent sends an empty filter and filters client-side in `TrafficTransformer`.
+- Entries arrive as individual JSON text frames in HAR-like shape: `{id, timestamp, protocol, src, dst, request, response, ...}`. Request body lives at `request.postData.text` (plaintext, HAR's `postData` applies to any method with a body); response body at `response.content.text` is **base64-encoded** (binary-safe) when `content.encoding == "base64"` — the agent decodes before forwarding.
+- **Persistent session model (2026-04-11):** `KubesharkClient` maintains a single long-lived WebSocket for the agent's lifetime. A bounded `Channel<KubesharkEntry>` (capacity 1000) buffers incoming entries between the streamer coroutine and the capture loop. Backpressure: `Channel.send` suspends when full, the streamer stops reading frames, Ktor's receive buffer fills, TCP window closes, Kubeshark slows emission. The agent never OOMs under load.
+- **Why persistent not connect-per-poll:** every fresh Kubeshark WebSocket session replays ~4-10s of recent history before reaching live entries (measured on the test cluster). Connect-per-poll would re-parse ~300 entries per reconnect at 75 entries/sec.
+- **Reconnect dedup:** the client tracks `lastSeenTimestamp` (max across the session lifetime) and a `DEDUP_LOOKBACK = 5s` sliding window. Entries with `ts < (lastSeen - 5s)` are dropped as reconnect-replay noise. 5s covers 100% of observed in-session out-of-order jitter (measured p50 8ms, p95 1.8s, p99 3s, max 4.8s). Trade-off: on reconnect, up to `lookback × arrival_rate` dupes slip through (~375/reconnect at 75/sec). Reconnects are rare, so this is an acceptable loss versus the alternative of dropping in-session out-of-order entries on every batch. ID-based LRU dedup was rejected because at high traffic it silently fails once the cache overflows.
+
 **Key design decisions:**
 - Push model: agent pushes to platform, not platform pulling from customer cluster. Only requires outbound network access.
 - Agent has its own DTOs (`CapturedInputRequest`), no compile-time dependency on platform modules. API contract only.
-- Kubeshark `list_api_calls` with `format=full` returns request bodies inline — no N+1 detail API calls needed.
-- Deduplication: Kubeshark shows each call from both src and dst perspective. Agent filters on `dst.svc` matching a target service, which naturally deduplicates.
+- Source/destination dedup: Kubeshark shows each call from both src and dst perspective. Agent filters on `dst.name` matching a target service, which naturally deduplicates.
 - Sampling: stateless per-entry random check against configured rate. Acceptable to lose some traffic.
-- Cursor-based polling: advance timestamp cursor to latest entry. Some out-of-order entries may be missed — acceptable tradeoff.
+- Client-side filtering is a known inefficiency: the capture loop receives every L7 entry and discards most in `TrafficTransformer`. At high traffic this wastes agent CPU. TODO in code to push HTTP protocol and target-service filtering into the KFL query once the right syntax is known.
 
 **Agent module structure:**
 ```
@@ -349,13 +356,19 @@ agent/
   src/main/kotlin/com/platform/agent/
     AgentApplication.kt        # main, three coroutine loops
     AgentConfig.kt             # static config from env vars
-    KubesharkClient.kt         # HTTP client for Kubeshark API
+    KubesharkClient.kt         # WebSocket client for Kubeshark /api/wsFull
     CollectorClient.kt         # HTTP client for collector POST
-    TrafficTransformer.kt      # Kubeshark → CapturedInputRequest
+    ConfigClient.kt            # HTTP client for platform GET /api/agent/config
+    TrafficTransformer.kt      # Kubeshark → CapturedInputRequest (filters + base64 decode)
     models/
-      KubesharkEntry.kt        # Kubeshark API response DTOs
+      KubesharkEntry.kt        # Kubeshark WebSocket wire-format DTOs (HAR-ish)
       CapturedInputRequest.kt  # Collector POST payload DTOs
 ```
+
+**Deployment artifacts:**
+- `deploy/Dockerfile.agent` — multi-stage Dockerfile for environments without a Docker daemon socket for Jib.
+- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest` directly into a local or remote Docker daemon.
+- `k8s/agent/agent.yaml` — reference Kubernetes Deployment manifest (namespace `validation`, single replica). Used by both the minikube dev loop and `scripts/sandbox-up.sh` (which rewrites the image reference to GCR).
 
 ### Read/Write Traffic Classification (Planned — Not Yet Implemented)
 
@@ -595,17 +608,21 @@ Adapters normalize data from different sources into the unified model.
 - [x] Collector module: full Ktor server on port 8081 (no longer a skeleton)
 - [x] Test infrastructure: 18 CapturedInputRepository tests, 12 CapturedInputRoutesTest, 1 HealthRoutesTest, 6 new POST endpoint tests in app
 - [x] AppApiTestHelper: collector tests create org/service fixtures via POST API calls to app module (enforces module boundary)
-- [x] Agent module: KubesharkClient, CollectorClient, TrafficTransformer, AgentConfig, AgentApplication
-- [x] Agent DTOs: KubesharkEntry/KubesharkEndpoint (Kubeshark API), CapturedInputRequest/BatchCapturedInputRequest (collector POST)
-- [x] Kubeshark API validated: `list_api_calls` with `format=full` returns req/res bodies inline, no N+1 detail calls needed
-- [ ] Refactor agent to use dynamic config polling from platform instead of env vars for mutable settings
-- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map
-- [ ] Agent Loop 2: Poll `GET /api/agent/config` for sampling rate, namespace filters, etc.
-- [ ] Agent Loop 3: Poll Kubeshark → filter → sample → POST to collector
-- [ ] Collector: `POST /api/captured-inputs` batch endpoint (agent pushes to this)
-- [ ] Platform: `GET /api/agent/config` endpoint (agent polls this)
-- [ ] Agent tests: TrafficTransformer, config parsing, client mocks
-- [ ] End-to-end: agent captures traffic from minikube test services and stores via collector
+- [x] Agent module: KubesharkClient (WebSocket), CollectorClient, ConfigClient, TrafficTransformer, AgentConfig, AgentApplication
+- [x] Agent DTOs: KubesharkEntry/KubesharkProtocol/KubesharkRequest/KubesharkResponse/KubesharkPostData/KubesharkContent/KubesharkHeader (Kubeshark wire format), CapturedInputRequest/BatchCapturedInputRequest (collector POST)
+- [x] Kubeshark WebSocket validated (2026-04-11): `/api/wsFull` streams HAR-ish JSON entries with request/response bodies inline. Request body at `request.postData.text` (plaintext), response body at `response.content.text` base64-encoded when `content.encoding == "base64"`. Empty KFL filter = stream all; non-empty strings silently match nothing if KFL syntax is wrong.
+- [x] Agent base64-decodes response bodies before forwarding to collector
+- [x] Agent config architecture: static env vars (URLs, auth) + dynamic polling (sampling, target services, batch size)
+- [x] Agent Loop 2: `ConfigClient` polls `GET /api/agent/config` (with graceful fallback to defaults when endpoint doesn't exist)
+- [x] Agent Loop 3: `KubesharkClient` WebSocket poll → `TrafficTransformer` filter → `CollectorClient` batch POST
+- [x] Agent tests: 62 unit/integration tests across KubesharkClient (WebSocket with embedded Ktor server), TrafficTransformer, LoopLogic, AgentIntegration, ConfigClient, CollectorClient, AgentConfig
+- [x] End-to-end minikube verification (2026-04-11): agent deployed to `validation` namespace streams 100 entries/batch every ~2s via `kubeshark-front:80/api/wsFull` with zero WebSocket errors
+- [x] Deployment artifacts: `deploy/Dockerfile.agent`, `agent/build.gradle.kts` Jib config, `k8s/agent/agent.yaml`, `scripts/sandbox-up.sh` builds+pushes agent image to GCR
+- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map (stubbed; needs K8s client + platform registration endpoint)
+- [ ] Collector: `POST /api/captured-inputs` batch endpoint (agent pushes to this — currently only GET/DELETE implemented)
+- [ ] Platform: `GET /api/agent/config` endpoint (agent polls this — currently returns fallback defaults since endpoint doesn't exist)
+- [ ] Push HTTP + service-name filtering into KFL query so Kubeshark stops streaming entries the agent would discard client-side
+- [ ] HTTP gzip on agent→collector POST (wire bandwidth optimization; pending load numbers to justify)
 
 **Replay Engine (Feature 2)**
 - [ ] ReplayRun model + database migration (likely in its own module)
@@ -689,6 +706,11 @@ Adapters normalize data from different sources into the unified model.
 | Agent service discovery | Agent queries K8s API directly, registers with platform | Agent has visibility into cluster service inventory. Platform can't know about new deployments without being told. Agent registers services and receives ID map. |
 | Agent ↔ platform contract | Separate DTOs, API contract only, no shared compile-time types | Agent ships as container to customer clusters, versions independently. `ignoreUnknownKeys = true` on both sides enables additive API evolution without lockstep releases. |
 | Traffic loss tolerance | Acceptable to lose some traffic (sampling, cursor gaps, drops on collector unavailability) | For mature high-traffic services, sampling is required anyway. Cursor-based polling may miss out-of-order entries — acceptable. Agent drops traffic if collector unreachable rather than buffering. |
+| Kubeshark transport (v53+) | WebSocket `/api/wsFull` with empty KFL filter, client-side filtering in `TrafficTransformer` | Kubeshark v53 removed the REST `/api/entries` endpoint. Non-empty KFL strings like `"http"` silently match nothing if the hub can't parse them as a query — discovered 2026-04-11 after a confusing hang. Empty filter streams everything; agent filters on protocol and `dst.name` client-side. TODO to push filtering to the server once KFL syntax is nailed down. |
+| Response body encoding | Kubeshark base64-encodes `response.content.text`; agent decodes | Binary-safe for non-UTF-8 payloads (images, protobuf). Request bodies at `request.postData.text` are NOT encoded. Agent's `TrafficTransformer.decodeContent` checks `content.encoding == "base64"` and decodes before forwarding. Base64 decode is microseconds per 10KB — negligible against agent's 200m CPU budget. |
+| Agent ↔ Kubeshark session model | Long-lived persistent WebSocket session + bounded channel, reconnect on failure with 5s backoff | Every fresh Kubeshark session replays ~4-10s of history before reaching live entries (measured 2026-04-11). Connect-per-poll would re-parse ~300 entries per reconnect at 75/sec. A persistent session pays the backlog cost once and streams live forever. Bounded channel (default 1000) applies TCP-level backpressure if the capture loop falls behind: `Channel.send` suspends → streamer stops reading → Ktor receive buffer fills → TCP window closes → Kubeshark slows. Agent never OOMs. |
+| Agent reconnect dedup | `lastSeenTimestamp` sliding-window with 5s lookback (reject entries older than `lastSeen - 5s`) | Kubeshark's reconnect-replay would double-count ~10s of traffic without dedup. In-session out-of-order jitter goes up to ~5s on our test cluster (p50 8ms, p95 1.8s, max 4.8s), so 5s lookback covers 100% of observed jitter without dropping in-session data. Trade-off: up to ~5s worth of dupes per reconnect slip through — acceptable because reconnects are rare events. ID-based LRU dedup was rejected because it silently fails at high traffic once the cache overflows. |
+| Agent abstractions | No `TrafficSource` interface; `KubesharkClient` used directly, mocked in tests via mockk | Earlier rev had a `TrafficSource` interface to decouple tests from WebSocket transport. Removed as YAGNI — still leaked `KubesharkEntry`, had a single impl, and mockk handles final-class mocking on JVM. |
 
 ---
 

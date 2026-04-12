@@ -13,12 +13,17 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 class CollectorClientTest {
     private fun testBatch(size: Int = 1) =
@@ -35,17 +40,24 @@ class CollectorClientTest {
                 },
         )
 
+    /**
+     * Build a CollectorClient whose upstream behavior is driven by
+     * [responder] — called once per request with the 1-based attempt number,
+     * returning the status to respond with.
+     */
     private fun mockCollector(
-        status: HttpStatusCode = HttpStatusCode.OK,
+        responder: (attempt: Int) -> HttpStatusCode = { HttpStatusCode.OK },
         body: String = "{}",
         onRequest: (MockRequestHandleScope.(HttpRequestData) -> Unit)? = null,
     ): CollectorClient {
+        val requestCount = AtomicInteger(0)
         val engine =
             MockEngine { request ->
                 onRequest?.invoke(this, request)
+                val attempt = requestCount.incrementAndGet()
                 respond(
                     content = body,
-                    status = status,
+                    status = responder(attempt),
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
@@ -55,49 +67,119 @@ class CollectorClientTest {
                     json(Json { ignoreUnknownKeys = true })
                 }
             }
-        return CollectorClient(httpClient, "http://collector:8081", "test-api-key")
+        return CollectorClient(
+            httpClient = httpClient,
+            baseUrl = "http://collector:8081",
+            authToken = "test-api-key",
+            // Fast backoff so retry tests don't sleep forever
+            initialBackoff = 1.milliseconds,
+            maxBackoff = 10.milliseconds,
+        )
     }
 
     @Test
-    fun `returns true on successful send`() =
+    fun `returns normally on successful send`() =
         runBlocking {
             val client = mockCollector()
 
-            val result = client.sendBatch(testBatch())
-
-            assertTrue(result)
+            // Does not throw, returns Unit
+            client.sendBatch(testBatch())
         }
 
     @Test
-    fun `returns true for empty batch without making request`() =
+    fun `skips HTTP request for empty batch`() =
         runBlocking {
             var requestMade = false
             val client = mockCollector(onRequest = { requestMade = true })
 
-            val result = client.sendBatch(BatchCapturedInputRequest(items = emptyList()))
+            client.sendBatch(BatchCapturedInputRequest(items = emptyList()))
 
-            assertTrue(result)
             assertFalse(requestMade)
         }
 
     @Test
-    fun `returns false on non-success status`() =
+    fun `retries transient 5xx until success`() =
         runBlocking {
-            val client = mockCollector(status = HttpStatusCode.BadRequest)
+            var attempts = 0
+            val client =
+                mockCollector(
+                    onRequest = { attempts++ },
+                    responder = { attempt ->
+                        // Fail the first 2, succeed on the 3rd
+                        if (attempt <= 2) HttpStatusCode.InternalServerError else HttpStatusCode.OK
+                    },
+                )
 
-            val result = client.sendBatch(testBatch())
+            client.sendBatch(testBatch())
 
-            assertFalse(result)
+            assertEquals(3, attempts, "should have made 3 attempts before succeeding")
         }
 
     @Test
-    fun `returns false on server error`() =
+    fun `retries network exceptions with exponential backoff`() =
         runBlocking {
-            val client = mockCollector(status = HttpStatusCode.InternalServerError)
+            var attempts = 0
+            val engine =
+                MockEngine {
+                    attempts++
+                    if (attempts < 3) {
+                        throw java.io.IOException("Connection refused")
+                    }
+                    respond(
+                        content = "{}",
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            val httpClient =
+                HttpClient(engine) {
+                    install(ContentNegotiation) {
+                        json(Json { ignoreUnknownKeys = true })
+                    }
+                }
+            val client =
+                CollectorClient(
+                    httpClient = httpClient,
+                    baseUrl = "http://collector:8081",
+                    authToken = "key",
+                    initialBackoff = 1.milliseconds,
+                    maxBackoff = 10.milliseconds,
+                )
 
-            val result = client.sendBatch(testBatch())
+            client.sendBatch(testBatch())
 
-            assertFalse(result)
+            assertEquals(3, attempts, "should have retried 2 network failures then succeeded")
+        }
+
+    @Test
+    fun `does not retry 4xx client errors`() =
+        runBlocking {
+            var attempts = 0
+            val client =
+                mockCollector(
+                    onRequest = { attempts++ },
+                    responder = { HttpStatusCode.BadRequest },
+                )
+
+            // Returns (drops batch) without throwing or retrying
+            client.sendBatch(testBatch())
+
+            assertEquals(1, attempts, "4xx should not be retried")
+        }
+
+    @Test
+    fun `does not retry 401 unauthorized`() =
+        runBlocking {
+            var attempts = 0
+            val client =
+                mockCollector(
+                    onRequest = { attempts++ },
+                    responder = { HttpStatusCode.Unauthorized },
+                )
+
+            client.sendBatch(testBatch())
+
+            assertEquals(1, attempts)
         }
 
     @Test
@@ -122,22 +204,32 @@ class CollectorClientTest {
         }
 
     @Test
-    fun `returns false on network exception`() =
+    fun `suspends on sustained outage and resumes when collector recovers`() =
         runBlocking {
-            val engine =
-                MockEngine {
-                    throw java.io.IOException("Connection refused")
-                }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) {
-                        json(Json { ignoreUnknownKeys = true })
-                    }
-                }
-            val client = CollectorClient(httpClient, "http://collector:8081", "key")
+            coroutineScope {
+                var attempts = 0
+                var recovered = false
+                val client =
+                    mockCollector(
+                        onRequest = { attempts++ },
+                        responder = {
+                            if (recovered) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable
+                        },
+                    )
 
-            val result = client.sendBatch(testBatch())
+                // Start the send; it will keep retrying against the down collector
+                val sendJob = async { client.sendBatch(testBatch()) }
 
-            assertFalse(result)
+                // Let it retry a few times
+                delay(50.milliseconds)
+                assertTrue(attempts >= 2, "should have retried at least twice during outage")
+                assertFalse(sendJob.isCompleted, "sendBatch should still be suspending")
+
+                // Bring the collector back
+                recovered = true
+                sendJob.await()
+
+                assertTrue(attempts > 2, "should have continued retrying past the initial attempts")
+            }
         }
 }

@@ -17,9 +17,10 @@ application {
 }
 
 dependencies {
-    // HTTP client
+    // HTTP client + WebSocket
     implementation(libs.ktor.client.cio)
     implementation(libs.ktor.client.content.negotiation)
+    implementation(libs.ktor.client.websockets)
     implementation(libs.ktor.serialization.json)
 
     // Serialization
@@ -33,6 +34,9 @@ dependencies {
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.mockk)
     testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.ktor.server.core)
+    testImplementation(libs.ktor.server.netty)
+    testImplementation("io.ktor:ktor-server-websockets-jvm:${libs.versions.ktor.get()}")
 }
 
 tasks.test {

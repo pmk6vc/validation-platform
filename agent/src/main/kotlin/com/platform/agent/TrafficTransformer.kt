@@ -1,13 +1,19 @@
 package com.platform.agent
 
 import com.platform.agent.models.CapturedInputRequest
+import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEntry
+import org.slf4j.LoggerFactory
 import java.time.Instant
+import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
 
 class TrafficTransformer(
     private val configRef: AtomicReference<DynamicConfig>,
 ) {
+    private val logger = LoggerFactory.getLogger(TrafficTransformer::class.java)
+    private val base64Decoder = Base64.getDecoder()
+
     /**
      * Filter and transform Kubeshark entries into collector POST payloads.
      *
@@ -15,10 +21,19 @@ class TrafficTransformer(
      * snapshot, so changes take effect on the next call without restart.
      *
      * Filtering logic:
-     * 1. Only keep HTTP entries (proto == "http")
-     * 2. Only keep entries where dst.svc matches a target service (deduplicates)
+     * 1. Only keep HTTP entries (protocol.name == "http")
+     * 2. Only keep entries where dst.name matches a target service name
+     *    (Kubeshark shows each call from both pod-IP and service-IP perspectives;
+     *    filtering on dst.name == service name deduplicates naturally)
      * 3. Only keep entries with required fields (method, url, status)
      * 4. Apply sampling rate
+     *
+     * TODO: Push the HTTP protocol filter into the KFL query sent to Kubeshark
+     *       (KubesharkClient.collectEntries) so the server stops streaming
+     *       non-HTTP entries we would discard anyway. At full production traffic,
+     *       client-side filtering burns agent CPU parsing entries the agent
+     *       immediately throws away. Same goes for the `dst.name` service filter
+     *       once we know KFL syntax for it.
      *
      * TODO: Support configurable header stripping (e.g. Authorization, Cookie)
      *       via DynamicConfig so customers can redact sensitive headers before
@@ -30,25 +45,58 @@ class TrafficTransformer(
         val samplingRate = config.samplingRate
 
         return entries
-            .filter { it.proto == "http" }
-            .filter { it.dst?.svc != null && it.dst.svc in targetServices }
-            .filter { it.method != null && it.url != null && it.status != null }
-            .filter { Math.random() < samplingRate }
+            .filter { it.protocol?.name == "http" }
+            .filter { it.dst?.name != null && it.dst.name in targetServices }
+            .filter {
+                it.request?.method != null &&
+                    it.request.url != null &&
+                    it.response?.status != null
+            }.filter { Math.random() < samplingRate }
             .map { entry ->
                 CapturedInputRequest(
-                    serviceId = targetServices.getValue(entry.dst!!.svc!!),
+                    serviceId = targetServices.getValue(entry.dst!!.name!!),
                     inputType = "HTTP",
-                    method = entry.method!!,
-                    url = entry.url!!,
-                    requestHeaders = entry.reqHeaders,
-                    requestBody = entry.reqBody,
-                    responseStatus = entry.status!!,
-                    responseHeaders = entry.respHeaders,
-                    responseBody = entry.respBody,
+                    method = entry.request!!.method!!,
+                    url = entry.request.url!!,
+                    requestHeaders =
+                        entry.request.headers
+                            ?.associate { it.name to it.value },
+                    requestBody = entry.request.postData?.text,
+                    responseStatus = entry.response!!.status!!,
+                    responseHeaders =
+                        entry.response.headers
+                            ?.associate { it.name to it.value },
+                    responseBody = decodeContent(entry.response.content),
                     sourceIp = entry.src?.ip,
                     destinationIp = entry.dst.ip,
-                    capturedAt = Instant.ofEpochMilli(entry.ts).toString(),
+                    capturedAt = Instant.ofEpochMilli(entry.timestamp).toString(),
                 )
             }
+    }
+
+    /**
+     * Decode a [KubesharkContent] body into a plain string.
+     *
+     * Kubeshark base64-encodes response bodies (binary-safe, handles non-UTF-8
+     * payloads like images or protobuf). If `encoding == "base64"`, decode first.
+     * Otherwise treat `text` as already-plaintext.
+     *
+     * Base64 decoding is essentially free (microseconds per 10KB), so this is safe
+     * at the agent's CPU budget. If a response body is malformed base64, log and
+     * drop the body rather than failing the whole batch.
+     *
+     * TODO: Once load-tested, enable HTTP gzip on the collector POST
+     *       (CollectorClient) to reduce agent→platform bandwidth for large bodies.
+     *       Ktor's ContentEncoding plugin handles this transparently on both ends.
+     */
+    private fun decodeContent(content: KubesharkContent?): String? {
+        if (content?.text == null) return null
+        if (content.encoding != "base64") return content.text
+        return try {
+            String(base64Decoder.decode(content.text), Charsets.UTF_8)
+        } catch (e: IllegalArgumentException) {
+            logger.debug("Failed to base64-decode response body: {}", e.message)
+            null
+        }
     }
 }
