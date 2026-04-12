@@ -1,5 +1,6 @@
 package com.platform.agent
 
+import com.platform.agent.models.BatchCapturedInputRequest
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
 import com.platform.agent.models.KubesharkProtocol
@@ -261,7 +262,7 @@ class LoopLogicTest {
 
                 captureOneBatch(100, defaultMaxWait, client, collector, transformer)
 
-                val batch = json.decodeFromString<com.platform.agent.models.BatchCapturedInputRequest>(receivedBody)
+                val batch = json.decodeFromString<BatchCapturedInputRequest>(receivedBody)
                 assertEquals(1, batch.items.size)
                 assertEquals("svc-123", batch.items[0].serviceId)
             }
