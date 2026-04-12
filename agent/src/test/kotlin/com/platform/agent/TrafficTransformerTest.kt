@@ -11,6 +11,7 @@ import com.platform.agent.models.KubesharkResponse
 import org.junit.jupiter.api.Test
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.random.Random
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -22,13 +23,17 @@ class TrafficTransformerTest {
             "api-gateway" to "svc-456",
         )
 
-    private fun transformer(services: Map<String, String> = targetServices): TrafficTransformer {
+    private fun transformer(
+        services: Map<String, String> = targetServices,
+        samplingRate: Double = 1.0,
+        random: Random = Random.Default,
+    ): TrafficTransformer {
         val config =
             DynamicConfig(
                 targetServices = services,
-                samplingRate = 1.0,
+                samplingRate = samplingRate,
             )
-        return TrafficTransformer(AtomicReference(config))
+        return TrafficTransformer(AtomicReference(config), random)
     }
 
     private fun httpEntry(
@@ -288,5 +293,26 @@ class TrafficTransformerTest {
 
         val after = transformer.transform(listOf(httpEntry()))
         assertTrue(after.isEmpty())
+    }
+
+    @Test
+    fun `sampling at 50 percent accepts approximately half the entries`() {
+        val seededRandom = Random(seed = 42)
+        val t = transformer(samplingRate = 0.5, random = seededRandom)
+
+        val entries = (1..1000).map { i -> httpEntry(id = "e-$i", timestamp = i.toLong()) }
+        val result = t.transform(entries)
+
+        // With a seeded Random, result is deterministic. With 1000 entries at 0.5,
+        // expect ~500. Allow a wide margin to avoid flakiness if seed behavior
+        // differs across JVM versions, but catch always-accept/always-reject bugs.
+        assertTrue(result.size in 400..600, "Expected ~500 but got ${result.size}")
+    }
+
+    @Test
+    fun `sampling at zero rejects all entries`() {
+        val t = transformer(samplingRate = 0.0)
+        val entries = (1..100).map { i -> httpEntry(id = "e-$i", timestamp = i.toLong()) }
+        assertTrue(t.transform(entries).isEmpty())
     }
 }

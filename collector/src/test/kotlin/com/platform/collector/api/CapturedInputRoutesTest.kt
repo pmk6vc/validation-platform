@@ -26,6 +26,8 @@ import kotlin.test.assertTrue
 
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private val lenientJson = Json { ignoreUnknownKeys = true }
+    private val capturedInputRepository = CapturedInputRepository()
+
     private lateinit var testServiceId: String
 
     @BeforeEach
@@ -84,8 +86,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
             val input1 = createTestInput(url = "/api/orders/1")
             val input2 = createTestInput(url = "/api/orders/2")
-            CapturedInputRepository.create(input1)
-            CapturedInputRepository.create(input2)
+            capturedInputRepository.create(input1)
+            capturedInputRepository.create(input2)
 
             val response = client.get("/api/captured-inputs")
 
@@ -115,8 +117,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
             val input1 = createTestInput(serviceId = testServiceId, url = "/api/mine")
             val input2 = createTestInput(serviceId = otherService.id, url = "/api/other")
-            CapturedInputRepository.create(input1)
-            CapturedInputRepository.create(input2)
+            capturedInputRepository.create(input1)
+            capturedInputRepository.create(input2)
 
             val response = client.get("/api/captured-inputs?serviceId=$testServiceId")
 
@@ -136,7 +138,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             val httpInput = createTestInput(inputType = InputType.HTTP, url = "/api/http")
-            CapturedInputRepository.create(httpInput)
+            capturedInputRepository.create(httpInput)
 
             val response = client.get("/api/captured-inputs?inputType=HTTP")
 
@@ -167,7 +169,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             repeat(5) { i ->
-                CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
+                capturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
             }
 
             val response = client.get("/api/captured-inputs?limit=3")
@@ -188,7 +190,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             application { module(initDatabase = false) }
 
             repeat(5) { i ->
-                CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
+                capturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
             }
 
             val firstResponse = client.get("/api/captured-inputs?limit=2")
@@ -246,7 +248,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
                     responseStatus = 201,
                     responseBody = """{"id":"123"}""",
                 )
-            CapturedInputRepository.create(input)
+            capturedInputRepository.create(input)
 
             val response = client.get("/api/captured-inputs/${input.id}")
 
@@ -283,7 +285,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         testApplication {
             application { module(initDatabase = false) }
 
-            repeat(3) { CapturedInputRepository.create(createTestInput()) }
+            repeat(3) { capturedInputRepository.create(createTestInput()) }
 
             val response = client.delete("/api/captured-inputs?serviceId=$testServiceId")
 

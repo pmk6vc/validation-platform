@@ -19,9 +19,11 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import java.util.UUID
 
-object CapturedInputRepository {
-    const val DEFAULT_PAGE_SIZE = 20
-    const val MAX_PAGE_SIZE = 100
+class CapturedInputRepository {
+    companion object {
+        const val DEFAULT_PAGE_SIZE = 20
+        const val MAX_PAGE_SIZE = 100
+    }
 
     suspend fun create(input: CapturedInput): CapturedInput =
         newSuspendedTransaction {

@@ -21,9 +21,11 @@ import java.util.UUID
 /**
  * Repository for Service CRUD operations.
  */
-object ServiceRepository {
-    const val DEFAULT_PAGE_SIZE = 20
-    const val MAX_PAGE_SIZE = 100
+class ServiceRepository {
+    companion object {
+        const val DEFAULT_PAGE_SIZE = 20
+        const val MAX_PAGE_SIZE = 100
+    }
 
     suspend fun create(service: Service): Service =
         newSuspendedTransaction {
