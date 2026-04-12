@@ -99,6 +99,25 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
+    fun `GET organizations with malformed cursor should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val malformedCursors =
+                listOf(
+                    "garbage",
+                    "",
+                    "a|b|c|extra",
+                    "123|not-a-uuid",
+                    "not-a-number.0|${UUID.randomUUID()}",
+                )
+            for (cursor in malformedCursors) {
+                val response = client.get("/api/organizations?cursor=$cursor")
+                assertEquals(HttpStatusCode.BadRequest, response.status, "Expected 400 for cursor: '$cursor'")
+            }
+        }
+
+    @Test
     fun `POST organizations should create and return organization with 201`() =
         testApplication {
             application { module(initDatabase = false) }

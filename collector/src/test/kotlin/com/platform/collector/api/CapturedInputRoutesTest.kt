@@ -195,6 +195,25 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
+    fun `GET captured-inputs with malformed cursor should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val malformedCursors =
+                listOf(
+                    "garbage",
+                    "",
+                    "a|b|c|extra",
+                    "123|not-a-uuid",
+                    "not-a-number.0|${UUID.randomUUID()}",
+                )
+            for (cursor in malformedCursors) {
+                val response = client.get("/api/captured-inputs?cursor=$cursor")
+                assertEquals(HttpStatusCode.BadRequest, response.status, "Expected 400 for cursor: '$cursor'")
+            }
+        }
+
+    @Test
     fun `GET captured-input by id should return input when exists`() =
         testApplication {
             application { module(initDatabase = false) }
