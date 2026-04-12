@@ -112,13 +112,7 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 - The collector batch endpoint is the core integration point. When implemented, needs tests for: valid batch, FK violation, empty batch, malformed JSON, oversized batch, idempotency.
 
-### GAP-4: `ConfigClient` Swallows `CancellationException` (MEDIUM)
-
-- **Location**: `agent/src/main/kotlin/com/platform/agent/ConfigClient.kt`, lines 41-44
-- **Issue**: `fetchConfig` catches all `Exception` subtypes including `CancellationException`. Coroutine cancellation should never be swallowed.
-- **Fix**: Add `} catch (e: CancellationException) { throw e }` before the general `Exception` catch.
-
-### GAP-6: No Test for `KubernetesAdapter.close()` Resource Cleanup (LOW)
+### GAP-4: No Test for `KubernetesAdapter.close()` Resource Cleanup (LOW)
 
 - Nothing verifies `close()` propagates to the underlying Kubernetes client. `KubernetesAdapter` should implement `Closeable`.
 
