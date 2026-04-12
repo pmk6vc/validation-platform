@@ -44,7 +44,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Run tests
-        run: ./gradlew :shared:test :app:test :collector:test :agent:test
+        run: ./gradlew test
 
       - name: Generate coverage report
         if: always()
