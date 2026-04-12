@@ -7,9 +7,11 @@ import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.random.Random
 
 class TrafficTransformer(
     private val configRef: AtomicReference<DynamicConfig>,
+    private val random: Random = Random.Default,
 ) {
     private val logger = LoggerFactory.getLogger(TrafficTransformer::class.java)
     private val base64Decoder = Base64.getDecoder()
@@ -51,7 +53,7 @@ class TrafficTransformer(
                 it.request?.method != null &&
                     it.request.url != null &&
                     it.response?.status != null
-            }.filter { Math.random() < samplingRate }
+            }.filter { random.nextDouble() < samplingRate }
             .map { entry ->
                 CapturedInputRequest(
                     serviceId = targetServices.getValue(entry.dst!!.name!!),

@@ -54,24 +54,7 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ---
 
-### ARCH-4: `TrafficTransformer` Uses `Math.random()` — Not Testable
-
-- **Location**: `agent/src/main/kotlin/com/platform/agent/TrafficTransformer.kt`, line 54
-- **Issue**: `Math.random()` is a static call that cannot be injected or seeded. Tests completely avoid testing sampling behavior (all use `samplingRate = 1.0`). The statistical correctness of sampling is untested.
-- **Impact**: A bug that always accepts or always rejects entries would not be caught.
-- **Fix**: Inject a `Random` instance. Replace `Math.random() < samplingRate` with `random.nextDouble() < samplingRate`. Tests can then inject a seeded `Random`.
-
----
-
-### ARCH-5: `ServiceRepository.upsert` Has a Non-Atomic Read-After-Write Gotcha
-
-- **Location**: `app/src/main/kotlin/com/platform/database/ServiceRepository.kt`, lines 117-152
-- **Issue**: The `upsert` method generates a fresh UUID for the input service, but on conflict the original row's ID is preserved (`onUpdateExclude` includes `Services.id`). The caller's `service.id` is silently discarded. Any caller that uses `service.id` instead of the returned value has a stale ID — a subtle correctness trap that will cause FK violations when the agent registers services.
-- **Fix**: Document that callers must use the returned value and never the input `service.id`, or restructure to query first by natural key.
-
----
-
-### ARCH-6: `DatabaseFactory` Has No Connection Pool Configuration — Uses Exposed Defaults
+### ARCH-4: `DatabaseFactory` Has No Connection Pool Configuration — Uses Exposed Defaults
 
 - **Location**: `shared/src/main/kotlin/com/platform/database/DatabaseFactory.kt`
 - **Issue**: `Database.connect(...)` called without a `DataSource` means Exposed manages connections internally using its default pool, which is not HikariCP. The CLAUDE.md mentions "HikariCP connection pool" but the code does not use it. No configuration of pool size, connection timeout, idle timeout, or health validation.
@@ -99,15 +82,7 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ---
 
-### QUALITY-3: `OrganizationRoutesTest` Uses String Containment Instead of Structured Assertions
-
-- **Location**: `app/src/test/kotlin/com/platform/api/OrganizationRoutesTest.kt`, lines 41-45, 53-63
-- **Issue**: Tests like `assertTrue(body.contains("\"items\""))` are brittle and can pass with wrong JSON structure. `ServiceRoutesTest` correctly deserializes responses.
-- **Fix**: Deserialize all route responses to typed models and assert on fields.
-
----
-
-### QUALITY-6: `DynamicConfig` Fields Are Not Validated After Deserialization
+### QUALITY-3: `DynamicConfig` Fields Are Not Validated After Deserialization
 
 - **Location**: `agent/src/main/kotlin/com/platform/agent/AgentConfig.kt`; `agent/src/main/kotlin/com/platform/agent/ConfigClient.kt`, line 40
 - **Issue**: No validation after deserializing `DynamicConfig`. A `samplingRate = -0.5`, `batchSize = 0`, or `captureInterval = 0ms` would cause severe issues — e.g., zero captureInterval turns the capture loop into a tight-spin CPU loop.
@@ -123,15 +98,7 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ---
 
-### QUALITY-8: `app` and `collector` Application Modules Are Nearly Identical — Copy-Paste Risk
-
-- **Location**: `app/src/main/kotlin/com/platform/Application.kt`; `collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt`
-- **Issue**: Same `StatusPages` configuration, same `ContentNegotiation` configuration, same SQL state handling. Changes must be duplicated.
-- **Fix**: Extract a `fun Application.configurePlatformPlugins()` into `shared/` that both call.
-
----
-
-### QUALITY-9: `ignoreUnknownKeys = true` on Server-Side JSON Parser
+### QUALITY-8: `ignoreUnknownKeys = true` on Server-Side JSON Parser
 
 - **Location**: `app/src/main/kotlin/com/platform/Application.kt`, line 41; same in `CollectorApplication.kt`
 - **Issue**: Server silently accepts request bodies with unrecognized fields. Typos in field names are invisible. A client sending `{"organizationid": "..."}` instead of `{"organizationId": "..."}` gets a confusing error for a missing required field rather than an unknown field warning.
@@ -141,27 +108,11 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ## Test Coverage Gaps
 
-### GAP-1: No Test for Sampling Logic at Non-Trivial Rates (HIGH)
-
-- All tests use `samplingRate = 1.0`. No test verifies that `samplingRate = 0.5` accepts ~50% of entries.
-- **Fix**: After injecting `Random` (ARCH-4), add a test with 1000 entries, `samplingRate = 0.5`, and a seeded `Random`.
-
-### GAP-3: No Test for `POST /api/captured-inputs` — Which Doesn't Exist Yet (CRITICAL)
+### GAP-1: No Test for `POST /api/captured-inputs` — Which Doesn't Exist Yet (CRITICAL)
 
 - The collector batch endpoint is the core integration point. When implemented, needs tests for: valid batch, FK violation, empty batch, malformed JSON, oversized batch, idempotency.
 
-### GAP-4: `ConfigClient` Swallows `CancellationException` (MEDIUM)
-
-- **Location**: `agent/src/main/kotlin/com/platform/agent/ConfigClient.kt`, lines 41-44
-- **Issue**: `fetchConfig` catches all `Exception` subtypes including `CancellationException`. Coroutine cancellation should never be swallowed.
-- **Fix**: Add `} catch (e: CancellationException) { throw e }` before the general `Exception` catch.
-
-### GAP-5: No Test for `ServiceRepository.upsert` Returning Existing Row's ID (MEDIUM)
-
-- `upsert` on an existing service returns the original row's ID, not the input's. No test verifies this.
-- **Fix**: Test that calls `upsert` twice with same natural key but different UUIDs, asserts returned ID matches first call.
-
-### GAP-6: No Test for `KubernetesAdapter.close()` Resource Cleanup (LOW)
+### GAP-4: No Test for `KubernetesAdapter.close()` Resource Cleanup (LOW)
 
 - Nothing verifies `close()` propagates to the underlying Kubernetes client. `KubernetesAdapter` should implement `Closeable`.
 
