@@ -1,6 +1,7 @@
 package com.platform.agent
 
 import com.platform.agent.models.BatchCapturedInputRequest
+import com.platform.agent.models.CapturedInputRequest
 import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
@@ -49,220 +50,33 @@ import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 /**
- * Integration test wiring real components with mock backends.
- * Verifies the full pipeline: Kubeshark entries → transformer → collector POST.
+ * Integration tests for the agent's traffic **capture pipeline**: the chain
+ * that runs from Kubeshark WebSocket → [KubesharkClient]'s channel →
+ * [captureOneBatch] → [TrafficTransformer] → [CollectorClient] POST.
+ *
+ * The `ConfigClient` and service-discovery loops are **intentionally out of
+ * scope** here — they're tested in isolation in [LoopLogicTest]. This file
+ * focuses on the one part of the agent where real transport, real
+ * backpressure, and real error recovery meaningfully interact: the data
+ * path from Kubeshark to the collector.
+ *
+ * Every test uses [withWiredPipeline] to stand up:
+ *   - an embedded Ktor Netty server as a fake Kubeshark hub
+ *   - a real [KubesharkClient] connected over a real WebSocket
+ *   - a real [TrafficTransformer]
+ *   - a real [CollectorClient] backed by a [MockEngine] HTTP client so tests
+ *     can script responses and inspect every received batch
  */
-class AgentIntegrationTest {
+class CapturePipelineIntegrationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /**
-     * Serialize a [KubesharkEntry] to the wire format the real Kubeshark
-     * server emits. Tests use this to push typed fixtures through the
-     * embedded WebSocket server as JSON text frames.
-     */
-    private fun entryJson(entry: KubesharkEntry): String = json.encodeToString(KubesharkEntry.serializer(), entry)
-
-    // Payloads used to build the test entries and assert against the collector batch.
-    // e1 exercises the plaintext response-body path; e2 exercises both the base64
-    // response-body decode path and the request-body capture from `postData.text`.
-    private val e1ResponseBody = """{"id": 1, "status": "pending"}"""
-    private val e2RequestBody = """{"total": 42.99}"""
-    private val e2ResponseBody = """{"id": 2, "status": "created"}"""
-    private val e2ResponseBodyBase64: String =
-        Base64.getEncoder().encodeToString(e2ResponseBody.toByteArray())
-
-    private val testEntries =
-        listOf(
-            // e1: HTTP GET to order-service — should be captured.
-            // Response body is plaintext (encoding == null) to exercise passthrough.
-            KubesharkEntry(
-                id = "e1",
-                timestamp = 1000,
-                protocol = KubesharkProtocol(name = "http"),
-                src = KubesharkEndpoint(ip = "10.0.0.1"),
-                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
-                request =
-                    KubesharkRequest(
-                        method = "GET",
-                        url = "/api/orders/1",
-                        headers = listOf(KubesharkHeader("Accept", "application/json")),
-                    ),
-                response =
-                    KubesharkResponse(
-                        status = 200,
-                        content = KubesharkContent(text = e1ResponseBody),
-                    ),
-            ),
-            // e2: HTTP POST to order-service — should be captured.
-            // Carries a plaintext request body in postData (like a real Kubeshark
-            // POST) and a base64-encoded response body (the default for Kubeshark
-            // since it's binary-safe). The integration test verifies both the
-            // request body is forwarded verbatim AND the response body is decoded
-            // before reaching the collector.
-            KubesharkEntry(
-                id = "e2",
-                timestamp = 1001,
-                protocol = KubesharkProtocol(name = "http"),
-                src = KubesharkEndpoint(ip = "10.0.0.1"),
-                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
-                request =
-                    KubesharkRequest(
-                        method = "POST",
-                        url = "/api/orders",
-                        postData =
-                            KubesharkPostData(
-                                text = e2RequestBody,
-                                mimeType = "application/json",
-                            ),
-                    ),
-                response =
-                    KubesharkResponse(
-                        status = 201,
-                        content =
-                            KubesharkContent(
-                                text = e2ResponseBodyBase64,
-                                encoding = "base64",
-                                mimeType = "application/json",
-                            ),
-                    ),
-            ),
-            // e3: HTTP to unknown-service — should be filtered out (not a target)
-            KubesharkEntry(
-                id = "e3",
-                timestamp = 1002,
-                protocol = KubesharkProtocol(name = "http"),
-                src = KubesharkEndpoint(ip = "10.0.0.1"),
-                dst = KubesharkEndpoint(name = "unknown-service", ip = "10.0.0.3"),
-                request = KubesharkRequest(method = "GET", url = "/health"),
-                response = KubesharkResponse(status = 200),
-            ),
-            // e4: gRPC to order-service — should be filtered out (not HTTP)
-            KubesharkEntry(
-                id = "e4",
-                timestamp = 1003,
-                protocol = KubesharkProtocol(name = "grpc"),
-                dst = KubesharkEndpoint(name = "order-service"),
-                request = KubesharkRequest(method = "GetOrder", url = "/orders.OrderService/GetOrder"),
-                response = KubesharkResponse(status = 0),
-            ),
-        )
-
-    @Test
-    fun `full pipeline filters and transforms kubeshark entries to collector batch`() =
-        withWiredPipeline(
-            wsHandler = { index ->
-                if (index != 1) {
-                    delay(2_000.milliseconds)
-                    return@withWiredPipeline
-                }
-                testEntries.forEach { send(Frame.Text(entryJson(it))) }
-                delay(500.milliseconds)
-            },
-        ) { pipeline ->
-            // Drain in a loop until we've seen both expected captured items
-            // (or time out). The raw stream has 4 frames; 2 pass filters.
-            val deadline = System.currentTimeMillis() + 3_000
-            var capturedItems: List<com.platform.agent.models.CapturedInputRequest> = emptyList()
-            while (capturedItems.size < 2 && System.currentTimeMillis() < deadline) {
-                pipeline.captureBatch(maxWait = 200.milliseconds)
-                synchronized(pipeline.collectorRequests) {
-                    capturedItems = pipeline.collectorRequests.flatMap { it.items }
-                }
-            }
-
-            assertEquals(2, capturedItems.size, "only e1 and e2 should pass filters")
-
-            // e1 — GET, plaintext response body pass-through
-            val item1 = capturedItems.find { it.url == "/api/orders/1" }!!
-            assertEquals("GET", item1.method)
-            assertEquals("svc-123", item1.serviceId)
-            assertNull(item1.requestBody, "GET has no request body")
-            assertEquals(
-                e1ResponseBody,
-                item1.responseBody,
-                "plaintext response body should pass through without modification",
-            )
-
-            // e2 — POST with postData + base64 response body
-            val item2 = capturedItems.find { it.url == "/api/orders" }!!
-            assertEquals("POST", item2.method)
-            assertEquals("svc-123", item2.serviceId)
-            assertEquals(
-                e2RequestBody,
-                item2.requestBody,
-                "request body should be captured from postData.text",
-            )
-            assertEquals(
-                e2ResponseBody,
-                item2.responseBody,
-                "base64-encoded response body should be decoded before forwarding",
-            )
-            assertTrue(
-                item2.responseBody != e2ResponseBodyBase64,
-                "collector should receive decoded bytes, not the base64 ciphertext",
-            )
-        }
-
-    @Test
-    fun `pipeline posts nothing when no target services configured`() =
-        withWiredPipeline(
-            wsHandler = { index ->
-                if (index != 1) {
-                    delay(2_000.milliseconds)
-                    return@withWiredPipeline
-                }
-                testEntries.forEach { send(Frame.Text(entryJson(it))) }
-                delay(500.milliseconds)
-            },
-            dynamicConfig = DynamicConfig(targetServices = emptyMap()),
-        ) { pipeline ->
-            // Drain repeatedly; all entries should be filtered out by the
-            // (empty) targetServices map, so the collector should never be
-            // called at all.
-            repeat(4) { pipeline.captureBatch(maxWait = 200.milliseconds) }
-
-            synchronized(pipeline.collectorRequests) {
-                assertEquals(
-                    0,
-                    pipeline.collectorRequests.size,
-                    "no collector POSTs should happen when no target services match",
-                )
-            }
-        }
-
-    @Test
-    fun `pipeline handles an idle traffic stream gracefully`(): Unit =
-        withWiredPipeline(
-            // Server accepts the connection, reads the KFL filter, but never
-            // sends any frames — models an idle cluster.
-            wsHandler = { delay(2_000.milliseconds) },
-        ) { pipeline ->
-            val result = pipeline.captureBatch(maxWait = 200.milliseconds)
-
-            assertEquals(0, result.entriesProcessed)
-            assertNull(result.lag)
-            synchronized(pipeline.collectorRequests) {
-                assertEquals(0, pipeline.collectorRequests.size)
-            }
-        }
-
-    private fun MockRequestHandleScope.respondJson(
-        body: String,
-        status: HttpStatusCode = HttpStatusCode.OK,
-    ) = respond(
-        content = body,
-        status = status,
-        headers = headersOf(HttpHeaders.ContentType, "application/json"),
-    )
-
     // -----------------------------------------------------------------------
-    // Failure-mode tests
+    // Test harness
     //
-    // Unlike the three tests above (which use a `mockk<KubesharkClient>` to
-    // exercise pipeline logic cheaply), the tests below wire up the REAL
-    // KubesharkClient against an embedded Ktor WebSocket server. This gives
-    // us real transport, real backpressure, real reconnect, and real error
-    // handling — the things we care about when testing failure modes.
+    // Real KubesharkClient wired to an embedded Ktor WebSocket server, real
+    // CollectorClient backed by a MockEngine. Used by every test in this file
+    // so we exercise real transport, real backpressure, real reconnect, and
+    // real error handling.
     // -----------------------------------------------------------------------
 
     /**
@@ -410,9 +224,30 @@ class AgentIntegrationTest {
         }
     }
 
+    private fun MockRequestHandleScope.respondJson(
+        body: String,
+        status: HttpStatusCode = HttpStatusCode.OK,
+    ) = respond(
+        content = body,
+        status = status,
+        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+    )
+
+    // -----------------------------------------------------------------------
+    // Fixture helpers
+    // -----------------------------------------------------------------------
+
     /**
-     * Helper: craft a test HTTP entry that the default target-services map
-     * ("order-service" → "svc-123") will match.
+     * Serialize a [KubesharkEntry] to the wire format the real Kubeshark
+     * server emits. Tests use this to push typed fixtures through the
+     * embedded WebSocket server as JSON text frames.
+     */
+    private fun entryJson(entry: KubesharkEntry): String = json.encodeToString(KubesharkEntry.serializer(), entry)
+
+    /**
+     * Build a JSON frame for a minimal HTTP GET entry that the default
+     * target-services map (`order-service` → `svc-123`) will match. Used by
+     * failure-mode tests that just need "some identifiable entry" per frame.
      */
     private fun entry(
         id: String,
@@ -436,6 +271,200 @@ class AgentIntegrationTest {
             "response": {"status": 200, "headers": []$contentField}
         }"""
     }
+
+    // -----------------------------------------------------------------------
+    // Rich test fixtures
+    //
+    // Payloads used to build the typed test entries and assert against the
+    // collector batch. `e1` exercises the plaintext response-body path; `e2`
+    // exercises both the base64 response-body decode path and the request-body
+    // capture from `postData.text`.
+    // -----------------------------------------------------------------------
+
+    private val e1ResponseBody = """{"id": 1, "status": "pending"}"""
+    private val e2RequestBody = """{"total": 42.99}"""
+    private val e2ResponseBody = """{"id": 2, "status": "created"}"""
+    private val e2ResponseBodyBase64: String =
+        Base64.getEncoder().encodeToString(e2ResponseBody.toByteArray())
+
+    private val testEntries =
+        listOf(
+            // e1: HTTP GET to order-service — should be captured.
+            // Response body is plaintext (encoding == null) to exercise passthrough.
+            KubesharkEntry(
+                id = "e1",
+                timestamp = 1000,
+                protocol = KubesharkProtocol(name = "http"),
+                src = KubesharkEndpoint(ip = "10.0.0.1"),
+                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
+                request =
+                    KubesharkRequest(
+                        method = "GET",
+                        url = "/api/orders/1",
+                        headers = listOf(KubesharkHeader("Accept", "application/json")),
+                    ),
+                response =
+                    KubesharkResponse(
+                        status = 200,
+                        content = KubesharkContent(text = e1ResponseBody),
+                    ),
+            ),
+            // e2: HTTP POST to order-service — should be captured.
+            // Carries a plaintext request body in postData (like a real Kubeshark
+            // POST) and a base64-encoded response body (the default for Kubeshark
+            // since it's binary-safe). The integration test verifies both the
+            // request body is forwarded verbatim AND the response body is decoded
+            // before reaching the collector.
+            KubesharkEntry(
+                id = "e2",
+                timestamp = 1001,
+                protocol = KubesharkProtocol(name = "http"),
+                src = KubesharkEndpoint(ip = "10.0.0.1"),
+                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
+                request =
+                    KubesharkRequest(
+                        method = "POST",
+                        url = "/api/orders",
+                        postData =
+                            KubesharkPostData(
+                                text = e2RequestBody,
+                                mimeType = "application/json",
+                            ),
+                    ),
+                response =
+                    KubesharkResponse(
+                        status = 201,
+                        content =
+                            KubesharkContent(
+                                text = e2ResponseBodyBase64,
+                                encoding = "base64",
+                                mimeType = "application/json",
+                            ),
+                    ),
+            ),
+            // e3: HTTP to unknown-service — should be filtered out (not a target)
+            KubesharkEntry(
+                id = "e3",
+                timestamp = 1002,
+                protocol = KubesharkProtocol(name = "http"),
+                src = KubesharkEndpoint(ip = "10.0.0.1"),
+                dst = KubesharkEndpoint(name = "unknown-service", ip = "10.0.0.3"),
+                request = KubesharkRequest(method = "GET", url = "/health"),
+                response = KubesharkResponse(status = 200),
+            ),
+            // e4: gRPC to order-service — should be filtered out (not HTTP)
+            KubesharkEntry(
+                id = "e4",
+                timestamp = 1003,
+                protocol = KubesharkProtocol(name = "grpc"),
+                dst = KubesharkEndpoint(name = "order-service"),
+                request = KubesharkRequest(method = "GetOrder", url = "/orders.OrderService/GetOrder"),
+                response = KubesharkResponse(status = 0),
+            ),
+        )
+
+    // -----------------------------------------------------------------------
+    // Tests
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `full pipeline filters and transforms kubeshark entries to collector batch`() =
+        withWiredPipeline(
+            wsHandler = { index ->
+                if (index != 1) {
+                    delay(2_000.milliseconds)
+                    return@withWiredPipeline
+                }
+                testEntries.forEach { send(Frame.Text(entryJson(it))) }
+                delay(500.milliseconds)
+            },
+        ) { pipeline ->
+            // Drain in a loop until we've seen both expected captured items
+            // (or time out). The raw stream has 4 frames; 2 pass filters.
+            val deadline = System.currentTimeMillis() + 3_000
+            var capturedItems: List<CapturedInputRequest> = emptyList()
+            while (capturedItems.size < 2 && System.currentTimeMillis() < deadline) {
+                pipeline.captureBatch(maxWait = 200.milliseconds)
+                synchronized(pipeline.collectorRequests) {
+                    capturedItems = pipeline.collectorRequests.flatMap { it.items }
+                }
+            }
+
+            assertEquals(2, capturedItems.size, "only e1 and e2 should pass filters")
+
+            // e1 — GET, plaintext response body pass-through
+            val item1 = capturedItems.find { it.url == "/api/orders/1" }!!
+            assertEquals("GET", item1.method)
+            assertEquals("svc-123", item1.serviceId)
+            assertNull(item1.requestBody, "GET has no request body")
+            assertEquals(
+                e1ResponseBody,
+                item1.responseBody,
+                "plaintext response body should pass through without modification",
+            )
+
+            // e2 — POST with postData + base64 response body
+            val item2 = capturedItems.find { it.url == "/api/orders" }!!
+            assertEquals("POST", item2.method)
+            assertEquals("svc-123", item2.serviceId)
+            assertEquals(
+                e2RequestBody,
+                item2.requestBody,
+                "request body should be captured from postData.text",
+            )
+            assertEquals(
+                e2ResponseBody,
+                item2.responseBody,
+                "base64-encoded response body should be decoded before forwarding",
+            )
+            assertTrue(
+                item2.responseBody != e2ResponseBodyBase64,
+                "collector should receive decoded bytes, not the base64 ciphertext",
+            )
+        }
+
+    @Test
+    fun `pipeline posts nothing when no target services configured`() =
+        withWiredPipeline(
+            wsHandler = { index ->
+                if (index != 1) {
+                    delay(2_000.milliseconds)
+                    return@withWiredPipeline
+                }
+                testEntries.forEach { send(Frame.Text(entryJson(it))) }
+                delay(500.milliseconds)
+            },
+            dynamicConfig = DynamicConfig(targetServices = emptyMap()),
+        ) { pipeline ->
+            // Drain repeatedly; all entries should be filtered out by the
+            // (empty) targetServices map, so the collector should never be
+            // called at all.
+            repeat(4) { pipeline.captureBatch(maxWait = 200.milliseconds) }
+
+            synchronized(pipeline.collectorRequests) {
+                assertEquals(
+                    0,
+                    pipeline.collectorRequests.size,
+                    "no collector POSTs should happen when no target services match",
+                )
+            }
+        }
+
+    @Test
+    fun `pipeline handles an idle traffic stream gracefully`(): Unit =
+        withWiredPipeline(
+            // Server accepts the connection, reads the KFL filter, but never
+            // sends any frames — models an idle cluster.
+            wsHandler = { delay(2_000.milliseconds) },
+        ) { pipeline ->
+            val result = pipeline.captureBatch(maxWait = 200.milliseconds)
+
+            assertEquals(0, result.entriesProcessed)
+            assertNull(result.lag)
+            synchronized(pipeline.collectorRequests) {
+                assertEquals(0, pipeline.collectorRequests.size)
+            }
+        }
 
     @Test
     fun `pipeline resumes capture after websocket closes and drops far-old reconnect replay`() =
