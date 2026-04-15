@@ -14,6 +14,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -54,16 +55,15 @@ import kotlin.time.Duration.Companion.seconds
  *
  * The initial query is [buildKflQuery] of whatever [targetServices] are known
  * at construction. When target services change (config poll), callers invoke
- * [updateKflQuery] with the new query string. The updated query takes effect
- * on the next reconnect — changing the filter mid-session is not supported by
- * the Kubeshark protocol, so we rely on the persistent-session reconnect cycle
- * to pick up the change.
+ * [updateKflQuery] with the new query string. If the query differs from the
+ * current one, [updateKflQuery] immediately cancels the active session so
+ * [streamerLoop] reconnects at once with the updated filter. Changing the
+ * filter mid-session is not supported by the Kubeshark protocol, so a
+ * reconnect is the only way to apply the new query.
  *
- * **Why not reconnect immediately on filter change?** Reconnects pay the
- * 4–10s history-replay cost. If `targetServices` changes infrequently (every
- * ~60s config poll), waiting for a natural reconnect is fine. The client-side
- * filter in [TrafficTransformer] continues to dedup entries that Kubeshark
- * streams between the config change and the next reconnect.
+ * During the brief window between the cancel and the reconnect, [TrafficTransformer]
+ * continues to filter client-side as a safety net, so no spurious entries
+ * reach the collector.
  *
  * **Safe KFL syntax (validated 2026-04-11):** An empty string means "no
  * filter, stream everything". The `http` keyword limits the stream to HTTP
@@ -89,25 +89,41 @@ class KubesharkClient(
 
     /**
      * The KFL query sent to Kubeshark at the start of each WebSocket session.
-     * Updated atomically by [updateKflQuery]; the new query takes effect on the
-     * next reconnect. Each [runSession] reads this once on entry.
+     * Updated atomically by [updateKflQuery]; each [runSession] reads this once
+     * on entry.
      */
     private val kflQueryRef = AtomicReference(initialKflQuery)
 
     /**
-     * Replace the KFL query used for future WebSocket sessions.
+     * The [Job] running the current [runSession] call, or `null` before the
+     * first session starts. Written by the streamer coroutine; read and
+     * cancelled by [updateKflQuery] when the query changes. [AtomicReference]
+     * keeps the write from the streamer and the cancel from the caller thread-safe.
+     */
+    private val sessionJobRef = AtomicReference<Job?>(null)
+
+    /**
+     * Replace the KFL query and, if the query actually changed, immediately
+     * cancel the active WebSocket session so [streamerLoop] reconnects with
+     * the new filter.
      *
-     * The change takes effect the next time the streamer reconnects (e.g. after
-     * a server-side close or a network failure). Until then, the old session
-     * continues streaming under the old filter — but [TrafficTransformer]
-     * continues to filter client-side as a safety net, so no spurious entries
-     * reach the collector during the transition window.
+     * Cancelling the session is the only way to apply a new KFL query because
+     * the Kubeshark protocol does not support changing the filter mid-session.
+     * The streamer reconnects after [reconnectDelay] and sends the updated
+     * query as its first frame.
      *
-     * Calling this with the same query that is already set is a no-op with
-     * respect to reconnect behavior.
+     * During the brief window between the cancel and the reconnect,
+     * [TrafficTransformer] continues to filter client-side, so no spurious
+     * entries reach the collector.
+     *
+     * Calling this with the same query that is already set is a no-op.
      */
     fun updateKflQuery(query: String) {
-        kflQueryRef.set(query)
+        val previous = kflQueryRef.getAndSet(query)
+        if (previous != query) {
+            logger.info("KFL query changed, forcing WebSocket reconnect: {}", query)
+            sessionJobRef.get()?.cancel()
+        }
     }
 
     /**
@@ -171,20 +187,29 @@ class KubesharkClient(
 
     /**
      * Long-lived streamer loop. Maintains a single WebSocket session for the
-     * lifetime of the parent scope. On session failure or clean server close,
-     * waits [RECONNECT_DELAY] and reconnects. Exits only when the parent
-     * scope is cancelled.
+     * lifetime of the parent scope. On session failure, clean server close, or
+     * cancellation via [updateKflQuery], waits [reconnectDelay] and reconnects.
+     * Exits only when the parent scope is cancelled.
      */
     private suspend fun streamerLoop() {
         while (currentCoroutineContext().isActive) {
-            try {
-                runSession()
-                // Clean close from server — reconnect after a short delay
-                logger.info("Kubeshark WebSocket closed by server, reconnecting in {}", reconnectDelay)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.error("Kubeshark WebSocket session failed, reconnecting in {}", reconnectDelay, e)
+            // supervisorScope so that cancelling the session job (via updateKflQuery)
+            // does not cancel this loop — the child's CancellationException is
+            // absorbed by supervisorScope and the while loop continues normally.
+            supervisorScope {
+                val job =
+                    launch {
+                        try {
+                            runSession()
+                            logger.info("Kubeshark WebSocket closed by server, reconnecting in {}", reconnectDelay)
+                        } catch (_: CancellationException) {
+                            // Cancelled by updateKflQuery — log and let supervisorScope handle it
+                            logger.info("Kubeshark WebSocket session cancelled (query change), reconnecting in {}", reconnectDelay)
+                        } catch (e: Exception) {
+                            logger.error("Kubeshark WebSocket session failed, reconnecting in {}", reconnectDelay, e)
+                        }
+                    }
+                sessionJobRef.set(job)
             }
             delay(reconnectDelay)
         }
@@ -196,8 +221,9 @@ class KubesharkClient(
      * (parsed as [KubesharkEntry]) into the channel. Returns when the server
      * closes the stream (`incoming` iteration ends) or throws on error.
      *
-     * The KFL query is read once from [kflQueryRef] at session start; changes
-     * made via [updateKflQuery] take effect on the next reconnect.
+     * The KFL query is read once from [kflQueryRef] at session start; a query
+     * change triggers a cancel of this session via [updateKflQuery], causing
+     * the streamer to reconnect and pick up the new query.
      */
     private suspend fun runSession() {
         val kflQuery = kflQueryRef.get()
@@ -210,9 +236,8 @@ class KubesharkClient(
         ) {
             // Send the KFL query as the first frame. Kubeshark hub parses it and
             // streams only matching entries. An empty string means "no filter,
-            // stream everything". The TrafficTransformer still filters client-side
-            // as a safety net for the window between a config change and the next
-            // reconnect.
+            // stream everything". TrafficTransformer still filters client-side as
+            // a safety net for the brief window between a cancel and the reconnect.
             send(Frame.Text(kflQuery))
             logger.info(
                 "Kubeshark WebSocket session open, KFL filter: {}",

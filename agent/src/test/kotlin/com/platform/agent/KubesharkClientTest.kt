@@ -145,7 +145,84 @@ class KubesharkClientTest {
     }
 
     @Test
-    fun `updateKflQuery takes effect on the next reconnect`() {
+    fun `updateKflQuery with the same query is a no-op and does not reconnect`() {
+        val receivedFilters = mutableListOf<String>()
+
+        withClient(
+            serverBlock = {
+                // Hold the session open; if the client reconnects unexpectedly
+                // this block will be entered a second time and receivedFilters
+                // will have two entries, failing the assertion below.
+                delay(500.milliseconds)
+            },
+            testBlock = { client ->
+                // Wait for the first (and only) session to open
+                val deadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
+                    System.currentTimeMillis() < deadline
+                ) {
+                    delay(10.milliseconds)
+                }
+
+                // Calling with the same query must NOT trigger a reconnect
+                client.updateKflQuery("http")
+                client.updateKflQuery("http")
+
+                // Give enough time for a reconnect to appear (it shouldn't)
+                delay(200.milliseconds)
+            },
+            initialKflQuery = "http",
+            reconnectDelay = 50.milliseconds,
+            receivedFilters = receivedFilters,
+        )
+
+        assertEquals(1, receivedFilters.size, "same-query update must not trigger a reconnect")
+    }
+
+    @Test
+    fun `updateKflQuery with a different query forces immediate reconnect without waiting for server close`() {
+        // The server holds its session open indefinitely — the client must
+        // reconnect on its own when the query changes, without waiting for the
+        // server to close the WebSocket.
+        val receivedFilters = mutableListOf<String>()
+
+        withClient(
+            serverBlock = {
+                // Hold open; the client-side cancel forces a reconnect regardless
+                delay(2_000.milliseconds)
+            },
+            testBlock = { client ->
+                // Wait for the first session to open
+                val firstDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
+                    System.currentTimeMillis() < firstDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+
+                // Change the query — this must cancel the active session immediately
+                client.updateKflQuery("""http and dst.name == "api-gateway"""")
+
+                // Wait for the second session to open with the updated filter
+                val secondDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 2 &&
+                    System.currentTimeMillis() < secondDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+            },
+            initialKflQuery = "http",
+            reconnectDelay = 50.milliseconds,
+            receivedFilters = receivedFilters,
+        )
+
+        assertEquals(2, receivedFilters.size)
+        assertEquals("http", receivedFilters[0])
+        assertEquals("""http and dst.name == "api-gateway"""", receivedFilters[1])
+    }
+
+    @Test
+    fun `updateKflQuery takes effect on reconnect after server closes session`() {
         // Co-ordinate via a flag so there are no timing races:
         //   1. First session opens → server waits for flag before closing
         //   2. testBlock updates the query, then sets the flag

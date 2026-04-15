@@ -34,9 +34,9 @@ class TrafficTransformer(
      * [KubesharkClient.buildKflQuery], so the server only streams entries that
      * would pass these filters. The checks here are kept as a safety net for
      * two cases:
-     *   - The brief window between a config change (new targetServices) and the
-     *     next WebSocket reconnect, during which the old KFL filter is still
-     *     active on the server.
+     *   - The brief window between a query change (which cancels the active
+     *     session) and the new session connecting, during which entries buffered
+     *     in the channel may still reflect the old filter.
      *   - Any Kubeshark version or configuration where the KFL query is not
      *     honoured as expected.
      *

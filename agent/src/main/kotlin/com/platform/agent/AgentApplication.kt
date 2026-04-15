@@ -47,9 +47,9 @@ fun main() {
     runBlocking {
         coroutineScope {
             // Build the initial KFL query from whatever targetServices are known at
-            // startup (likely empty on first boot). The config poll loop will call
-            // kubesharkClient.updateKflQuery when targetServices changes, so the
-            // next reconnect picks up the updated server-side filter.
+            // startup (likely empty on first boot). The config poll loop calls
+            // kubesharkClient.updateKflQuery when targetServices changes, which
+            // immediately forces a reconnect with the updated server-side filter.
             val initialKflQuery = KubesharkClient.buildKflQuery(dynamicConfig.get().targetServices)
             logger.info("Initial KFL query: {}", initialKflQuery.ifEmpty { "(none — streaming all)" })
 
@@ -176,9 +176,10 @@ fun discoverServices() {
 /**
  * Fetch config from the platform and update the shared AtomicReference.
  *
- * When [targetServices] changes, updates the KFL query on [kubesharkClient]
- * so the next WebSocket reconnect sends the updated server-side filter.
- * Until the reconnect occurs, [TrafficTransformer] continues to filter
+ * When [targetServices] changes, updates the KFL query on [kubesharkClient],
+ * which immediately cancels the active WebSocket session so the streamer
+ * reconnects with the updated server-side filter. During the brief window
+ * between the cancel and the reconnect, [TrafficTransformer] filters
  * client-side as a safety net.
  *
  * Returns true if config was updated, false otherwise (e.g. platform returned
@@ -200,7 +201,7 @@ suspend fun pollConfig(
         val newQuery = KubesharkClient.buildKflQuery(newConfig.targetServices)
         kubesharkClient?.updateKflQuery(newQuery)
         logger.info(
-            "KFL query updated (takes effect on next reconnect): {}",
+            "KFL query updated (reconnect triggered immediately): {}",
             newQuery,
         )
     }
