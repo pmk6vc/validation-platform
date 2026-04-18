@@ -14,6 +14,8 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -99,17 +101,19 @@ class KubesharkClientTest {
                 install(WebSockets)
             }
 
+        val clientScope = CoroutineScope(coroutineContext + Job())
         try {
             val client =
                 KubesharkClient(
                     httpClient = httpClient,
                     baseUrl = "http://127.0.0.1:$port",
-                    scope = this,
+                    scope = clientScope,
                     configFlow = configFlow,
                     reconnectDelay = reconnectDelay,
                 )
             testBlock(client, configFlow)
         } finally {
+            clientScope.cancel()
             httpClient.close()
             server.stop(100, 100)
         }

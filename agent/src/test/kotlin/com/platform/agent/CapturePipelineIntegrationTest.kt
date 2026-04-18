@@ -33,6 +33,8 @@ import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -186,13 +188,14 @@ class CapturePipelineIntegrationTest {
                 install(ContentNegotiation) { json(json) }
             }
 
+        val clientScope = CoroutineScope(coroutineContext + Job())
         try {
             val configFlow = MutableStateFlow(dynamicConfig)
             val kubesharkClient =
                 KubesharkClient(
                     httpClient = wsHttpClient,
                     baseUrl = "http://127.0.0.1:$port",
-                    scope = this,
+                    scope = clientScope,
                     configFlow = configFlow,
                     capacity = channelCapacity,
                     reconnectDelay = reconnectDelay,
@@ -219,9 +222,7 @@ class CapturePipelineIntegrationTest {
                 )
             block(pipeline)
         } finally {
-            // Cancelling the enclosing scope would be cleaner but `runBlocking`
-            // does that for us at exit. We just need to close HTTP clients and
-            // stop the server.
+            clientScope.cancel()
             wsHttpClient.close()
             collectorHttpClient.close()
             server.stop(100, 100)
