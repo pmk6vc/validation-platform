@@ -46,7 +46,9 @@ class KubernetesAdapter(
     private val clusterName: String = detectClusterName(client),
     private val namespaces: List<String> = emptyList(),
     private val excludeSystemNamespaces: Boolean = true,
-) : ServiceAdapter, Closeable {
+) :
+    ServiceAdapter,
+    Closeable {
     private val logger = LoggerFactory.getLogger(KubernetesAdapter::class.java)
 
     companion object {
