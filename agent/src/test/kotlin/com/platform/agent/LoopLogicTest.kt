@@ -18,13 +18,11 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.mockk.coEvery
 import io.mockk.mockk
-import io.mockk.slot
-import io.mockk.verify
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -71,16 +69,16 @@ class LoopLogicTest {
                             "samplingRate": 0.5
                         }""",
                     )
-                val dynamicConfig = AtomicReference(DynamicConfig.default())
+                val dynamicConfig = MutableStateFlow(DynamicConfig.default())
 
                 val updated = pollConfig(configClient, dynamicConfig)
 
                 assertTrue(updated)
                 assertEquals(
                     mapOf("order-service" to "svc-123"),
-                    dynamicConfig.get().targetServices,
+                    dynamicConfig.value.targetServices,
                 )
-                assertEquals(0.5, dynamicConfig.get().samplingRate)
+                assertEquals(0.5, dynamicConfig.value.samplingRate)
             }
 
         @Test
@@ -93,12 +91,12 @@ class LoopLogicTest {
                         targetServices = mapOf("api-gateway" to "svc-456"),
                         samplingRate = 0.8,
                     )
-                val dynamicConfig = AtomicReference(original)
+                val dynamicConfig = MutableStateFlow(original)
 
                 val updated = pollConfig(configClient, dynamicConfig)
 
                 assertFalse(updated)
-                assertEquals(original, dynamicConfig.get())
+                assertEquals(original, dynamicConfig.value)
             }
 
         @Test
@@ -120,7 +118,7 @@ class LoopLogicTest {
                         }""",
                     )
                 val dynamicConfig =
-                    AtomicReference(
+                    MutableStateFlow(
                         DynamicConfig(
                             targetServices = mapOf("old-service" to "svc-111"),
                             samplingRate = 1.0,
@@ -131,7 +129,7 @@ class LoopLogicTest {
 
                 pollConfig(configClient, dynamicConfig)
 
-                val config = dynamicConfig.get()
+                val config = dynamicConfig.value
                 // Changed fields take the new values
                 assertEquals(mapOf("new-service" to "svc-999"), config.targetServices)
                 assertEquals(0.1, config.samplingRate)
@@ -145,80 +143,6 @@ class LoopLogicTest {
                     DynamicConfig().discoveryInterval,
                     config.discoveryInterval,
                     "omitted discoveryInterval should revert to default, not stay at the old 120s",
-                )
-            }
-
-        @Test
-        fun `updates KFL query on kubeshark client when target services change`() =
-            runBlocking {
-                val configClient =
-                    configClientReturning(
-                        body = """{
-                            "targetServices": {"order-service": "svc-123"},
-                            "samplingRate": 1.0
-                        }""",
-                    )
-                val dynamicConfig = AtomicReference(DynamicConfig.default())
-
-                val kubesharkClient = mockk<KubesharkClient>(relaxed = true)
-                val capturedQuery = slot<String>()
-                io.mockk.every { kubesharkClient.updateKflQuery(capture(capturedQuery)) } returns Unit
-
-                pollConfig(configClient, dynamicConfig, kubesharkClient)
-
-                verify { kubesharkClient.updateKflQuery(any()) }
-                assertEquals(
-                    """http and dst.name == "order-service"""",
-                    capturedQuery.captured,
-                    "KFL query should match the updated target services",
-                )
-            }
-
-        @Test
-        fun `does not update KFL query when target services unchanged`() =
-            runBlocking {
-                val existingServices = mapOf("order-service" to "svc-123")
-                val configClient =
-                    configClientReturning(
-                        body = """{
-                            "targetServices": {"order-service": "svc-123"},
-                            "samplingRate": 0.5
-                        }""",
-                    )
-                val dynamicConfig =
-                    AtomicReference(
-                        DynamicConfig(targetServices = existingServices, samplingRate = 1.0),
-                    )
-
-                val kubesharkClient = mockk<KubesharkClient>(relaxed = true)
-
-                pollConfig(configClient, dynamicConfig, kubesharkClient)
-
-                // targetServices did not change, so updateKflQuery must not be called
-                verify(exactly = 0) { kubesharkClient.updateKflQuery(any()) }
-            }
-
-        @Test
-        fun `does not update KFL query when kubeshark client is null`() =
-            runBlocking {
-                // Regression guard: passing null for kubesharkClient (the default
-                // when called from tests that don't need KFL update verification)
-                // must not throw.
-                val configClient =
-                    configClientReturning(
-                        body = """{
-                            "targetServices": {"order-service": "svc-123"},
-                            "samplingRate": 1.0
-                        }""",
-                    )
-                val dynamicConfig = AtomicReference(DynamicConfig.default())
-
-                val updated = pollConfig(configClient, dynamicConfig, kubesharkClient = null)
-
-                assertTrue(updated)
-                assertEquals(
-                    mapOf("order-service" to "svc-123"),
-                    dynamicConfig.get().targetServices,
                 )
             }
     }
@@ -272,7 +196,7 @@ class LoopLogicTest {
                     install(ContentNegotiation) { json(json) }
                 }
             val dynamicConfig =
-                AtomicReference(
+                MutableStateFlow(
                     DynamicConfig(
                         targetServices = mapOf("order-service" to "svc-123"),
                         samplingRate = 1.0,

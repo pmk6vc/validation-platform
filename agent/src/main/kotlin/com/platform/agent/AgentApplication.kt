@@ -8,12 +8,13 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -22,7 +23,7 @@ private val logger = LoggerFactory.getLogger("AgentApplication")
 
 fun main() {
     val staticConfig = StaticConfig.fromEnvironment()
-    val dynamicConfig = AtomicReference(DynamicConfig.default())
+    val dynamicConfig = MutableStateFlow(DynamicConfig.default())
 
     logger.info(
         "Starting validation agent: kubeshark={}, collector={}",
@@ -46,25 +47,18 @@ fun main() {
 
     runBlocking {
         coroutineScope {
-            // Build the initial KFL query from whatever targetServices are known at
-            // startup (likely empty on first boot). The config poll loop calls
-            // kubesharkClient.updateKflQuery when targetServices changes, which
-            // immediately forces a reconnect with the updated server-side filter.
-            val initialKflQuery = KubesharkClient.buildKflQuery(dynamicConfig.get().targetServices)
-            logger.info("Initial KFL query: {}", initialKflQuery.ifEmpty { "(none — streaming all)" })
-
-            // KubesharkClient launches its streamer in this scope; cancelling the
-            // scope cancels the WebSocket session via structured concurrency.
+            // KubesharkClient observes dynamicConfig via StateFlow and
+            // reconnects automatically when targetServices changes.
             val kubesharkClient =
                 KubesharkClient(
                     httpClient = httpClient,
                     baseUrl = staticConfig.kubesharkUrl,
                     scope = this,
-                    initialKflQuery = initialKflQuery,
+                    configFlow = dynamicConfig,
                 )
 
             launch { serviceDiscoveryLoop(dynamicConfig) }
-            launch { configPollLoop(configClient, dynamicConfig, kubesharkClient) }
+            launch { configPollLoop(configClient, dynamicConfig) }
             launch {
                 trafficCaptureLoop(
                     dynamicConfig,
@@ -79,29 +73,28 @@ fun main() {
 
 // --- Loop wrappers (while/true + delay + error handling) ---
 
-suspend fun serviceDiscoveryLoop(dynamicConfig: AtomicReference<DynamicConfig>) {
+suspend fun serviceDiscoveryLoop(dynamicConfig: StateFlow<DynamicConfig>) {
     while (true) {
         try {
             discoverServices()
         } catch (e: Exception) {
             logger.error("Service discovery loop failed", e)
         }
-        delay(dynamicConfig.get().discoveryInterval)
+        delay(dynamicConfig.value.discoveryInterval)
     }
 }
 
 suspend fun configPollLoop(
     configClient: ConfigClient,
-    dynamicConfig: AtomicReference<DynamicConfig>,
-    kubesharkClient: KubesharkClient,
+    dynamicConfig: MutableStateFlow<DynamicConfig>,
 ) {
     while (true) {
         try {
-            pollConfig(configClient, dynamicConfig, kubesharkClient)
+            pollConfig(configClient, dynamicConfig)
         } catch (e: Exception) {
             logger.error("Config poll loop failed", e)
         }
-        delay(dynamicConfig.get().configPollInterval)
+        delay(dynamicConfig.value.configPollInterval)
     }
 }
 
@@ -115,13 +108,13 @@ suspend fun configPollLoop(
  * to avoid tight-looping on a persistent failure.
  */
 suspend fun trafficCaptureLoop(
-    dynamicConfig: AtomicReference<DynamicConfig>,
+    dynamicConfig: StateFlow<DynamicConfig>,
     kubesharkClient: KubesharkClient,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
 ) {
     while (true) {
-        val config = dynamicConfig.get()
+        val config = dynamicConfig.value
         try {
             val result =
                 captureOneBatch(
@@ -174,36 +167,25 @@ fun discoverServices() {
 }
 
 /**
- * Fetch config from the platform and update the shared AtomicReference.
+ * Fetch config from the platform and emit it to [dynamicConfig].
  *
- * When [targetServices] changes, updates the KFL query on [kubesharkClient],
- * which immediately cancels the active WebSocket session so the streamer
- * reconnects with the updated server-side filter. During the brief window
- * between the cancel and the reconnect, [TrafficTransformer] filters
- * client-side as a safety net.
+ * Consumers (KubesharkClient, TrafficTransformer, capture loop) observe
+ * the StateFlow and react to changes independently.
  *
  * Returns true if config was updated, false otherwise (e.g. platform returned
  * an error or is unreachable — old config is preserved in that case).
  */
 suspend fun pollConfig(
     configClient: ConfigClient,
-    dynamicConfig: AtomicReference<DynamicConfig>,
-    kubesharkClient: KubesharkClient? = null,
+    dynamicConfig: MutableStateFlow<DynamicConfig>,
 ): Boolean {
     val newConfig = configClient.fetchConfig() ?: return false
 
-    val oldConfig = dynamicConfig.getAndSet(newConfig)
+    val oldConfig = dynamicConfig.value
+    dynamicConfig.value = newConfig
+
     if (oldConfig.targetServices != newConfig.targetServices) {
-        logger.info(
-            "Target services updated: {}",
-            newConfig.targetServices.keys,
-        )
-        val newQuery = KubesharkClient.buildKflQuery(newConfig.targetServices)
-        kubesharkClient?.updateKflQuery(newQuery)
-        logger.info(
-            "KFL query updated (reconnect triggered immediately): {}",
-            newQuery,
-        )
+        logger.info("Target services updated: {}", newConfig.targetServices.keys)
     }
     if (oldConfig.samplingRate != newConfig.samplingRate) {
         logger.info(

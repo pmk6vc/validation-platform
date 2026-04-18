@@ -8,9 +8,9 @@ import com.platform.agent.models.KubesharkPostData
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.jupiter.api.Test
 import java.util.Base64
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -33,7 +33,7 @@ class TrafficTransformerTest {
                 targetServices = services,
                 samplingRate = samplingRate,
             )
-        return TrafficTransformer(AtomicReference(config), random)
+        return TrafficTransformer(MutableStateFlow(config), random)
     }
 
     private fun httpEntry(
@@ -279,17 +279,17 @@ class TrafficTransformerTest {
     }
 
     @Test
-    fun `reads config from AtomicReference on each call`() {
-        val configRef =
-            AtomicReference(
+    fun `reads config from StateFlow on each call`() {
+        val configFlow =
+            MutableStateFlow(
                 DynamicConfig(targetServices = targetServices, samplingRate = 1.0),
             )
-        val transformer = TrafficTransformer(configRef)
+        val transformer = TrafficTransformer(configFlow)
 
         val before = transformer.transform(listOf(httpEntry()))
         assertEquals(1, before.size)
 
-        configRef.set(DynamicConfig(targetServices = emptyMap()))
+        configFlow.value = DynamicConfig(targetServices = emptyMap())
 
         val after = transformer.transform(listOf(httpEntry()))
         assertTrue(after.isEmpty())

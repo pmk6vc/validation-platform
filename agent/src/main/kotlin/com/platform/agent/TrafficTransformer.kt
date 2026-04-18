@@ -3,14 +3,14 @@ package com.platform.agent
 import com.platform.agent.models.CapturedInputRequest
 import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEntry
+import kotlinx.coroutines.flow.StateFlow
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.util.Base64
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
 class TrafficTransformer(
-    private val configRef: AtomicReference<DynamicConfig>,
+    private val configFlow: StateFlow<DynamicConfig>,
     private val random: Random = Random.Default,
 ) {
     private val logger = LoggerFactory.getLogger(TrafficTransformer::class.java)
@@ -45,7 +45,7 @@ class TrafficTransformer(
      *       traffic leaves their cluster.
      */
     fun transform(entries: List<KubesharkEntry>): List<CapturedInputRequest> {
-        val config = configRef.get()
+        val config = configFlow.value
         val targetServices = config.targetServices
         val samplingRate = config.samplingRate
 
