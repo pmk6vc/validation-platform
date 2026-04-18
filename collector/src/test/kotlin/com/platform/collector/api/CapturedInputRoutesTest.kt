@@ -438,6 +438,22 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
+    fun `POST captured-inputs exceeding max batch size should return 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/captured-inputs") {
+                    contentType(ContentType.Application.Json)
+                    setBody(createTestBatchRequest(count = MAX_BATCH_SIZE + 1))
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("exceeds maximum"))
+        }
+
+    @Test
     fun `GET captured-inputs with limit=0 is clamped to 1 and returns results`() =
         testApplication {
             application { module(initDatabase = false) }

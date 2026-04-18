@@ -23,6 +23,7 @@ class AgentConfigTest {
                 mapOf(
                     "KUBESHARK_URL" to "http://kubeshark:9090",
                     "COLLECTOR_URL" to "https://collector.example.com",
+                    "APP_URL" to "https://app.example.com",
                     "API_KEY" to "vp_key_test123",
                 )
 
@@ -30,6 +31,7 @@ class AgentConfigTest {
 
             assertEquals("http://kubeshark:9090", config.kubesharkUrl)
             assertEquals("https://collector.example.com", config.collectorUrl)
+            assertEquals("https://app.example.com", config.appUrl)
             assertEquals("vp_key_test123", config.apiKey)
         }
 
@@ -38,6 +40,7 @@ class AgentConfigTest {
             val env =
                 mapOf(
                     "COLLECTOR_URL" to "https://collector.example.com",
+                    "APP_URL" to "https://app.example.com",
                     "API_KEY" to "vp_key_test123",
                 )
 
@@ -48,7 +51,7 @@ class AgentConfigTest {
 
         @Test
         fun `fromEnvironment throws when COLLECTOR_URL is missing`() {
-            val env = mapOf("API_KEY" to "vp_key_test123")
+            val env = mapOf("APP_URL" to "https://app.example.com", "API_KEY" to "vp_key_test123")
 
             val exception =
                 assertThrows<IllegalStateException> {
@@ -61,8 +64,22 @@ class AgentConfigTest {
         }
 
         @Test
+        fun `fromEnvironment throws when APP_URL is missing`() {
+            val env = mapOf("COLLECTOR_URL" to "https://collector.example.com", "API_KEY" to "vp_key_test123")
+
+            val exception =
+                assertThrows<IllegalStateException> {
+                    StaticConfig.fromEnvironment(env::get)
+                }
+            assertEquals(
+                "Required environment variable APP_URL is not set",
+                exception.message,
+            )
+        }
+
+        @Test
         fun `fromEnvironment throws when API_KEY is missing`() {
-            val env = mapOf("COLLECTOR_URL" to "https://collector.example.com")
+            val env = mapOf("COLLECTOR_URL" to "https://collector.example.com", "APP_URL" to "https://app.example.com")
 
             val exception =
                 assertThrows<IllegalStateException> {

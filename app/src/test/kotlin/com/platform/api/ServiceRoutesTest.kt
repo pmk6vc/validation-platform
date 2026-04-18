@@ -414,6 +414,28 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
+    fun `POST services with blank name returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            organizationId = testOrg.id,
+                            cluster = "prod",
+                            namespace = "default",
+                            name = "   ",
+                        ),
+                    )
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
     fun `GET service should include all fields in response`() =
         testApplication {
             application { module(initDatabase = false) }

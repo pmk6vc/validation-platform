@@ -140,7 +140,9 @@ object ServiceRepository {
                 it[metadata] = service.metadata
             }
 
-            // Return the service as it exists in the database (may have a different id if it already existed)
+            // Post-select is required because on conflict the caller's service.id is
+            // ignored and the existing row's id is kept. Exposed's upsert() doesn't
+            // support RETURNING; upsertReturning() requires Exposed 0.58+.
             Services
                 .selectAll()
                 .where {

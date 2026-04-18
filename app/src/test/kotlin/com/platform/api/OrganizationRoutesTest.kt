@@ -182,6 +182,21 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
+    fun `POST organizations with blank name returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+            val jsonClient = createJsonClient()
+
+            val response =
+                jsonClient.post("/api/organizations") {
+                    contentType(ContentType.Application.Json)
+                    setBody(CreateOrganizationRequest(name = "   "))
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
     fun `GET organizations with limit=0 is clamped to 1 and returns results`() =
         testApplication {
             application { module(initDatabase = false) }

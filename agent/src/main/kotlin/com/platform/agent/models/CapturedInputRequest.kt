@@ -18,6 +18,7 @@ data class CapturedInputRequest(
     val responseStatus: Int,
     val responseHeaders: Map<String, String>? = null,
     val responseBody: String? = null,
+    val latencyMs: Long? = null,
     val sourceIp: String? = null,
     val destinationIp: String? = null,
     val capturedAt: String,

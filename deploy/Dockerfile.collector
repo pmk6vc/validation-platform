@@ -6,7 +6,9 @@ RUN gradle :collector:buildFatJar --no-daemon
 
 # Run stage
 FROM eclipse-temurin:21-jre-alpine
+RUN addgroup -S collector && adduser -S collector -G collector
 WORKDIR /app
 COPY --from=build /app/collector/build/libs/collector.jar app.jar
+USER collector
 EXPOSE 8081
 ENTRYPOINT ["java", "-jar", "app.jar"]

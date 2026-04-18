@@ -52,6 +52,8 @@ spec:
               value: "http://kubeshark-front.default.svc.cluster.local:80"
             - name: COLLECTOR_URL
               value: "http://collector.validation.svc.cluster.local:8081"
+            - name: APP_URL
+              value: "http://app.validation.svc.cluster.local:8080"
             - name: API_KEY
               value: "test-api-key"
           livenessProbe:

@@ -56,7 +56,6 @@ class KubernetesAdapter(
                 "kube-system",
                 "kube-public",
                 "kube-node-lease",
-                "default",
             )
 
         /**

@@ -20,12 +20,13 @@ import kotlin.test.assertTrue
  *
  * ## Cluster Setup
  * The k3s cluster has actual running workloads:
+ * - **default namespace**: kubernetes (1 built-in service)
  * - **infrastructure namespace**: orders-db, redis, kafka (3 services)
  * - **production namespace**: api-gateway, order-service, notification-service (3 services)
  * - **external namespace**: webhook-stub (1 service)
  * - **Note**: Traffic Generator has no Service resource (it's a client, not a server)
  *
- * Total discoverable services: 7
+ * Total discoverable services: 8
  */
 class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
     private lateinit var testOrg: Organization
@@ -52,10 +53,10 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
             try {
                 val discoveredServices = adapter.discoverServices(testOrg.id)
 
-                // 7 services: orders-db, redis, kafka, api-gateway, order-service,
-                // notification-service, webhook-stub
+                // 8 services: kubernetes (default), orders-db, redis, kafka,
+                // api-gateway, order-service, notification-service, webhook-stub
                 // traffic-generator has no Service resource
-                assertEquals(7, discoveredServices.size, "Expected exactly 7 services")
+                assertEquals(8, discoveredServices.size, "Expected exactly 8 services")
 
                 assertTrue(discoveredServices.all { it.provider == Provider.KUBERNETES })
                 assertTrue(discoveredServices.all { it.cluster == "k3s-test-cluster" })
@@ -66,7 +67,7 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
                 }
 
                 val page = ServiceRepository.find(organizationId = testOrg.id, limit = 100)
-                assertEquals(7, page.items.size)
+                assertEquals(8, page.items.size)
                 assertEquals(
                     page.items.size,
                     page.items
@@ -193,7 +194,7 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
                         limit = 100,
                     )
 
-                assertEquals(7, clusterServices.items.size)
+                assertEquals(8, clusterServices.items.size)
                 assertTrue(clusterServices.items.all { it.cluster == "k3s-test-cluster" })
             } finally {
                 adapter.close()
@@ -212,7 +213,7 @@ class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
 
                 val initialCount =
                     ServiceRepository.find(organizationId = testOrg.id, limit = 100).items.size
-                assertEquals(7, initialCount)
+                assertEquals(8, initialCount)
 
                 val secondDiscovery = adapter.discoverServices(testOrg.id)
                 secondDiscovery.forEach { service -> ServiceRepository.upsert(service) }

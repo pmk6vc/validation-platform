@@ -197,6 +197,25 @@ class TrafficTransformerTest {
     }
 
     @Test
+    fun `populates latencyMs from elapsedTime`() {
+        val entry =
+            httpEntry().copy(elapsedTime = 42L)
+
+        val result = transformer().transform(listOf(entry))
+
+        assertEquals(1, result.size)
+        assertEquals(42L, result[0].latencyMs)
+    }
+
+    @Test
+    fun `latencyMs is null when elapsedTime is absent`() {
+        val result = transformer().transform(listOf(httpEntry()))
+
+        assertEquals(1, result.size)
+        assertNull(result[0].latencyMs)
+    }
+
+    @Test
     fun `filters out non-HTTP entries`() {
         val grpcEntry =
             KubesharkEntry(

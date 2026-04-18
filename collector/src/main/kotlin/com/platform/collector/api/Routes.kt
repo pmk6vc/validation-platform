@@ -19,6 +19,8 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import java.util.UUID
 
+const val MAX_BATCH_SIZE = 1000
+
 fun Application.configureRouting() {
     routing {
         get("/health") {
@@ -31,6 +33,12 @@ fun Application.configureRouting() {
                     val request = call.receive<BatchCreateCapturedInputRequest>()
                     if (request.items.isEmpty()) {
                         return@post call.respond(HttpStatusCode.BadRequest, "Batch must not be empty")
+                    }
+                    if (request.items.size > MAX_BATCH_SIZE) {
+                        return@post call.respond(
+                            HttpStatusCode.BadRequest,
+                            "Batch size ${request.items.size} exceeds maximum of $MAX_BATCH_SIZE",
+                        )
                     }
                     val inputs =
                         request.items.map { item ->
