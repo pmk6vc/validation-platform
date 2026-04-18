@@ -8,12 +8,13 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -22,7 +23,7 @@ private val logger = LoggerFactory.getLogger("AgentApplication")
 
 fun main() {
     val staticConfig = StaticConfig.fromEnvironment()
-    val dynamicConfig = AtomicReference(DynamicConfig.default())
+    val dynamicConfig = MutableStateFlow(DynamicConfig.default())
 
     logger.info(
         "Starting validation agent: kubeshark={}, collector={}",
@@ -46,9 +47,15 @@ fun main() {
 
     runBlocking {
         coroutineScope {
-            // KubesharkClient launches its streamer in this scope; cancelling the
-            // scope cancels the WebSocket session via structured concurrency.
-            val kubesharkClient = KubesharkClient(httpClient, staticConfig.kubesharkUrl, this)
+            // KubesharkClient observes dynamicConfig via StateFlow and
+            // reconnects automatically when targetServices changes.
+            val kubesharkClient =
+                KubesharkClient(
+                    httpClient = httpClient,
+                    baseUrl = staticConfig.kubesharkUrl,
+                    scope = this,
+                    configFlow = dynamicConfig,
+                )
 
             launch { serviceDiscoveryLoop(dynamicConfig) }
             launch { configPollLoop(configClient, dynamicConfig) }
@@ -66,20 +73,20 @@ fun main() {
 
 // --- Loop wrappers (while/true + delay + error handling) ---
 
-suspend fun serviceDiscoveryLoop(dynamicConfig: AtomicReference<DynamicConfig>) {
+suspend fun serviceDiscoveryLoop(dynamicConfig: StateFlow<DynamicConfig>) {
     while (true) {
         try {
             discoverServices()
         } catch (e: Exception) {
             logger.error("Service discovery loop failed", e)
         }
-        delay(dynamicConfig.get().discoveryInterval)
+        delay(dynamicConfig.value.discoveryInterval)
     }
 }
 
 suspend fun configPollLoop(
     configClient: ConfigClient,
-    dynamicConfig: AtomicReference<DynamicConfig>,
+    dynamicConfig: MutableStateFlow<DynamicConfig>,
 ) {
     while (true) {
         try {
@@ -87,7 +94,7 @@ suspend fun configPollLoop(
         } catch (e: Exception) {
             logger.error("Config poll loop failed", e)
         }
-        delay(dynamicConfig.get().configPollInterval)
+        delay(dynamicConfig.value.configPollInterval)
     }
 }
 
@@ -101,13 +108,13 @@ suspend fun configPollLoop(
  * to avoid tight-looping on a persistent failure.
  */
 suspend fun trafficCaptureLoop(
-    dynamicConfig: AtomicReference<DynamicConfig>,
+    dynamicConfig: StateFlow<DynamicConfig>,
     kubesharkClient: KubesharkClient,
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
 ) {
     while (true) {
-        val config = dynamicConfig.get()
+        val config = dynamicConfig.value
         try {
             val result =
                 captureOneBatch(
@@ -160,21 +167,25 @@ fun discoverServices() {
 }
 
 /**
- * Fetch config from the platform and update the shared AtomicReference.
- * Returns true if config was updated, false otherwise.
+ * Fetch config from the platform and emit it to [dynamicConfig].
+ *
+ * Consumers (KubesharkClient, TrafficTransformer, capture loop) observe
+ * the StateFlow and react to changes independently.
+ *
+ * Returns true if config was updated, false otherwise (e.g. platform returned
+ * an error or is unreachable — old config is preserved in that case).
  */
 suspend fun pollConfig(
     configClient: ConfigClient,
-    dynamicConfig: AtomicReference<DynamicConfig>,
+    dynamicConfig: MutableStateFlow<DynamicConfig>,
 ): Boolean {
     val newConfig = configClient.fetchConfig() ?: return false
 
-    val oldConfig = dynamicConfig.getAndSet(newConfig)
+    val oldConfig = dynamicConfig.value
+    dynamicConfig.value = newConfig
+
     if (oldConfig.targetServices != newConfig.targetServices) {
-        logger.info(
-            "Target services updated: {}",
-            newConfig.targetServices.keys,
-        )
+        logger.info("Target services updated: {}", newConfig.targetServices.keys)
     }
     if (oldConfig.samplingRate != newConfig.samplingRate) {
         logger.info(

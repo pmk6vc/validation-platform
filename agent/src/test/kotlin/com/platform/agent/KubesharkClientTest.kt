@@ -14,21 +14,28 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 /**
- * Tests for [KubesharkClient]'s persistent WebSocket session and drainBatch API.
+ * Tests for [KubesharkClient]'s persistent WebSocket session, drainBatch API,
+ * StateFlow-driven KFL reconnect, and [KubesharkClient.buildKflQuery].
  *
- * Each test spins up an embedded Ktor Netty server on a random port that
- * implements a fake `/api/wsFull` handler. The real [KubesharkClient] connects
- * to it over a real WebSocket, so we're exercising the full transport stack
- * (Ktor CIO client → TCP → Ktor Netty server) without mocking.
+ * Each transport test spins up an embedded Ktor Netty server on a random port
+ * that implements a fake `/api/wsFull` handler. The real [KubesharkClient]
+ * connects to it over a real WebSocket, so we're exercising the full transport
+ * stack (Ktor CIO client → TCP → Ktor Netty server) without mocking.
  */
 class KubesharkClientTest {
     private fun wsEntry(
@@ -58,19 +65,26 @@ class KubesharkClientTest {
      * Handles server startup/teardown and HTTP client creation. The test body
      * runs inside the [CoroutineScope] that owns the client's streamer job,
      * so cancelling the scope (via `runBlocking` exit) tears everything down.
+     *
+     * @param configFlow The [MutableStateFlow] driving KFL query updates.
+     *   Tests that need to trigger a reconnect can update `configFlow.value`.
+     * @param receivedFilters Mutable list populated with each KFL filter the
+     *   server receives (one per WebSocket session the client opens).
      */
     private fun withClient(
         serverBlock: suspend DefaultWebSocketServerSession.() -> Unit,
-        testBlock: suspend CoroutineScope.(KubesharkClient) -> Unit,
+        testBlock: suspend CoroutineScope.(KubesharkClient, MutableStateFlow<DynamicConfig>) -> Unit,
+        configFlow: MutableStateFlow<DynamicConfig> = MutableStateFlow(DynamicConfig.default()),
+        reconnectDelay: Duration = 50.milliseconds,
+        receivedFilters: MutableList<String> = mutableListOf(),
     ) = runBlocking {
         val server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
             embeddedServer(Netty, port = 0) {
                 install(ServerWebSockets)
                 routing {
                     webSocket("/api/wsFull") {
-                        // Read the KFL filter and assert it's empty
                         val filter = (incoming.receive() as Frame.Text).readText()
-                        assertEquals("", filter)
+                        synchronized(receivedFilters) { receivedFilters.add(filter) }
                         serverBlock()
                     }
                 }
@@ -87,14 +101,244 @@ class KubesharkClientTest {
                 install(WebSockets)
             }
 
+        val clientScope = CoroutineScope(coroutineContext + Job())
         try {
-            val client = KubesharkClient(httpClient, "http://127.0.0.1:$port", this)
-            testBlock(client)
+            val client =
+                KubesharkClient(
+                    httpClient = httpClient,
+                    baseUrl = "http://127.0.0.1:$port",
+                    scope = clientScope,
+                    configFlow = configFlow,
+                    reconnectDelay = reconnectDelay,
+                )
+            testBlock(client, configFlow)
         } finally {
+            clientScope.cancel()
             httpClient.close()
             server.stop(100, 100)
         }
     }
+
+    // -----------------------------------------------------------------------
+    // KFL filter transmission — assert what the server actually receives
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `sends http-only KFL filter when no target services configured`() {
+        val receivedFilters = mutableListOf<String>()
+        withClient(
+            serverBlock = { delay(300.milliseconds) },
+            testBlock = { _, _ -> delay(200.milliseconds) },
+            receivedFilters = receivedFilters,
+        )
+        assertEquals(listOf("http"), receivedFilters)
+    }
+
+    @Test
+    fun `sends KFL query with target services on connect`() {
+        val receivedFilters = mutableListOf<String>()
+        val config =
+            MutableStateFlow(
+                DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
+            )
+        withClient(
+            serverBlock = { delay(300.milliseconds) },
+            testBlock = { _, _ -> delay(200.milliseconds) },
+            configFlow = config,
+            receivedFilters = receivedFilters,
+        )
+        assertEquals(
+            listOf("""http and dst.name == "order-service""""),
+            receivedFilters,
+        )
+    }
+
+    @Test
+    fun `same targetServices update does not trigger reconnect`() {
+        val receivedFilters = mutableListOf<String>()
+        val config =
+            MutableStateFlow(
+                DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
+            )
+
+        withClient(
+            serverBlock = { delay(500.milliseconds) },
+            testBlock = { _, flow ->
+                val deadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
+                    System.currentTimeMillis() < deadline
+                ) {
+                    delay(10.milliseconds)
+                }
+
+                // Update with same targetServices but different samplingRate
+                flow.value =
+                    DynamicConfig(
+                        targetServices = mapOf("order-service" to "svc-1"),
+                        samplingRate = 0.5,
+                    )
+
+                delay(200.milliseconds)
+            },
+            configFlow = config,
+            receivedFilters = receivedFilters,
+        )
+
+        assertEquals(1, receivedFilters.size, "same targetServices must not trigger reconnect")
+    }
+
+    @Test
+    fun `targetServices change forces immediate reconnect`() {
+        val receivedFilters = mutableListOf<String>()
+        val config =
+            MutableStateFlow(
+                DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
+            )
+
+        withClient(
+            serverBlock = { delay(2_000.milliseconds) },
+            testBlock = { _, flow ->
+                val firstDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
+                    System.currentTimeMillis() < firstDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+
+                // Change targetServices via the StateFlow
+                flow.value =
+                    DynamicConfig(
+                        targetServices = mapOf("api-gateway" to "svc-2"),
+                    )
+
+                val secondDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 2 &&
+                    System.currentTimeMillis() < secondDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+            },
+            configFlow = config,
+            receivedFilters = receivedFilters,
+        )
+
+        assertEquals(2, receivedFilters.size)
+        assertEquals("""http and dst.name == "order-service"""", receivedFilters[0])
+        assertEquals("""http and dst.name == "api-gateway"""", receivedFilters[1])
+    }
+
+    @Test
+    fun `config change takes effect on reconnect after server closes session`() {
+        val allowFirstSessionToClose = AtomicBoolean(false)
+        val receivedFilters = mutableListOf<String>()
+        val config =
+            MutableStateFlow(
+                DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
+            )
+
+        withClient(
+            serverBlock = {
+                val sessionIndex = synchronized(receivedFilters) { receivedFilters.size }
+                when (sessionIndex) {
+                    1 -> {
+                        val deadline = System.currentTimeMillis() + 2_000
+                        while (!allowFirstSessionToClose.get() && System.currentTimeMillis() < deadline) {
+                            delay(10.milliseconds)
+                        }
+                    }
+                    else -> delay(500.milliseconds)
+                }
+            },
+            testBlock = { _, flow ->
+                val firstFilterDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
+                    System.currentTimeMillis() < firstFilterDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+
+                flow.value =
+                    DynamicConfig(
+                        targetServices = mapOf("api-gateway" to "svc-2"),
+                    )
+                allowFirstSessionToClose.set(true)
+
+                val secondFilterDeadline = System.currentTimeMillis() + 2_000
+                while (synchronized(receivedFilters) { receivedFilters.size } < 2 &&
+                    System.currentTimeMillis() < secondFilterDeadline
+                ) {
+                    delay(10.milliseconds)
+                }
+            },
+            configFlow = config,
+            receivedFilters = receivedFilters,
+        )
+
+        assertEquals(2, receivedFilters.size)
+        assertEquals("""http and dst.name == "order-service"""", receivedFilters[0])
+        assertEquals("""http and dst.name == "api-gateway"""", receivedFilters[1])
+    }
+
+    // -----------------------------------------------------------------------
+    // buildKflQuery — pure function, no server needed
+    // -----------------------------------------------------------------------
+
+    @Nested
+    inner class BuildKflQueryTests {
+        @Test
+        fun `empty target services returns http only`() {
+            assertEquals("http", KubesharkClient.buildKflQuery(emptyMap()))
+        }
+
+        @Test
+        fun `single service returns http and dst name filter`() {
+            val query = KubesharkClient.buildKflQuery(mapOf("order-service" to "svc-1"))
+            assertEquals("""http and dst.name == "order-service"""", query)
+        }
+
+        @Test
+        fun `two services returns http and parenthesised or filter`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf("order-service" to "svc-1", "api-gateway" to "svc-2"),
+                )
+            // Both service names must appear; order is map iteration order
+            assertTrue(query.startsWith("http and ("), "should start with 'http and ('")
+            assertTrue(query.endsWith(")"), "should end with ')'")
+            assertTrue(query.contains("""dst.name == "order-service""""))
+            assertTrue(query.contains("""dst.name == "api-gateway""""))
+            assertTrue(query.contains(" or "))
+        }
+
+        @Test
+        fun `three services returns http and parenthesised or filter`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        "svc-a" to "id-1",
+                        "svc-b" to "id-2",
+                        "svc-c" to "id-3",
+                    ),
+                )
+            assertTrue(query.startsWith("http and ("))
+            assertTrue(query.contains("""dst.name == "svc-a""""))
+            assertTrue(query.contains("""dst.name == "svc-b""""))
+            assertTrue(query.contains("""dst.name == "svc-c""""))
+        }
+
+        @Test
+        fun `service ID values are not included in the KFL query`() {
+            // Only the K8s service name (key) should appear in the query,
+            // not the platform service ID (value).
+            val query = KubesharkClient.buildKflQuery(mapOf("my-svc" to "platform-id-xyz"))
+            assertTrue(query.contains("my-svc"))
+            assertTrue(!query.contains("platform-id-xyz"))
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // drainBatch — transport and channel behaviour
+    // -----------------------------------------------------------------------
 
     @Test
     fun `drainBatch returns entries produced by the streamer`() =
@@ -106,7 +350,7 @@ class KubesharkClientTest {
                 // Hold the connection open long enough for the client to drain
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 // Give the streamer a moment to move all 3 frames into the channel
                 delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 2000.milliseconds)
@@ -129,7 +373,7 @@ class KubesharkClientTest {
                 }
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 // Wait briefly so the streamer has time to move everything into the channel
                 delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 3, maxWait = 2000.milliseconds)
@@ -151,7 +395,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("delayed-1", 5000L)))
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 // First drain — server hasn't sent anything yet, times out
                 val empty = client.drainBatch(limit = 100, maxWait = 200.milliseconds)
                 assertTrue(empty.isEmpty(), "drainBatch should return empty when no entries arrive within maxWait")
@@ -179,7 +423,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e4", 4000L)))
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 delay(200.milliseconds)
                 val firstBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
                 assertEquals(2, firstBatch.size)
@@ -202,7 +446,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e2", 2000L)))
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
@@ -224,7 +468,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e2", 1_001_000L)))
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 
@@ -247,7 +491,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e4", 13_000L)))
                 delay(500.milliseconds)
             },
-            testBlock = { client ->
+            testBlock = { client, _ ->
                 delay(200.milliseconds)
                 val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
 

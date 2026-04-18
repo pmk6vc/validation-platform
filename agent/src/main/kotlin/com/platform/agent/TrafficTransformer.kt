@@ -3,14 +3,14 @@ package com.platform.agent
 import com.platform.agent.models.CapturedInputRequest
 import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEntry
+import kotlinx.coroutines.flow.StateFlow
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.util.Base64
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
 class TrafficTransformer(
-    private val configRef: AtomicReference<DynamicConfig>,
+    private val configFlow: StateFlow<DynamicConfig>,
     private val random: Random = Random.Default,
 ) {
     private val logger = LoggerFactory.getLogger(TrafficTransformer::class.java)
@@ -30,19 +30,22 @@ class TrafficTransformer(
      * 3. Only keep entries with required fields (method, url, status)
      * 4. Apply sampling rate
      *
-     * TODO: Push the HTTP protocol filter into the KFL query sent to Kubeshark
-     *       (KubesharkClient.collectEntries) so the server stops streaming
-     *       non-HTTP entries we would discard anyway. At full production traffic,
-     *       client-side filtering burns agent CPU parsing entries the agent
-     *       immediately throws away. Same goes for the `dst.name` service filter
-     *       once we know KFL syntax for it.
+     * Filters 1 and 2 are also pushed to Kubeshark as a KFL query via
+     * [KubesharkClient.buildKflQuery], so the server only streams entries that
+     * would pass these filters. The checks here are kept as a safety net for
+     * two cases:
+     *   - The brief window between a query change (which cancels the active
+     *     session) and the new session connecting, during which entries buffered
+     *     in the channel may still reflect the old filter.
+     *   - Any Kubeshark version or configuration where the KFL query is not
+     *     honoured as expected.
      *
      * TODO: Support configurable header stripping (e.g. Authorization, Cookie)
      *       via DynamicConfig so customers can redact sensitive headers before
      *       traffic leaves their cluster.
      */
     fun transform(entries: List<KubesharkEntry>): List<CapturedInputRequest> {
-        val config = configRef.get()
+        val config = configFlow.value
         val targetServices = config.targetServices
         val samplingRate = config.samplingRate
 

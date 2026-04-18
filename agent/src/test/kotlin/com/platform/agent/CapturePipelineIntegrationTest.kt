@@ -33,13 +33,15 @@ import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -93,6 +95,7 @@ class CapturePipelineIntegrationTest {
         val transformer: TrafficTransformer,
         val collectorRequests: MutableList<BatchCapturedInputRequest>,
         val collectorFailureCount: AtomicInteger,
+        val configFlow: MutableStateFlow<DynamicConfig>,
     ) {
         suspend fun captureBatch(
             batchSize: Int = 100,
@@ -138,7 +141,7 @@ class CapturePipelineIntegrationTest {
                 install(ServerWebSockets)
                 routing {
                     webSocket("/api/wsFull") {
-                        // Consume the KFL filter frame (empty string from our client)
+                        // Consume the KFL filter frame sent by KubesharkClient
                         incoming.receive()
                         val index = connectionCounter.incrementAndGet()
                         wsHandler(index)
@@ -185,12 +188,15 @@ class CapturePipelineIntegrationTest {
                 install(ContentNegotiation) { json(json) }
             }
 
+        val clientScope = CoroutineScope(coroutineContext + Job())
         try {
+            val configFlow = MutableStateFlow(dynamicConfig)
             val kubesharkClient =
                 KubesharkClient(
                     httpClient = wsHttpClient,
                     baseUrl = "http://127.0.0.1:$port",
-                    scope = this,
+                    scope = clientScope,
+                    configFlow = configFlow,
                     capacity = channelCapacity,
                     reconnectDelay = reconnectDelay,
                 )
@@ -203,7 +209,7 @@ class CapturePipelineIntegrationTest {
                     initialBackoff = 5.milliseconds,
                     maxBackoff = 50.milliseconds,
                 )
-            val transformer = TrafficTransformer(AtomicReference(dynamicConfig))
+            val transformer = TrafficTransformer(configFlow)
 
             val pipeline =
                 WiredPipeline(
@@ -212,12 +218,11 @@ class CapturePipelineIntegrationTest {
                     transformer = transformer,
                     collectorRequests = collectorRequests,
                     collectorFailureCount = collectorFailureCount,
+                    configFlow = configFlow,
                 )
             block(pipeline)
         } finally {
-            // Cancelling the enclosing scope would be cleaner but `runBlocking`
-            // does that for us at exit. We just need to close HTTP clients and
-            // stop the server.
+            clientScope.cancel()
             wsHttpClient.close()
             collectorHttpClient.close()
             server.stop(100, 100)
@@ -245,14 +250,16 @@ class CapturePipelineIntegrationTest {
     private fun entryJson(entry: KubesharkEntry): String = json.encodeToString(KubesharkEntry.serializer(), entry)
 
     /**
-     * Build a JSON frame for a minimal HTTP GET entry that the default
-     * target-services map (`order-service` → `svc-123`) will match. Used by
-     * failure-mode tests that just need "some identifiable entry" per frame.
+     * Build a JSON frame for a minimal HTTP GET entry. [dstName] controls which
+     * service the entry targets — defaults to `order-service` so existing
+     * failure-mode tests that just need "some identifiable entry" continue to
+     * work without changes.
      */
     private fun entry(
         id: String,
         timestamp: Long,
         body: String? = null,
+        dstName: String = "order-service",
     ): String {
         val contentField =
             if (body != null) {
@@ -266,8 +273,8 @@ class CapturePipelineIntegrationTest {
             "protocol": {"name": "http", "abbr": "HTTP"},
             "tls": false,
             "src": {"ip": "10.0.0.1", "port": "45678", "name": "client", "namespace": "production"},
-            "dst": {"ip": "10.0.0.2", "port": "8080", "name": "order-service", "namespace": "production"},
-            "request": {"method": "GET", "url": "/api/orders/$id", "headers": []},
+            "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production"},
+            "request": {"method": "GET", "url": "/api/$dstName/$id", "headers": []},
             "response": {"status": 200, "headers": []$contentField}
         }"""
     }
@@ -619,6 +626,87 @@ class CapturePipelineIntegrationTest {
                 2,
                 pipeline.collectorFailureCount.get(),
                 "the first two attempts should have been recorded as transient failures",
+            )
+        }
+
+    @Test
+    fun `config change via StateFlow triggers reconnect and filters with new target services`() =
+        withWiredPipeline(
+            wsHandler = { index ->
+                // Each session sends one order-service entry and one api-gateway
+                // entry, then holds open. The reconnect is therefore always forced
+                // by the config change, not by the server closing the connection.
+                val ts = index.toLong() * 10_000_000L
+                send(Frame.Text(entry("os-$index", ts + 1, dstName = "order-service")))
+                send(Frame.Text(entry("gw-$index", ts + 2, dstName = "api-gateway")))
+                delay(5_000.milliseconds)
+            },
+        ) { pipeline ->
+            // --- Phase 1: only order-service entries should be captured ---
+            // The initial configFlow has targetServices = {"order-service": "svc-123"}.
+            // Session 1 sends one order-service entry and one api-gateway entry.
+            // TrafficTransformer must pass only the order-service entry.
+            val deadline1 = System.currentTimeMillis() + 3_000
+            var phase1Items: List<CapturedInputRequest> = emptyList()
+            while (phase1Items.isEmpty() && System.currentTimeMillis() < deadline1) {
+                pipeline.captureBatch(maxWait = 200.milliseconds)
+                synchronized(pipeline.collectorRequests) {
+                    phase1Items = pipeline.collectorRequests.flatMap { it.items }
+                }
+            }
+
+            assertEquals(1, phase1Items.size, "only order-service entry should pass in phase 1")
+            assertEquals("svc-123", phase1Items[0].serviceId)
+            assertTrue(
+                phase1Items[0].url.contains("order-service"),
+                "captured URL should be from order-service",
+            )
+
+            // --- Config change: switch target services to api-gateway only ---
+            // Updating configFlow triggers KubesharkClient.configWatcherJob, which
+            // cancels the active session. After reconnectDelay (50ms), a new session
+            // opens with the updated KFL query. TrafficTransformer also reads the
+            // new config snapshot on its next call.
+            val collectorCountBeforeSwitch =
+                synchronized(pipeline.collectorRequests) { pipeline.collectorRequests.size }
+
+            pipeline.configFlow.value =
+                DynamicConfig(
+                    targetServices = mapOf("api-gateway" to "svc-456"),
+                    samplingRate = 1.0,
+                )
+
+            // --- Phase 2: only api-gateway entries should be captured ---
+            // Wait for session 2 to connect and send its entries. The reconnect
+            // takes ~50ms (reconnectDelay). We poll until a new batch arrives that
+            // contains api-gateway entries, or until we time out.
+            val deadline2 = System.currentTimeMillis() + 3_000
+            var phase2Items: List<CapturedInputRequest> = emptyList()
+            while (phase2Items.isEmpty() && System.currentTimeMillis() < deadline2) {
+                pipeline.captureBatch(maxWait = 200.milliseconds)
+                synchronized(pipeline.collectorRequests) {
+                    // Only look at batches that arrived after the config change
+                    val newBatches = pipeline.collectorRequests.drop(collectorCountBeforeSwitch)
+                    phase2Items = newBatches.flatMap { it.items }
+                }
+            }
+
+            assertEquals(1, phase2Items.size, "only api-gateway entry should pass in phase 2")
+            assertEquals("svc-456", phase2Items[0].serviceId)
+            assertTrue(
+                phase2Items[0].url.contains("api-gateway"),
+                "captured URL should be from api-gateway",
+            )
+
+            // Confirm no api-gateway entries leaked into phase 1 and no
+            // order-service entries leaked into phase 2.
+            assertTrue(
+                phase1Items.none { it.serviceId == "svc-456" },
+                "api-gateway entries must not appear in phase 1 batches",
+            )
+            assertTrue(
+                phase2Items.none { it.serviceId == "svc-123" },
+                "order-service entries must not appear in phase 2 batches",
             )
         }
 
