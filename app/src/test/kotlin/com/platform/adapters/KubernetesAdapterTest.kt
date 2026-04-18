@@ -529,6 +529,32 @@ class KubernetesAdapterTest {
             assertEquals(3, uniqueIds.size)
         }
 
+    @Test
+    fun `close should propagate to the underlying Kubernetes client`() {
+        // Given
+        val client = mockk<KubernetesClient>(relaxed = true)
+        val adapter = KubernetesAdapter(client = client)
+
+        // When
+        adapter.close()
+
+        // Then - the underlying client must be closed exactly once so its
+        // connection pool and watches are properly released
+        verify(exactly = 1) { client.close() }
+    }
+
+    @Test
+    fun `KubernetesAdapter implements Closeable so it can be used with use`() {
+        // Given
+        val client = mockk<KubernetesClient>(relaxed = true)
+
+        // When - Kotlin's use extension calls close() at the end of the block
+        KubernetesAdapter(client = client).use { }
+
+        // Then
+        verify(exactly = 1) { client.close() }
+    }
+
     // Helper function to create mock Kubernetes services
     private fun createMockK8sService(
         name: String,

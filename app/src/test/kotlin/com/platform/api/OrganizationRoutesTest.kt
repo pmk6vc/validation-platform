@@ -180,4 +180,80 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
+
+    @Test
+    fun `GET organizations with limit=0 is clamped to 1 and returns results`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            repeat(3) { i ->
+                OrganizationRepository.create(
+                    Organization(UUID.randomUUID().toString(), "Org $i", Instant.now()),
+                )
+            }
+
+            // limit=0 is parsed as 0 by toIntOrNull; the repository clamps it to 1
+            val response = client.get("/api/organizations?limit=0")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Organization.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertNotNull(page.nextCursor)
+        }
+
+    @Test
+    fun `GET organizations with limit=-1 is clamped to 1 and returns results`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            repeat(3) { i ->
+                OrganizationRepository.create(
+                    Organization(UUID.randomUUID().toString(), "Org $i", Instant.now()),
+                )
+            }
+
+            val response = client.get("/api/organizations?limit=-1")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Organization.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertNotNull(page.nextCursor)
+        }
+
+    @Test
+    fun `GET organizations with limit over maximum is clamped to max page size`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            // Insert more than DEFAULT_PAGE_SIZE but fewer than MAX_PAGE_SIZE items so
+            // we can tell whether the limit was actually capped
+            val count = OrganizationRepository.DEFAULT_PAGE_SIZE + 5
+            repeat(count) { i ->
+                OrganizationRepository.create(
+                    Organization(UUID.randomUUID().toString(), "Org $i", Instant.now()),
+                )
+            }
+
+            // limit=200 exceeds MAX_PAGE_SIZE (100); the repository clamps it to 100.
+            // Since we only have (DEFAULT_PAGE_SIZE + 5) rows the page should contain
+            // all of them and there should be no next cursor.
+            val response = client.get("/api/organizations?limit=200")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Organization.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(count, page.items.size)
+            assertNull(page.nextCursor)
+        }
 }

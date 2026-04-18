@@ -436,4 +436,67 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
+
+    @Test
+    fun `GET captured-inputs with limit=0 is clamped to 1 and returns results`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            repeat(3) { i -> CapturedInputRepository.create(createTestInput(url = "/api/orders/$i")) }
+
+            // limit=0 is parsed as 0 by toIntOrNull; the repository clamps it to 1
+            val response = client.get("/api/captured-inputs?limit=0")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertNotNull(page.nextCursor)
+        }
+
+    @Test
+    fun `GET captured-inputs with limit=-1 is clamped to 1 and returns results`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            repeat(3) { i -> CapturedInputRepository.create(createTestInput(url = "/api/orders/$i")) }
+
+            val response = client.get("/api/captured-inputs?limit=-1")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertNotNull(page.nextCursor)
+        }
+
+    @Test
+    fun `GET captured-inputs with limit over maximum is clamped to max page size`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val count = CapturedInputRepository.DEFAULT_PAGE_SIZE + 5
+            repeat(count) { i ->
+                CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
+            }
+
+            // limit=200 exceeds MAX_PAGE_SIZE (100); the repository clamps it to 100.
+            // We have fewer than 100 rows so all items fit in one page with no next cursor.
+            val response = client.get("/api/captured-inputs?limit=200")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(count, page.items.size)
+            assertNull(page.nextCursor)
+        }
 }
