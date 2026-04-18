@@ -7,6 +7,7 @@ import io.fabric8.kubernetes.client.KubernetesClientBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.io.Closeable
 import java.time.Instant
 import java.util.UUID
 import io.fabric8.kubernetes.api.model.Service as K8sService
@@ -23,6 +24,10 @@ import io.fabric8.kubernetes.api.model.Service as K8sService
  * - Filters out system services (kube-system, kube-public, etc.) by default
  * - Extracts metadata from labels and annotations
  * - Normalizes into the platform's unified Service model
+ *
+ * Implements [Closeable] so callers can release the underlying Kubernetes client
+ * connection pool when the adapter is no longer needed (e.g. via try-with-resources
+ * or Kotlin's `use` extension).
  *
  * @property client The Kubernetes client to use for API calls. If not provided, a default
  *                  client will be created using the standard Kubernetes configuration chain:
@@ -41,7 +46,7 @@ class KubernetesAdapter(
     private val clusterName: String = detectClusterName(client),
     private val namespaces: List<String> = emptyList(),
     private val excludeSystemNamespaces: Boolean = true,
-) : ServiceAdapter {
+) : ServiceAdapter, Closeable {
     private val logger = LoggerFactory.getLogger(KubernetesAdapter::class.java)
 
     companion object {
@@ -231,10 +236,13 @@ class KubernetesAdapter(
     }
 
     /**
-     * Closes the Kubernetes client and releases resources.
-     * Should be called when the adapter is no longer needed.
+     * Closes the Kubernetes client and releases its connection pool.
+     *
+     * Implements [Closeable.close] so the adapter can be used with Kotlin's `use`
+     * extension or Java's try-with-resources. Should be called when the adapter is
+     * no longer needed to avoid resource leaks.
      */
-    fun close() {
+    override fun close() {
         client.close()
     }
 }
