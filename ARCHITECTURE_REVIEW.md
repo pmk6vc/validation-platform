@@ -97,16 +97,6 @@ The codebase demonstrates strong architectural discipline. Module boundaries are
 
 ---
 
-## Test Coverage Gaps
-
-### GAP-4: No Test for `KubernetesAdapter.close()` Resource Cleanup (LOW)
-
-- Nothing verifies `close()` propagates to the underlying Kubernetes client. `KubernetesAdapter` should implement `Closeable`.
-
-### GAP-7: No Test for Negative/Zero `limit` Parameter (LOW)
-
-- `limit=0`, `limit=-1`, and `limit=200` (over max) edge cases are untested.
-
 ---
 
 ## Positive Patterns Worth Preserving
