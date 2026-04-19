@@ -27,9 +27,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Network
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.containers.wait.strategy.Wait
-import org.testcontainers.images.builder.ImageFromDockerfile
 import org.testcontainers.utility.MountableFile
-import java.nio.file.Path
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPrivateKey
 import java.security.interfaces.RSAPublicKey
@@ -97,8 +95,6 @@ class EnvoyAuthIntegrationTest {
         @BeforeAll
         @JvmStatic
         fun setup() {
-            val repoRoot = Path.of(".").toAbsolutePath().normalize()
-
             // 1. Postgres
             postgres =
                 PostgreSQLContainer("postgres:16-alpine")
@@ -111,13 +107,10 @@ class EnvoyAuthIntegrationTest {
 
             val jdbcUrl = "jdbc:postgresql://db:5432/platform_test"
 
-            // 2. App (built from Dockerfile.app)
+            // 2. App (pre-built by buildAppImage Gradle task)
             app =
-                GenericContainer(
-                    ImageFromDockerfile()
-                        .withDockerfilePath("deploy/Dockerfile.app")
-                        .withFileFromPath(".", repoRoot),
-                ).withNetwork(network)
+                GenericContainer("validation-app:test")
+                    .withNetwork(network)
                     .withNetworkAliases("app")
                     .withExposedPorts(8080)
                     .withEnv("DATABASE_URL", jdbcUrl)
@@ -127,13 +120,10 @@ class EnvoyAuthIntegrationTest {
                     .waitingFor(Wait.forHttp("/health").forPort(8080).forStatusCode(200))
             app.start()
 
-            // 3. Collector (built from Dockerfile.collector)
+            // 3. Collector (pre-built by buildCollectorImage Gradle task)
             collector =
-                GenericContainer(
-                    ImageFromDockerfile()
-                        .withDockerfilePath("deploy/Dockerfile.collector")
-                        .withFileFromPath(".", repoRoot),
-                ).withNetwork(network)
+                GenericContainer("validation-collector:test")
+                    .withNetwork(network)
                     .withNetworkAliases("collector")
                     .withExposedPorts(8081)
                     .withEnv("DATABASE_URL", jdbcUrl)
@@ -142,14 +132,14 @@ class EnvoyAuthIntegrationTest {
                     .waitingFor(Wait.forHttp("/health").forPort(8081).forStatusCode(200))
             collector.start()
 
-            // 4. Envoy (stock image, config mounted)
+            // 4. Envoy (stock image, config mounted from repo)
             envoy =
                 GenericContainer("envoyproxy/envoy:v1.31-latest")
                     .withNetwork(network)
                     .withNetworkAliases("envoy")
                     .withExposedPorts(8082)
                     .withCopyFileToContainer(
-                        MountableFile.forHostPath(repoRoot.resolve("deploy/envoy/envoy.yaml")),
+                        MountableFile.forHostPath("deploy/envoy/envoy.yaml"),
                         "/etc/envoy/envoy.yaml",
                     ).waitingFor(Wait.forHttp("/health").forPort(8082).forStatusCode(200))
             envoy.start()

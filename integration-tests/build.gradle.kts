@@ -31,9 +31,26 @@ dependencies {
     testImplementation(libs.logback)
 }
 
+// Build Docker images before running integration tests
+tasks.register<Exec>("buildAppImage") {
+    group = "docker"
+    description = "Build the app Docker image for integration tests"
+    workingDir = rootProject.projectDir
+    commandLine("docker", "build", "-t", "validation-app:test", "-f", "deploy/Dockerfile.app", ".")
+}
+
+tasks.register<Exec>("buildCollectorImage") {
+    group = "docker"
+    description = "Build the collector Docker image for integration tests"
+    workingDir = rootProject.projectDir
+    commandLine("docker", "build", "-t", "validation-collector:test", "-f", "deploy/Dockerfile.collector", ".")
+}
+
 tasks.test {
     useJUnitPlatform()
     workingDir = rootProject.projectDir
+
+    dependsOn("buildAppImage", "buildCollectorImage")
 
     // Colima socket for TestContainers on macOS
     val colimaSocket = file("${System.getProperty("user.home")}/.colima/docker.sock")
