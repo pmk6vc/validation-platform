@@ -14,16 +14,13 @@
 | 2 | [ARCH-1](#arch-1-databasefactory-has-no-connection-pool) | Architectural | Medium | No connection pool, validation, or leak detection in production. |
 | 3 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
 | 4 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 5 | [ARCH-3](#arch-3-databasetestbase-static-singleton-is-not-parallel-safe) | Architectural | Small | Will break under `--parallel` Gradle execution. |
-| 6 | [ARCH-4](#arch-4-cross-module-fk-coupling-on-service_id) | Architectural | Small | Error message is generic; FK blocks future DB separation. |
-| 7 | [QUALITY-2](#quality-2-databasetestbase-container-never-stopped) | Quality | Trivial | Resource leak in CI without Ryuk. |
-| 8 | [QUALITY-3](#quality-3-appapitesthelper-starts-a-new-ktor-server-per-call) | Quality | Small | ~1-2s avoidable overhead per test run; scales poorly. |
-| 9 | [QUALITY-4](#quality-4-decodecursor-returns-uuid-but-models-use-string-ids) | Quality | Medium | Type mismatch; proper fix touches models across all modules. |
-| 10 | [QUALITY-5](#quality-5-encodecursor-accepts-string-id-without-uuid-enforcement) | Quality | Trivial | Companion to QUALITY-4; enforce UUID at compile time. |
-| 11 | [QUALITY-6](#quality-6-collectordatabasetestbase-incomplete-table-cleanup) | Quality | Trivial | Test isolation gap; fixtures accumulate across test methods. |
-| 12 | [QUALITY-7](#quality-7-servicerepository-uuid-validation-error-message) | Quality | Trivial | Generic "Bad request" instead of descriptive message. |
-| 13 | [QUALITY-8](#quality-8-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 14 | [QUALITY-9](#quality-9-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
+| 5 | [ARCH-3](#arch-3-cross-module-fk-coupling-on-service_id) | Architectural | Small | Error message is generic; FK blocks future DB separation. |
+| 6 | [QUALITY-2](#quality-2-decodecursor-returns-uuid-but-models-use-string-ids) | Quality | Medium | Type mismatch; proper fix touches models across all modules. |
+| 7 | [QUALITY-3](#quality-3-encodecursor-accepts-string-id-without-uuid-enforcement) | Quality | Trivial | Companion to QUALITY-2; enforce UUID at compile time. |
+| 8 | [QUALITY-4](#quality-4-collectordatabasetestbase-incomplete-table-cleanup) | Quality | Trivial | Test isolation gap; fixtures accumulate across test methods. |
+| 9 | [QUALITY-5](#quality-5-servicerepository-uuid-validation-error-message) | Quality | Trivial | Generic "Bad request" instead of descriptive message. |
+| 10 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 11 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
@@ -54,14 +51,7 @@
 - **Impact**: Every route test requires TestContainers + Docker. Pattern should not spread to new modules.
 - **Fix**: Convert to classes, inject via Ktor `Application` extension function.
 
-### ARCH-3: `DatabaseTestBase` Static Singleton Is Not Parallel-Safe
-
-- **Location**: `shared/src/testFixtures/kotlin/com/platform/database/DatabaseTestBase.kt`, lines 9–16
-- **Issue**: `companion object` with `initialized: Boolean` and `postgres: PostgreSQLContainer?` is shared across classloaders. Works under sequential execution but races under `./gradlew test --parallel`.
-- **Impact**: One module silently skips database setup; tests pass or fail nondeterministically.
-- **Fix**: Use `@Testcontainers` extension or `@Container` annotation with proper lifecycle management.
-
-### ARCH-4: Cross-Module FK Coupling on `service_id`
+### ARCH-3: Cross-Module FK Coupling on `service_id`
 
 - **Location**: `collector/.../api/Routes.kt`, lines 31–55; migration V0004
 - **Issue**: `captured_inputs.service_id` has an FK to `services.id` (app module's table). FK violations surface as generic `"Referenced resource not found"`. The coupling prevents separating module databases.
@@ -78,50 +68,38 @@
 - **Issue**: No validation on deserialized `DynamicConfig`. `samplingRate = -0.5`, `batchSize = 0`, or `captureInterval = 0ms` cause severe issues (tight-spin CPU loop, divide-by-zero, etc.).
 - **Fix**: Add `validate()` method, return null on invalid config.
 
-### QUALITY-2: `DatabaseTestBase` Container Never Stopped
-
-- **Location**: `shared/src/testFixtures/kotlin/com/platform/database/DatabaseTestBase.kt`, line 9
-- **Issue**: `postgres` container initialized in `@BeforeAll` but never stopped. Relies on Ryuk for cleanup. Leaks in CI without Ryuk.
-- **Fix**: Add `@AfterAll @JvmStatic fun tearDownDatabase() { postgres?.stop() }`.
-
-### QUALITY-3: `AppApiTestHelper` Starts a New Ktor Server Per Call
-
-- **Location**: `collector/.../AppApiTestHelper.kt`, lines 35–75
-- **Issue**: `createOrganization` and `createService` each spin up a full `testApplication`. Every `@BeforeEach` pays two Ktor startup/teardown cycles (~50-100ms each).
-- **Fix**: Consolidate into one `testApplication` call, or cache fixtures with `@BeforeAll`.
-
-### QUALITY-4: `decodeCursor` Returns UUID But Models Use String IDs
+### QUALITY-2: `decodeCursor` Returns UUID But Models Use String IDs
 
 - **Location**: `shared/src/main/kotlin/com/platform/models/Page.kt`, line 24
 - **Issue**: `decodeCursor` returns `Pair<Instant, UUID>`, but all model `id` fields are `String`.
 - **Quick fix**: Return `Pair<Instant, String>` (keep UUID validation internally).
 - **Proper fix**: Introduce `value class` ID wrappers per entity for compile-time safety.
 
-### QUALITY-5: `encodeCursor` Accepts String ID Without UUID Enforcement
+### QUALITY-3: `encodeCursor` Accepts String ID Without UUID Enforcement
 
 - **Location**: `shared/src/main/kotlin/com/platform/models/Page.kt`
 - **Issue**: `encodeCursor` takes a plain `String` for the ID. A non-UUID string would produce a cursor that `decodeCursor` rejects later. Types don't enforce this invariant.
 - **Fix**: Change signature to `fun encodeCursor(timestamp: Instant, id: UUID): String`.
 
-### QUALITY-6: `CollectorDatabaseTestBase` Incomplete Table Cleanup
+### QUALITY-4: `CollectorDatabaseTestBase` Incomplete Table Cleanup
 
 - **Location**: `collector/.../CollectorDatabaseTestBase.kt`
 - **Issue**: `cleanTables()` only deletes `CapturedInputs`, but `AppApiTestHelper` inserts orgs and services in `@BeforeEach`. Fixtures accumulate.
 - **Fix**: Clean `CapturedInputs`, then `Services`, then `Organizations` (FK order).
 
-### QUALITY-7: `ServiceRepository` UUID Validation Error Message
+### QUALITY-5: `ServiceRepository` UUID Validation Error Message
 
 - **Location**: `app/.../ServiceRepository.kt`, line 32; `app/.../api/Routes.kt`, line 87
 - **Issue**: `UUID.fromString(service.organizationId)` throws `IllegalArgumentException` with generic "Bad request" instead of `"organizationId must be a valid UUID"`.
 - **Fix**: Explicit UUID validation with descriptive error message in route handler.
 
-### QUALITY-8: `ignoreUnknownKeys` on Server-Side JSON
+### QUALITY-6: `ignoreUnknownKeys` on Server-Side JSON
 
 - **Location**: `app/.../Application.kt`, line 41; `collector/.../CollectorApplication.kt`
 - **Issue**: Server silently accepts unrecognized fields. `{"organizationid": "..."}` (typo) gives a confusing missing-field error.
 - **Fix**: Only use `ignoreUnknownKeys = true` on the agent (client-side). Remove it from server JSON config.
 
-### QUALITY-9: `OrderService` No Connection Pool
+### QUALITY-7: `OrderService` No Connection Pool
 
 - **Location**: `test-services/order-service/.../OrderService.kt`, lines 122–124
 - **Issue**: `DriverManager.getConnection(...)` per request — no connection pool. Under traffic-generator load, creates/destroys a connection per request.
@@ -164,4 +142,8 @@
 
 16. **`KubernetesAdapter` no longer excludes `default` namespace.** Services in the `default` namespace are now discovered correctly. Only true system namespaces (`kube-system`, `kube-public`, `kube-node-lease`) are excluded.
 
-17. **`ServiceRepository.upsert` post-select is documented.** The post-select after `upsert()` is necessary because on conflict the caller's ID is ignored. Comment explains the dependency on Exposed `upsertReturning()` (available in 0.58+) for elimination.
+17. **`ServiceRepository.upsert` post-select is documented.** The post-select after `upsert()` is necessary because on conflict the caller's ID is ignored. Comment explains the dependency on Exposed 1.x `upsertReturning()` for elimination.
+
+18. **`DatabaseTestBase` deliberately does not stop the container.** The PostgreSQL container is a static singleton shared across test classes — `@AfterAll` runs per class, so stopping it would kill the connection mid-suite. Ryuk handles cleanup after JVM exit.
+
+19. **`AppApiTestHelper.createOrganizationAndService` consolidates Ktor startups.** A single `testApplication` session creates both org and service fixtures, saving one Ktor boot cycle per test (~50-100ms × 42 tests).

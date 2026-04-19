@@ -32,46 +32,70 @@ data class CreatedService(
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
 object AppApiTestHelper {
-    suspend fun createOrganization(name: String): CreatedOrganization {
-        var result: CreatedOrganization? = null
-        testApplication {
-            application { module(initDatabase = false) }
-            val client = createJsonClient()
-            val response =
-                client.post("/api/organizations") {
-                    contentType(ContentType.Application.Json)
-                    setBody(CreateOrganizationRequest(name = name))
-                }
-            result = lenientJson.decodeFromString<CreatedOrganization>(response.bodyAsText())
+    /**
+     * Create an organization and a service in a single testApplication session,
+     * avoiding the overhead of two separate Ktor startups per test.
+     */
+    suspend fun createOrganizationAndService(
+        orgName: String,
+        serviceName: String,
+        cluster: String = "prod",
+        namespace: String = "default",
+    ): Pair<CreatedOrganization, CreatedService> =
+        withAppClient { client ->
+            val org = client.postOrganization(orgName)
+            val svc = client.postService(org.id, serviceName, cluster, namespace)
+            Pair(org, svc)
         }
-        return result!!
-    }
+
+    suspend fun createOrganization(name: String): CreatedOrganization =
+        withAppClient { client -> client.postOrganization(name) }
 
     suspend fun createService(
         organizationId: String,
         name: String,
         cluster: String = "prod",
         namespace: String = "default",
-    ): CreatedService {
-        var result: CreatedService? = null
+    ): CreatedService = withAppClient { client -> client.postService(organizationId, name, cluster, namespace) }
+
+    private suspend fun <T> withAppClient(block: suspend (HttpClient) -> T): T {
+        var result: T? = null
         testApplication {
             application { module(initDatabase = false) }
-            val client = createJsonClient()
-            val response =
-                client.post("/api/services") {
-                    contentType(ContentType.Application.Json)
-                    setBody(
-                        CreateServiceRequest(
-                            organizationId = organizationId,
-                            cluster = cluster,
-                            namespace = namespace,
-                            name = name,
-                        ),
-                    )
-                }
-            result = lenientJson.decodeFromString<CreatedService>(response.bodyAsText())
+            result = block(createJsonClient())
         }
-        return result!!
+        @Suppress("UNCHECKED_CAST")
+        return result as T
+    }
+
+    private suspend fun HttpClient.postOrganization(name: String): CreatedOrganization {
+        val response =
+            post("/api/organizations") {
+                contentType(ContentType.Application.Json)
+                setBody(CreateOrganizationRequest(name = name))
+            }
+        return lenientJson.decodeFromString<CreatedOrganization>(response.bodyAsText())
+    }
+
+    private suspend fun HttpClient.postService(
+        organizationId: String,
+        name: String,
+        cluster: String,
+        namespace: String,
+    ): CreatedService {
+        val response =
+            post("/api/services") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    CreateServiceRequest(
+                        organizationId = organizationId,
+                        cluster = cluster,
+                        namespace = namespace,
+                        name = name,
+                    ),
+                )
+            }
+        return lenientJson.decodeFromString<CreatedService>(response.bodyAsText())
     }
 
     private fun ApplicationTestBuilder.createJsonClient(): HttpClient =

@@ -29,5 +29,10 @@ abstract class DatabaseTestBase {
                 password = postgres!!.getPassword(),
             )
         }
+
+        // Container is intentionally not stopped here. It's a static singleton
+        // shared across all test classes in the module — @AfterAll runs per class,
+        // so stopping it would kill the container while other classes still need it.
+        // TestContainers' Ryuk daemon handles cleanup after the JVM exits.
     }
 }

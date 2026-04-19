@@ -49,11 +49,10 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @BeforeEach
     fun setupServiceFixture() {
         runBlocking {
-            val org = AppApiTestHelper.createOrganization("Test Organization")
-            val service =
-                AppApiTestHelper.createService(
-                    organizationId = org.id,
-                    name = "order-service",
+            val (_, service) =
+                AppApiTestHelper.createOrganizationAndService(
+                    orgName = "Test Organization",
+                    serviceName = "order-service",
                 )
             testServiceId = service.id
         }
@@ -122,12 +121,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         testApplication {
             application { module(initDatabase = false) }
 
-            val org = runBlocking { AppApiTestHelper.createOrganization("Other Org") }
-            val otherService =
+            val (_, otherService) =
                 runBlocking {
-                    AppApiTestHelper.createService(
-                        organizationId = org.id,
-                        name = "other-service",
+                    AppApiTestHelper.createOrganizationAndService(
+                        orgName = "Other Org",
+                        serviceName = "other-service",
                     )
                 }
 
