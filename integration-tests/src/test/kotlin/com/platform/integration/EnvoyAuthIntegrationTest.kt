@@ -115,7 +115,8 @@ class EnvoyAuthIntegrationTest {
             app =
                 GenericContainer(
                     ImageFromDockerfile()
-                        .withDockerfile(repoRoot.resolve("deploy/Dockerfile.app")),
+                        .withDockerfilePath("deploy/Dockerfile.app")
+                        .withFileFromPath(".", repoRoot),
                 ).withNetwork(network)
                     .withNetworkAliases("app")
                     .withExposedPorts(8080)
@@ -130,7 +131,8 @@ class EnvoyAuthIntegrationTest {
             collector =
                 GenericContainer(
                     ImageFromDockerfile()
-                        .withDockerfile(repoRoot.resolve("deploy/Dockerfile.collector")),
+                        .withDockerfilePath("deploy/Dockerfile.collector")
+                        .withFileFromPath(".", repoRoot),
                 ).withNetwork(network)
                     .withNetworkAliases("collector")
                     .withExposedPorts(8081)
