@@ -7,8 +7,10 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import org.slf4j.LoggerFactory
 import java.security.KeyFactory
+import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.RSAPublicKeySpec
 import java.util.Base64
 
 private val logger = LoggerFactory.getLogger("JwksRoute")
@@ -22,7 +24,7 @@ private val logger = LoggerFactory.getLogger("JwksRoute")
  *
  * The endpoint is unauthenticated — Envoy needs it before it can validate anything.
  */
-fun Application.configureJwks(privateKeyPem: String? = System.getenv("JWT_PRIVATE_KEY")) {
+fun Application.configureJwks(privateKeyPem: String? = System.getenv("JWT_PRIVATE_KEY")?.replace("|", "\n")) {
     if (privateKeyPem.isNullOrBlank()) {
         logger.warn("JWT_PRIVATE_KEY not set — JWKS endpoint will return empty key set")
         routing {
@@ -56,9 +58,9 @@ private fun derivePublicKey(privateKeyPem: String): RSAPublicKey {
     val privateKey = keyFactory.generatePrivate(keySpec)
 
     // Derive public key from private key
-    val rsaPrivateKey = privateKey as java.security.interfaces.RSAPrivateCrtKey
+    val rsaPrivateKey = privateKey as RSAPrivateCrtKey
     val publicKeySpec =
-        java.security.spec.RSAPublicKeySpec(
+        RSAPublicKeySpec(
             rsaPrivateKey.modulus,
             rsaPrivateKey.publicExponent,
         )
