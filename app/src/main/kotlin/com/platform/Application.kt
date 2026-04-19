@@ -1,6 +1,7 @@
 package com.platform
 
 import com.platform.api.configureRouting
+import com.platform.api.installAuth
 import com.platform.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -17,10 +18,17 @@ fun main(args: Array<String>) {
         .main(args)
 }
 
-fun Application.module(initDatabase: Boolean = true) {
+fun Application.module(
+    initDatabase: Boolean = true,
+    apiKey: String? = System.getenv("API_KEY"),
+    apiKeyOrgId: String? = System.getenv("API_KEY_ORG_ID"),
+    apiKeyCluster: String? = System.getenv("API_KEY_CLUSTER"),
+) {
     if (initDatabase) {
         DatabaseFactory.initFromEnvironment()
     }
+
+    installAuth(apiKey = apiKey, organizationId = apiKeyOrgId, cluster = apiKeyCluster)
 
     install(StatusPages) {
         exception<IllegalArgumentException> { call, cause ->

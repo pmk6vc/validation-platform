@@ -69,17 +69,12 @@ fun Application.configureRouting() {
             }
 
             route("/agent") {
-                // TODO: organizationId and cluster should be required, not optional.
-                //  When bearer token auth is added, resolve these from the API_KEY token
-                //  (each token is scoped to an org+cluster) instead of accepting them as
-                //  query params. Remove the query params at that point.
                 get("/config") {
-                    val organizationId = call.request.queryParameters["organizationId"]
-                    val cluster = call.request.queryParameters["cluster"]
+                    val identity = call.attributes.getOrNull(AgentIdentityKey)
                     val services =
                         ServiceRepository.find(
-                            organizationId = organizationId,
-                            cluster = cluster,
+                            organizationId = identity?.organizationId,
+                            cluster = identity?.cluster,
                             limit = ServiceRepository.MAX_PAGE_SIZE,
                         )
                     val targetServices =

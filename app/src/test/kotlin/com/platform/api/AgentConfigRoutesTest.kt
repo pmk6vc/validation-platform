@@ -6,6 +6,7 @@ import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Service
 import com.platform.module
+import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -20,6 +21,7 @@ import kotlin.test.assertTrue
 
 class AgentConfigRoutesTest : AppDatabaseTestBase() {
     private val json = Json { ignoreUnknownKeys = true }
+    private val testApiKey = "test-secret-key"
 
     private lateinit var org: Organization
 
@@ -58,7 +60,7 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
     }
 
     @Test
-    fun `GET agent config returns 200 with empty targetServices when no services`() =
+    fun `GET agent config returns 200 with defaults when no services`() =
         testApplication {
             application { module(initDatabase = false) }
 
@@ -75,15 +77,14 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config returns registered services in targetServices map`() =
+    fun `GET agent config returns all services when no auth identity`() =
         testApplication {
             application { module(initDatabase = false) }
 
             val svc1 = createService("order-service")
             val svc2 = createService("api-gateway")
 
-            val response =
-                client.get("/api/agent/config?organizationId=${org.id}&cluster=prod")
+            val response = client.get("/api/agent/config")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
@@ -93,9 +94,16 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config filters by organizationId`() =
+    fun `GET agent config scopes by identity from auth token`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application {
+                module(
+                    initDatabase = false,
+                    apiKey = testApiKey,
+                    apiKeyOrgId = org.id,
+                    apiKeyCluster = "prod",
+                )
+            }
 
             val otherOrg =
                 OrganizationRepository.create(
@@ -105,11 +113,14 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
                         createdAt = Instant.now(),
                     ),
                 )
-            createService("order-service", organizationId = org.id)
-            createService("other-service", organizationId = otherOrg.id)
+            createService("order-service", organizationId = org.id, cluster = "prod")
+            createService("other-service", organizationId = otherOrg.id, cluster = "prod")
+            createService("staging-service", organizationId = org.id, cluster = "staging")
 
             val response =
-                client.get("/api/agent/config?organizationId=${org.id}")
+                client.get("/api/agent/config") {
+                    bearerAuth(testApiKey)
+                }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
@@ -118,19 +129,41 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config filters by cluster`() =
+    fun `GET agent config returns 401 without valid token when auth enabled`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application {
+                module(initDatabase = false, apiKey = testApiKey)
+            }
 
-            createService("prod-service", cluster = "prod")
-            createService("staging-service", cluster = "staging")
+            val response = client.get("/api/agent/config")
+
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
+        }
+
+    @Test
+    fun `GET agent config returns 401 with wrong token`() =
+        testApplication {
+            application {
+                module(initDatabase = false, apiKey = testApiKey)
+            }
 
             val response =
-                client.get("/api/agent/config?organizationId=${org.id}&cluster=prod")
+                client.get("/api/agent/config") {
+                    bearerAuth("wrong-key")
+                }
+
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
+        }
+
+    @Test
+    fun `health endpoint is accessible without auth`() =
+        testApplication {
+            application {
+                module(initDatabase = false, apiKey = testApiKey)
+            }
+
+            val response = client.get("/health")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
-            assertEquals(1, config.targetServices.size)
-            assertEquals("prod-service", config.targetServices.keys.single())
         }
 }

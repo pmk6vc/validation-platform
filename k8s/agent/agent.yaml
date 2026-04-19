@@ -55,7 +55,10 @@ spec:
             - name: APP_URL
               value: "http://app.validation.svc.cluster.local:8080"
             - name: API_KEY
-              value: "test-api-key"
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-key
+                  key: api-key
           livenessProbe:
             exec:
               command: ["sh", "-c", "find /tmp/agent-alive -mmin -1 | grep -q ."]
