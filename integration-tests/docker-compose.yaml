@@ -1,17 +1,17 @@
+# Docker Compose for integration tests.
+# Stripped-down version of deploy/docker-compose.yaml without container_name
+# (TestContainers doesn't support it).
 services:
   db:
     image: postgres:16-alpine
-    container_name: platform-db
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    volumes:
-      - platform-data:/var/lib/postgresql/data
+      POSTGRES_DB: platform_test
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    expose:
+      - "5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U test -d platform_test"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,66 +20,58 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.app
-    container_name: platform-app
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
-      DATABASE_USER: ${POSTGRES_USER}
-      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
-    # No external port — only accessible through envoy
+      DATABASE_URL: jdbc:postgresql://db:5432/platform_test
+      DATABASE_USER: test
+      DATABASE_PASSWORD: test
     expose:
       - "8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 30s
 
   collector:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.collector
-    container_name: platform-collector
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
-      DATABASE_USER: ${POSTGRES_USER}
-      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
-    # No external port — only accessible through envoy
+      DATABASE_URL: jdbc:postgresql://db:5432/platform_test
+      DATABASE_USER: test
+      DATABASE_PASSWORD: test
     expose:
       - "8081"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 30s
 
   envoy:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.envoy
-    container_name: platform-envoy
     depends_on:
       app:
         condition: service_healthy
       collector:
         condition: service_healthy
     environment:
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-do-not-use-in-production}
-    ports:
-      - "${PROXY_PORT:-8082}:8082"
+      JWT_SECRET: integration-test-secret
+    expose:
+      - "8082"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 3
-      start_period: 5s
-
-volumes:
-  platform-data:
+      retries: 5
+      start_period: 10s

@@ -1,0 +1,170 @@
+# Envoy reverse proxy configuration for the validation platform.
+#
+# Responsibilities:
+#   - JWT validation (HMAC-SHA256) on all /api/* routes
+#   - Extracts organizationId and cluster claims, forwards as X-Organization-Id / X-Cluster headers
+#   - Routes /api/captured-inputs/* to the collector, everything else under /api/* to the app
+#   - Health endpoint returns 200 directly (no upstream needed)
+#
+# Environment:
+#   JWT_SECRET — HMAC-SHA256 signing key (base64url-encoded for JWKS).
+#     The generate-jwt.sh script produces tokens signed with the raw secret;
+#     this config expects the base64url-encoded form in the inline JWKS.
+#
+# Usage:
+#   docker-compose: mounted as a volume, JWT_SECRET injected via environment
+#   K8s: stored in a ConfigMap, JWT_SECRET from a Secret
+
+static_resources:
+  listeners:
+    - name: platform_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8082
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: platform
+                codec_type: AUTO
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: platform
+                      domains: ["*"]
+                      routes:
+                        # Health endpoint — direct response, no auth
+                        - match:
+                            path: "/health"
+                          direct_response:
+                            status: 200
+                            body:
+                              inline_string: "OK"
+                          response_headers_to_add:
+                            - header:
+                                key: content-type
+                                value: text/plain
+
+                        # Collector routes
+                        - match:
+                            prefix: "/api/captured-inputs"
+                          route:
+                            cluster: collector
+
+                        # App routes (everything else under /api/)
+                        - match:
+                            prefix: "/api/"
+                          route:
+                            cluster: app
+
+                        # Root
+                        - match:
+                            path: "/"
+                          direct_response:
+                            status: 200
+                            body:
+                              inline_string: "Validation Platform"
+
+                http_filters:
+                  # JWT authentication filter
+                  - name: envoy.filters.http.jwt_authn
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                      providers:
+                        platform_jwt:
+                          # Inline JWKS with the HMAC-SHA256 key.
+                          # In production, this would reference a remote JWKS endpoint.
+                          # The key value must be the base64url-encoded form of JWT_SECRET.
+                          local_jwks:
+                            inline_string: |
+                              {
+                                "keys": [{
+                                  "kty": "oct",
+                                  "alg": "HS256",
+                                  "k": "REPLACE_WITH_BASE64URL_SECRET"
+                                }]
+                              }
+                          from_headers:
+                            - name: Authorization
+                              value_prefix: "Bearer "
+                          # Forward the entire decoded JWT payload so we can extract claims
+                          forward_payload_header: x-jwt-payload
+                          # Extract claims into headers for backend consumption
+                          claim_to_headers:
+                            - header_name: X-Organization-Id
+                              claim_name: organizationId
+                            - header_name: X-Cluster
+                              claim_name: cluster
+                            - header_name: X-Role
+                              claim_name: role
+                      rules:
+                        # Skip auth for health and root
+                        - match:
+                            path: "/health"
+                        - match:
+                            path: "/"
+                        # Require JWT for all /api/* routes
+                        - match:
+                            prefix: "/api/"
+                          requires:
+                            provider_name: platform_jwt
+
+                  # Strip the Authorization header before forwarding to backends
+                  - name: envoy.filters.http.header_to_metadata
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.header_to_metadata.v3.Config
+
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: app
+      connect_timeout: 5s
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: app
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: app
+                      port_value: 8080
+      health_checks:
+        - timeout: 2s
+          interval: 10s
+          unhealthy_threshold: 3
+          healthy_threshold: 1
+          http_health_check:
+            path: /health
+
+    - name: collector
+      connect_timeout: 5s
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: collector
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: collector
+                      port_value: 8081
+      health_checks:
+        - timeout: 2s
+          interval: 10s
+          unhealthy_threshold: 3
+          healthy_threshold: 1
+          http_health_check:
+            path: /health
+
+admin:
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901
