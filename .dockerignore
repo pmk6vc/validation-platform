@@ -1,0 +1,13 @@
+**/build/
+**/.gradle/
+.git/
+.claude/
+.idea/
+*.iml
+integration-tests/
+test-services/
+k8s/
+PLAN.md
+ARCHITECTURE_REVIEW.md
+CLAUDE.md
+README.md
