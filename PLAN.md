@@ -271,11 +271,19 @@ Sequenced by when each capability is needed, not by implementation difficulty.
 - Agent handles auth automatically on startup
 - Future: CLI tool (`validation-cli agent install --org org-123 --cluster prod`) that automates secret creation
 
-**Token rotation without downtime:**
-- Support two active signing keys simultaneously (primary + previous)
-- Envoy JWKS config accepts multiple keys
-- Rotate: generate new key → add to JWKS → wait for all tokens signed with old key to expire → remove old key
-- Prevents "rotate key = all agents break" scenario
+**Zero-downtime key rotation:**
+- The JWKS endpoint (`/.well-known/jwks.json`) supports returning multiple keys, each with a unique `kid` (key ID)
+- JWTs include a `kid` header that tells Envoy which key to use for verification
+- Rotation procedure:
+  1. Generate new RSA key pair, assign a new `kid`
+  2. Add the new public key to the JWKS response (app now serves both old and new keys)
+  3. Start signing new agent JWTs with the new private key (new `kid` in JWT header)
+  4. Roll out new JWTs to agents (update K8s Secrets, agents restart)
+  5. Wait for all old JWTs to expire (or for all agents to have restarted)
+  6. Remove old key from JWKS response, delete old private key
+- During the transition window, Envoy validates both old and new tokens — no downtime
+- Implementation: `configureJwks()` reads a list of private keys (e.g., `JWT_PRIVATE_KEY` + `JWT_PREVIOUS_PRIVATE_KEY`), serves all corresponding public keys in the JWKS array
+- Emergency rotation (compromised key): skip steps 4-5, immediately remove old key from JWKS. All agents with old tokens break and must be re-provisioned. Acceptable trade-off for a security incident.
 
 **Rate limiting per org:**
 - Envoy's `envoy.filters.http.ratelimit` filter with per-org descriptors
