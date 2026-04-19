@@ -152,6 +152,6 @@
 
 17. **`ServiceRepository.upsert` post-select is documented.** The post-select after `upsert()` is necessary because on conflict the caller's ID is ignored. Comment explains the dependency on Exposed 1.x `upsertReturning()` for elimination.
 
-18. **`DatabaseTestBase` properly stops the PostgreSQL container.** `@AfterAll` calls `postgres?.stop()` so CI without Ryuk doesn't leak containers.
+18. **`DatabaseTestBase` deliberately does not stop the container.** The PostgreSQL container is a static singleton shared across test classes — `@AfterAll` runs per class, so stopping it would kill the connection mid-suite. Ryuk handles cleanup after JVM exit.
 
 19. **`AppApiTestHelper.createOrganizationAndService` consolidates Ktor startups.** A single `testApplication` session creates both org and service fixtures, saving one Ktor boot cycle per test (~50-100ms × 42 tests).

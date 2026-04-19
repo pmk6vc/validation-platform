@@ -1,6 +1,5 @@
 package com.platform.database
 
-import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.testcontainers.postgresql.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
@@ -31,12 +30,9 @@ abstract class DatabaseTestBase {
             )
         }
 
-        @AfterAll
-        @JvmStatic
-        fun tearDownDatabase() {
-            postgres?.stop()
-            postgres = null
-            initialized = false
-        }
+        // Container is intentionally not stopped here. It's a static singleton
+        // shared across all test classes in the module — @AfterAll runs per class,
+        // so stopping it would kill the container while other classes still need it.
+        // TestContainers' Ryuk daemon handles cleanup after the JVM exits.
     }
 }
