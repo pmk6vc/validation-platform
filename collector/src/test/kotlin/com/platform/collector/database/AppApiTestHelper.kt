@@ -41,77 +41,62 @@ object AppApiTestHelper {
         serviceName: String,
         cluster: String = "prod",
         namespace: String = "default",
-    ): Pair<CreatedOrganization, CreatedService> {
-        var org: CreatedOrganization? = null
-        var svc: CreatedService? = null
-        testApplication {
-            application { module(initDatabase = false) }
-            val client = createJsonClient()
-
-            val orgResponse =
-                client.post("/api/organizations") {
-                    contentType(ContentType.Application.Json)
-                    setBody(CreateOrganizationRequest(name = orgName))
-                }
-            org = lenientJson.decodeFromString<CreatedOrganization>(orgResponse.bodyAsText())
-
-            val svcResponse =
-                client.post("/api/services") {
-                    contentType(ContentType.Application.Json)
-                    setBody(
-                        CreateServiceRequest(
-                            organizationId = org!!.id,
-                            cluster = cluster,
-                            namespace = namespace,
-                            name = serviceName,
-                        ),
-                    )
-                }
-            svc = lenientJson.decodeFromString<CreatedService>(svcResponse.bodyAsText())
+    ): Pair<CreatedOrganization, CreatedService> =
+        withAppClient { client ->
+            val org = client.postOrganization(orgName)
+            val svc = client.postService(org.id, serviceName, cluster, namespace)
+            Pair(org, svc)
         }
-        return Pair(org!!, svc!!)
-    }
 
-    suspend fun createOrganization(name: String): CreatedOrganization {
-        var result: CreatedOrganization? = null
-        testApplication {
-            application { module(initDatabase = false) }
-            val client = createJsonClient()
-            val response =
-                client.post("/api/organizations") {
-                    contentType(ContentType.Application.Json)
-                    setBody(CreateOrganizationRequest(name = name))
-                }
-            result = lenientJson.decodeFromString<CreatedOrganization>(response.bodyAsText())
-        }
-        return result!!
-    }
+    suspend fun createOrganization(name: String): CreatedOrganization =
+        withAppClient { client -> client.postOrganization(name) }
 
     suspend fun createService(
         organizationId: String,
         name: String,
         cluster: String = "prod",
         namespace: String = "default",
-    ): CreatedService {
-        var result: CreatedService? = null
+    ): CreatedService =
+        withAppClient { client -> client.postService(organizationId, name, cluster, namespace) }
+
+    private suspend fun <T> withAppClient(block: suspend (HttpClient) -> T): T {
+        var result: T? = null
         testApplication {
             application { module(initDatabase = false) }
-            val client = createJsonClient()
-            val response =
-                client.post("/api/services") {
-                    contentType(ContentType.Application.Json)
-                    setBody(
-                        CreateServiceRequest(
-                            organizationId = organizationId,
-                            cluster = cluster,
-                            namespace = namespace,
-                            name = name,
-                        ),
-                    )
-                }
-            result = lenientJson.decodeFromString<CreatedService>(response.bodyAsText())
+            result = block(createJsonClient())
         }
-        return result!!
+        @Suppress("UNCHECKED_CAST")
+        return result as T
+    }
+
+    private suspend fun HttpClient.postOrganization(name: String): CreatedOrganization {
+        val response =
+            post("/api/organizations") {
+                contentType(ContentType.Application.Json)
+                setBody(CreateOrganizationRequest(name = name))
+            }
+        return lenientJson.decodeFromString<CreatedOrganization>(response.bodyAsText())
+    }
+
+    private suspend fun HttpClient.postService(
+        organizationId: String,
+        name: String,
+        cluster: String,
+        namespace: String,
+    ): CreatedService {
+        val response =
+            post("/api/services") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    CreateServiceRequest(
+                        organizationId = organizationId,
+                        cluster = cluster,
+                        namespace = namespace,
+                        name = name,
+                    ),
+                )
+            }
+        return lenientJson.decodeFromString<CreatedService>(response.bodyAsText())
     }
 
     private fun ApplicationTestBuilder.createJsonClient(): HttpClient =
