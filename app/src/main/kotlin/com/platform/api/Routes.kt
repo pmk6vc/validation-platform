@@ -68,6 +68,15 @@ fun Application.configureRouting() {
                 }
             }
 
+            route("/agent") {
+                get("/config") {
+                    val services = ServiceRepository.find(limit = ServiceRepository.MAX_PAGE_SIZE)
+                    val targetServices =
+                        services.items.associate { it.name to it.id }
+                    call.respond(AgentConfigResponse(targetServices = targetServices))
+                }
+            }
+
             route("/services") {
                 get {
                     val limit =
