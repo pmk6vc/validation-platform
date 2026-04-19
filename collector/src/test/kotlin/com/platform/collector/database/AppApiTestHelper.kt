@@ -56,8 +56,7 @@ object AppApiTestHelper {
         name: String,
         cluster: String = "prod",
         namespace: String = "default",
-    ): CreatedService =
-        withAppClient { client -> client.postService(organizationId, name, cluster, namespace) }
+    ): CreatedService = withAppClient { client -> client.postService(organizationId, name, cluster, namespace) }
 
     private suspend fun <T> withAppClient(block: suspend (HttpClient) -> T): T {
         var result: T? = null

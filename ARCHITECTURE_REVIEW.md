@@ -14,14 +14,13 @@
 | 2 | [ARCH-1](#arch-1-databasefactory-has-no-connection-pool) | Architectural | Medium | No connection pool, validation, or leak detection in production. |
 | 3 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
 | 4 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 5 | [ARCH-3](#arch-3-databasetestbase-static-singleton-is-not-parallel-safe) | Architectural | Small | Will break under `--parallel` Gradle execution. |
-| 6 | [ARCH-4](#arch-4-cross-module-fk-coupling-on-service_id) | Architectural | Small | Error message is generic; FK blocks future DB separation. |
-| 7 | [QUALITY-2](#quality-2-decodecursor-returns-uuid-but-models-use-string-ids) | Quality | Medium | Type mismatch; proper fix touches models across all modules. |
-| 8 | [QUALITY-3](#quality-3-encodecursor-accepts-string-id-without-uuid-enforcement) | Quality | Trivial | Companion to QUALITY-2; enforce UUID at compile time. |
-| 9 | [QUALITY-4](#quality-4-collectordatabasetestbase-incomplete-table-cleanup) | Quality | Trivial | Test isolation gap; fixtures accumulate across test methods. |
-| 10 | [QUALITY-5](#quality-5-servicerepository-uuid-validation-error-message) | Quality | Trivial | Generic "Bad request" instead of descriptive message. |
-| 11 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 12 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
+| 5 | [ARCH-3](#arch-3-cross-module-fk-coupling-on-service_id) | Architectural | Small | Error message is generic; FK blocks future DB separation. |
+| 6 | [QUALITY-2](#quality-2-decodecursor-returns-uuid-but-models-use-string-ids) | Quality | Medium | Type mismatch; proper fix touches models across all modules. |
+| 7 | [QUALITY-3](#quality-3-encodecursor-accepts-string-id-without-uuid-enforcement) | Quality | Trivial | Companion to QUALITY-2; enforce UUID at compile time. |
+| 8 | [QUALITY-4](#quality-4-collectordatabasetestbase-incomplete-table-cleanup) | Quality | Trivial | Test isolation gap; fixtures accumulate across test methods. |
+| 9 | [QUALITY-5](#quality-5-servicerepository-uuid-validation-error-message) | Quality | Trivial | Generic "Bad request" instead of descriptive message. |
+| 10 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 11 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
@@ -52,14 +51,7 @@
 - **Impact**: Every route test requires TestContainers + Docker. Pattern should not spread to new modules.
 - **Fix**: Convert to classes, inject via Ktor `Application` extension function.
 
-### ARCH-3: `DatabaseTestBase` Static Singleton Is Not Parallel-Safe
-
-- **Location**: `shared/src/testFixtures/kotlin/com/platform/database/DatabaseTestBase.kt`, lines 9–16
-- **Issue**: `companion object` with `initialized: Boolean` and `postgres: PostgreSQLContainer?` is shared across classloaders. Works under sequential execution but races under `./gradlew test --parallel`.
-- **Impact**: One module silently skips database setup; tests pass or fail nondeterministically.
-- **Fix**: Use `@Testcontainers` extension or `@Container` annotation with proper lifecycle management.
-
-### ARCH-4: Cross-Module FK Coupling on `service_id`
+### ARCH-3: Cross-Module FK Coupling on `service_id`
 
 - **Location**: `collector/.../api/Routes.kt`, lines 31–55; migration V0004
 - **Issue**: `captured_inputs.service_id` has an FK to `services.id` (app module's table). FK violations surface as generic `"Referenced resource not found"`. The coupling prevents separating module databases.
