@@ -70,7 +70,14 @@ fun Application.configureRouting() {
 
             route("/agent") {
                 get("/config") {
-                    val services = ServiceRepository.find(limit = ServiceRepository.MAX_PAGE_SIZE)
+                    val organizationId = call.request.queryParameters["organizationId"]
+                    val cluster = call.request.queryParameters["cluster"]
+                    val services =
+                        ServiceRepository.find(
+                            organizationId = organizationId,
+                            cluster = cluster,
+                            limit = ServiceRepository.MAX_PAGE_SIZE,
+                        )
                     val targetServices =
                         services.items.associate { it.name to it.id }
                     call.respond(AgentConfigResponse(targetServices = targetServices))

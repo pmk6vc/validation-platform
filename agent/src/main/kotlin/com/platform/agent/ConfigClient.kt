@@ -20,6 +20,9 @@ class ConfigClient(
     /**
      * Fetch dynamic config from the platform.
      *
+     * The platform scopes the response based on the bearer token (once auth
+     * is implemented). Until then, the endpoint returns all registered services.
+     *
      * @return updated config, or null if the request failed
      */
     suspend fun fetchConfig(): DynamicConfig? {
