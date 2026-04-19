@@ -19,12 +19,10 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @BeforeEach
     fun setupServiceFixtures() {
         runBlocking {
-            val org = AppApiTestHelper.createOrganization("Test Organization")
-
-            val service =
-                AppApiTestHelper.createService(
-                    organizationId = org.id,
-                    name = "order-service",
+            val (org, service) =
+                AppApiTestHelper.createOrganizationAndService(
+                    orgName = "Test Organization",
+                    serviceName = "order-service",
                 )
             testServiceId = service.id
 

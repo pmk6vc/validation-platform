@@ -32,6 +32,46 @@ data class CreatedService(
 private val lenientJson = Json { ignoreUnknownKeys = true }
 
 object AppApiTestHelper {
+    /**
+     * Create an organization and a service in a single testApplication session,
+     * avoiding the overhead of two separate Ktor startups per test.
+     */
+    suspend fun createOrganizationAndService(
+        orgName: String,
+        serviceName: String,
+        cluster: String = "prod",
+        namespace: String = "default",
+    ): Pair<CreatedOrganization, CreatedService> {
+        var org: CreatedOrganization? = null
+        var svc: CreatedService? = null
+        testApplication {
+            application { module(initDatabase = false) }
+            val client = createJsonClient()
+
+            val orgResponse =
+                client.post("/api/organizations") {
+                    contentType(ContentType.Application.Json)
+                    setBody(CreateOrganizationRequest(name = orgName))
+                }
+            org = lenientJson.decodeFromString<CreatedOrganization>(orgResponse.bodyAsText())
+
+            val svcResponse =
+                client.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            organizationId = org!!.id,
+                            cluster = cluster,
+                            namespace = namespace,
+                            name = serviceName,
+                        ),
+                    )
+                }
+            svc = lenientJson.decodeFromString<CreatedService>(svcResponse.bodyAsText())
+        }
+        return Pair(org!!, svc!!)
+    }
+
     suspend fun createOrganization(name: String): CreatedOrganization {
         var result: CreatedOrganization? = null
         testApplication {

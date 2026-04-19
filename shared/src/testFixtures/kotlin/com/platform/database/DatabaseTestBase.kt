@@ -1,5 +1,6 @@
 package com.platform.database
 
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.testcontainers.postgresql.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
@@ -28,6 +29,14 @@ abstract class DatabaseTestBase {
                 username = postgres!!.getUsername(),
                 password = postgres!!.getPassword(),
             )
+        }
+
+        @AfterAll
+        @JvmStatic
+        fun tearDownDatabase() {
+            postgres?.stop()
+            postgres = null
+            initialized = false
         }
     }
 }
