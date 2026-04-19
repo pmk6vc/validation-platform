@@ -101,11 +101,11 @@ abstract class KubernetesWorkloadTestBase {
             // only once all dependencies are reachable.
             val client = createKubernetesClient()
             try {
-                waitForDeployment(client, "external", "webhook-stub", Duration.ofMinutes(1))
+                waitForDeployment(client, "external", "webhook-stub", Duration.ofMinutes(3))
                 waitForDeployment(client, "production", "order-service", Duration.ofMinutes(3))
                 waitForDeployment(client, "production", "notification-service", Duration.ofMinutes(3))
                 waitForDeployment(client, "production", "api-gateway", Duration.ofMinutes(3))
-                waitForDeployment(client, "production", "traffic-generator", Duration.ofMinutes(1))
+                waitForDeployment(client, "production", "traffic-generator", Duration.ofMinutes(3))
 
                 logger.info("All workloads deployed and running")
             } finally {
