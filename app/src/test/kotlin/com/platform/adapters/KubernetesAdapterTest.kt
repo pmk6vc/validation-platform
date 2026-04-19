@@ -91,6 +91,30 @@ class KubernetesAdapterTest {
         }
 
     @Test
+    fun `discoverServices should include services in default namespace`() =
+        runBlocking {
+            val client = mockk<KubernetesClient>()
+            val servicesOperation = mockk<MixedOperation<Service, ServiceList, ServiceResource<Service>>>()
+            val serviceList = mockk<ServiceList>()
+
+            val defaultService = createMockK8sService("my-service", "default")
+
+            every { client.services() } returns servicesOperation
+            every { servicesOperation.inAnyNamespace() } returns servicesOperation
+            every { servicesOperation.list() } returns serviceList
+            every { serviceList.items } returns listOf(defaultService)
+
+            val adapter = KubernetesAdapter(client = client)
+            val organizationId = UUID.randomUUID().toString()
+
+            val services = adapter.discoverServices(organizationId)
+
+            assertEquals(1, services.size)
+            assertEquals("my-service", services[0].name)
+            assertEquals("default", services[0].namespace)
+        }
+
+    @Test
     fun `discoverServices should include system namespaces when excludeSystemNamespaces is false`() =
         runBlocking {
             val client = mockk<KubernetesClient>()

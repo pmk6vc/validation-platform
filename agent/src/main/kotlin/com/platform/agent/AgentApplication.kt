@@ -6,6 +6,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,9 +27,10 @@ fun main() {
     val dynamicConfig = MutableStateFlow(DynamicConfig.default())
 
     logger.info(
-        "Starting validation agent: kubeshark={}, collector={}",
+        "Starting validation agent: kubeshark={}, collector={}, app={}",
         staticConfig.kubesharkUrl,
         staticConfig.collectorUrl,
+        staticConfig.appUrl,
     )
 
     val httpClient =
@@ -42,7 +44,7 @@ fun main() {
     val collectorClient =
         CollectorClient(httpClient, staticConfig.collectorUrl, staticConfig.apiKey)
     val configClient =
-        ConfigClient(httpClient, staticConfig.collectorUrl, staticConfig.apiKey)
+        ConfigClient(httpClient, staticConfig.appUrl, staticConfig.apiKey)
     val transformer = TrafficTransformer(dynamicConfig)
 
     runBlocking {
@@ -77,6 +79,8 @@ suspend fun serviceDiscoveryLoop(dynamicConfig: StateFlow<DynamicConfig>) {
     while (true) {
         try {
             discoverServices()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.error("Service discovery loop failed", e)
         }
@@ -91,6 +95,8 @@ suspend fun configPollLoop(
     while (true) {
         try {
             pollConfig(configClient, dynamicConfig)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.error("Config poll loop failed", e)
         }

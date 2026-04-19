@@ -41,6 +41,9 @@ fun Application.configureRouting() {
 
                 post {
                     val request = call.receive<CreateOrganizationRequest>()
+                    if (request.name.isBlank()) {
+                        return@post call.respond(HttpStatusCode.BadRequest, "Organization name must not be blank")
+                    }
                     val organization =
                         Organization(
                             id = UUID.randomUUID().toString(),
@@ -85,6 +88,9 @@ fun Application.configureRouting() {
 
                 post {
                     val request = call.receive<CreateServiceRequest>()
+                    if (request.name.isBlank()) {
+                        return@post call.respond(HttpStatusCode.BadRequest, "Service name must not be blank")
+                    }
                     val now = Instant.now()
                     val service =
                         Service(

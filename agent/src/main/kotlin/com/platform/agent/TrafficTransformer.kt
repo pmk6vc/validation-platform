@@ -72,6 +72,7 @@ class TrafficTransformer(
                         entry.response.headers
                             ?.associate { it.name to it.value },
                     responseBody = decodeContent(entry.response.content),
+                    latencyMs = entry.elapsedTime,
                     sourceIp = entry.src?.ip,
                     destinationIp = entry.dst.ip,
                     capturedAt = Instant.ofEpochMilli(entry.timestamp).toString(),
