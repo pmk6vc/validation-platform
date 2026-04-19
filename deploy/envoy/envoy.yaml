@@ -1,19 +1,18 @@
 # Envoy reverse proxy configuration for the validation platform.
 #
 # Responsibilities:
-#   - JWT validation (HMAC-SHA256) on all /api/* routes
-#   - Extracts organizationId and cluster claims, forwards as X-Organization-Id / X-Cluster headers
+#   - JWT validation (RS256) via remote JWKS from the app's /.well-known/jwks.json
+#   - Extracts organizationId, cluster, and role claims from the JWT
+#   - Forwards claims as X-Organization-Id, X-Cluster, X-Role headers to backends
 #   - Routes /api/captured-inputs/* to the collector, everything else under /api/* to the app
-#   - Health endpoint returns 200 directly (no upstream needed)
+#   - Health endpoint returns 200 directly (no upstream, no auth)
 #
-# Environment:
-#   JWT_SECRET — HMAC-SHA256 signing key (base64url-encoded for JWKS).
-#     The generate-jwt.sh script produces tokens signed with the raw secret;
-#     this config expects the base64url-encoded form in the inline JWKS.
+# No secrets in this file. Envoy fetches the RSA public key from the app.
+# The app reads the RSA private key from its own environment.
 #
 # Usage:
-#   docker-compose: mounted as a volume, JWT_SECRET injected via environment
-#   K8s: stored in a ConfigMap, JWT_SECRET from a Secret
+#   docker-compose: volume-mounted from deploy/envoy/envoy.yaml
+#   K8s: stored in a ConfigMap
 
 static_resources:
   listeners:
@@ -47,6 +46,12 @@ static_resources:
                                 key: content-type
                                 value: text/plain
 
+                        # JWKS endpoint — pass through to app, no auth
+                        - match:
+                            prefix: "/.well-known/"
+                          route:
+                            cluster: app
+
                         # Collector routes
                         - match:
                             prefix: "/api/captured-inputs"
@@ -74,24 +79,18 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
                       providers:
                         platform_jwt:
-                          # Inline JWKS with the HMAC-SHA256 key.
-                          # In production, this would reference a remote JWKS endpoint.
-                          # The key value must be the base64url-encoded form of JWT_SECRET.
-                          local_jwks:
-                            inline_string: |
-                              {
-                                "keys": [{
-                                  "kty": "oct",
-                                  "alg": "HS256",
-                                  "k": "REPLACE_WITH_BASE64URL_SECRET"
-                                }]
-                              }
+                          # Fetch RSA public key from the app's JWKS endpoint.
+                          # Same pattern as Google (googleapis.com/oauth2/v3/certs).
+                          remote_jwks:
+                            http_uri:
+                              uri: http://app:8080/.well-known/jwks.json
+                              cluster: app
+                              timeout: 5s
+                            cache_duration: 300s
                           from_headers:
                             - name: Authorization
                               value_prefix: "Bearer "
-                          # Forward the entire decoded JWT payload so we can extract claims
                           forward_payload_header: x-jwt-payload
-                          # Extract claims into headers for backend consumption
                           claim_to_headers:
                             - header_name: X-Organization-Id
                               claim_name: organizationId
@@ -100,21 +99,18 @@ static_resources:
                             - header_name: X-Role
                               claim_name: role
                       rules:
-                        # Skip auth for health and root
+                        # Skip auth for health, root, and JWKS
                         - match:
                             path: "/health"
                         - match:
                             path: "/"
+                        - match:
+                            prefix: "/.well-known/"
                         # Require JWT for all /api/* routes
                         - match:
                             prefix: "/api/"
                           requires:
                             provider_name: platform_jwt
-
-                  # Strip the Authorization header before forwarding to backends
-                  - name: envoy.filters.http.header_to_metadata
-                    typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.header_to_metadata.v3.Config
 
                   - name: envoy.filters.http.router
                     typed_config:

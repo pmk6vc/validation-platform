@@ -1,5 +1,6 @@
 package com.platform
 
+import com.platform.api.configureJwks
 import com.platform.api.configureRouting
 import com.platform.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
@@ -43,5 +44,6 @@ fun Application.module(initDatabase: Boolean = true) {
         )
     }
 
+    configureJwks()
     configureRouting()
 }

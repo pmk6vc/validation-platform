@@ -31,6 +31,9 @@ dependencies {
     implementation(libs.bundles.exposed)
     implementation(libs.postgresql)
 
+    // JWT (RSA key pair for JWKS endpoint)
+    implementation(libs.java.jwt)
+
     // Kubernetes
     implementation(libs.fabric8.kubernetes.client)
 
