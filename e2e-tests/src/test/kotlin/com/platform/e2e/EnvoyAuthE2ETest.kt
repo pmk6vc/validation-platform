@@ -1,5 +1,8 @@
 package com.platform.e2e
 
+import com.platform.api.CreateOrganizationRequest
+import com.platform.collector.models.BatchCreateCapturedInputRequest
+import com.platform.models.Organization
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -9,13 +12,13 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.Serializable
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPrivateKey
+import java.security.interfaces.RSAPublicKey
 import java.time.Instant
 import java.util.Date
 import kotlin.test.assertEquals
@@ -84,7 +87,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
                     .withClaim("role", "admin")
                     .sign(
                         com.auth0.jwt.algorithms.Algorithm.RSA256(
-                            wrongKeyPair.public as java.security.interfaces.RSAPublicKey,
+                            wrongKeyPair.public as RSAPublicKey,
                             wrongKeyPair.private as RSAPrivateKey,
                         ),
                     )
@@ -121,11 +124,11 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
                 httpClient.post("$envoyUrl/api/organizations") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
-                    setBody("""{"name": "Auth Test Org"}""")
+                    setBody(CreateOrganizationRequest(name = "Auth Test Org"))
                 }
             assertEquals(HttpStatusCode.Created, response.status)
-            val body = json.decodeFromString<CreatedOrg>(response.bodyAsText())
-            assertNotNull(body.id)
+            val org = json.decodeFromString<Organization>(response.bodyAsText())
+            assertNotNull(org.id)
         }
 
     @Test
@@ -173,14 +176,8 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
                 httpClient.post("$envoyUrl/api/captured-inputs") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
-                    setBody("""{"items": []}""")
+                    setBody(BatchCreateCapturedInputRequest(items = emptyList()))
                 }
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 }
-
-@Serializable
-data class CreatedOrg(
-    val id: String,
-    val name: String,
-)

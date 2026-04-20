@@ -33,6 +33,10 @@ dependencies {
     // Shared test fixtures (KubernetesWorkloadTestBase)
     testImplementation(testFixtures(project(":shared")))
 
+    // Platform modules (for request/response DTOs — compile-time type safety)
+    testImplementation(project(":app"))
+    testImplementation(project(":collector"))
+
     // Testing
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlin.test.junit5)

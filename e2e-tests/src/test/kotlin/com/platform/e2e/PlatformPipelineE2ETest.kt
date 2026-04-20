@@ -1,5 +1,13 @@
 package com.platform.e2e
 
+import com.platform.api.AgentConfigResponse
+import com.platform.api.CreateOrganizationRequest
+import com.platform.api.CreateServiceRequest
+import com.platform.collector.models.BatchCreateCapturedInputRequest
+import com.platform.collector.models.BatchCreateCapturedInputResponse
+import com.platform.collector.models.CreateCapturedInputRequest
+import com.platform.collector.models.InputType
+import com.platform.models.Organization
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -9,7 +17,6 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.Serializable
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
@@ -41,17 +48,22 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 httpClient.post("$envoyUrl/api/organizations") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
-                    setBody("""{"name": "Organization A"}""")
+                    setBody(CreateOrganizationRequest(name = "Organization A"))
                 }
             assertEquals(HttpStatusCode.Created, orgResponse.status)
-            val org = json.decodeFromString<CreatedOrg>(orgResponse.bodyAsText())
+            val org = json.decodeFromString<Organization>(orgResponse.bodyAsText())
 
             val svcResponse =
                 httpClient.post("$envoyUrl/api/services") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(
-                        """{"organizationId": "${org.id}", "cluster": "prod-a", "namespace": "production", "name": "order-service-a"}""",
+                        CreateServiceRequest(
+                            organizationId = org.id,
+                            cluster = "prod-a",
+                            namespace = "production",
+                            name = "order-service-a",
+                        ),
                     )
                 }
             assertEquals(HttpStatusCode.Created, svcResponse.status)
@@ -65,17 +77,22 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 httpClient.post("$envoyUrl/api/organizations") {
                     bearerAuth(orgBToken)
                     contentType(ContentType.Application.Json)
-                    setBody("""{"name": "Organization B"}""")
+                    setBody(CreateOrganizationRequest(name = "Organization B"))
                 }
             assertEquals(HttpStatusCode.Created, orgResponse.status)
-            val org = json.decodeFromString<CreatedOrg>(orgResponse.bodyAsText())
+            val org = json.decodeFromString<Organization>(orgResponse.bodyAsText())
 
             val svcResponse =
                 httpClient.post("$envoyUrl/api/services") {
                     bearerAuth(orgBToken)
                     contentType(ContentType.Application.Json)
                     setBody(
-                        """{"organizationId": "${org.id}", "cluster": "prod-b", "namespace": "production", "name": "order-service-b"}""",
+                        CreateServiceRequest(
+                            organizationId = org.id,
+                            cluster = "prod-b",
+                            namespace = "production",
+                            name = "order-service-b",
+                        ),
                     )
                 }
             assertEquals(HttpStatusCode.Created, svcResponse.status)
@@ -87,48 +104,48 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     @Order(10)
     fun `agent can POST captured traffic through Envoy to collector`() =
         runBlocking {
-            // First get the service ID for org-a
             val configResponse =
                 httpClient.get("$envoyUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, configResponse.status)
-            val config = json.decodeFromString<AgentConfig>(configResponse.bodyAsText())
+            val config = json.decodeFromString<AgentConfigResponse>(configResponse.bodyAsText())
             val serviceId = config.targetServices["order-service-a"]
             assertNotNull(serviceId, "org-a should have order-service-a in config")
 
-            // POST a batch of captured inputs (simulating what the agent does)
+            val now = Instant.now()
+            val batch =
+                BatchCreateCapturedInputRequest(
+                    items =
+                        listOf(
+                            CreateCapturedInputRequest(
+                                serviceId = serviceId,
+                                inputType = InputType.HTTP,
+                                method = "GET",
+                                url = "/api/orders/1",
+                                responseStatus = 200,
+                                responseBody = """{"id": 1}""",
+                                capturedAt = now,
+                            ),
+                            CreateCapturedInputRequest(
+                                serviceId = serviceId,
+                                inputType = InputType.HTTP,
+                                method = "POST",
+                                url = "/api/orders",
+                                responseStatus = 201,
+                                capturedAt = now,
+                            ),
+                        ),
+                )
+
             val batchResponse =
                 httpClient.post("$envoyUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
-                    setBody(
-                        """{
-                        "items": [
-                            {
-                                "serviceId": "$serviceId",
-                                "inputType": "HTTP",
-                                "method": "GET",
-                                "url": "/api/orders/1",
-                                "responseStatus": 200,
-                                "responseBody": "{\"id\": 1}",
-                                "capturedAt": "${Instant.now()}"
-                            },
-                            {
-                                "serviceId": "$serviceId",
-                                "inputType": "HTTP",
-                                "method": "POST",
-                                "url": "/api/orders",
-                                "responseStatus": 201,
-                                "capturedAt": "${Instant.now()}"
-                            }
-                        ]
-                    }""",
-                    )
+                    setBody(batch)
                 }
             assertEquals(HttpStatusCode.Created, batchResponse.status)
 
-            // Verify data landed in the collector
             val listResponse =
                 httpClient.get("$envoyUrl/api/captured-inputs?serviceId=$serviceId") {
                     bearerAuth(orgAToken)
@@ -145,16 +162,13 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     @Order(20)
     fun `agent config returns all services when no identity scoping`() =
         runBlocking {
-            // With a generic token (no specific org/cluster match in the app's
-            // HeaderIdentityPlugin), the config endpoint returns all services
             val token = generateJwt()
             val response =
                 httpClient.get("$envoyUrl/api/agent/config") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
-            val config = json.decodeFromString<AgentConfig>(response.bodyAsText())
-            // Should see services from both orgs (no scoping without HeaderIdentityPlugin)
+            val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
             assertTrue(
                 config.targetServices.size >= 2,
                 "Without identity scoping, should see services from multiple orgs",
@@ -167,22 +181,26 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     @Order(30)
     fun `collector batch ingest rejects invalid serviceId`() =
         runBlocking {
+            val batch =
+                BatchCreateCapturedInputRequest(
+                    items =
+                        listOf(
+                            CreateCapturedInputRequest(
+                                serviceId = "non-existent-service-id",
+                                inputType = InputType.HTTP,
+                                method = "GET",
+                                url = "/test",
+                                responseStatus = 200,
+                                capturedAt = Instant.now(),
+                            ),
+                        ),
+                )
+
             val response =
                 httpClient.post("$envoyUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
-                    setBody(
-                        """{
-                        "items": [{
-                            "serviceId": "non-existent-service-id",
-                            "inputType": "HTTP",
-                            "method": "GET",
-                            "url": "/test",
-                            "responseStatus": 200,
-                            "capturedAt": "${Instant.now()}"
-                        }]
-                    }""",
-                    )
+                    setBody(batch)
                 }
             assertEquals(
                 HttpStatusCode.BadRequest,
@@ -195,45 +213,36 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     @Order(31)
     fun `large batch ingest succeeds through Envoy`() =
         runBlocking {
-            // Get a valid service ID
             val configResponse =
                 httpClient.get("$envoyUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
-            val config = json.decodeFromString<AgentConfig>(configResponse.bodyAsText())
+            val config = json.decodeFromString<AgentConfigResponse>(configResponse.bodyAsText())
             val serviceId = config.targetServices.values.first()
 
-            // Build a batch of 100 entries
-            val items =
-                (1..100).joinToString(",") { i ->
-                    """{
-                    "serviceId": "$serviceId",
-                    "inputType": "HTTP",
-                    "method": "GET",
-                    "url": "/api/orders/$i",
-                    "responseStatus": 200,
-                    "capturedAt": "${Instant.now()}"
-                }"""
-                }
+            val batch =
+                BatchCreateCapturedInputRequest(
+                    items =
+                        (1..100).map { i ->
+                            CreateCapturedInputRequest(
+                                serviceId = serviceId,
+                                inputType = InputType.HTTP,
+                                method = "GET",
+                                url = "/api/orders/$i",
+                                responseStatus = 200,
+                                capturedAt = Instant.now(),
+                            )
+                        },
+                )
 
             val response =
                 httpClient.post("$envoyUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
-                    setBody("""{"items": [$items]}""")
+                    setBody(batch)
                 }
             assertEquals(HttpStatusCode.Created, response.status)
-            val body = json.decodeFromString<BatchResult>(response.bodyAsText())
-            assertEquals(100, body.created)
+            val result = json.decodeFromString<BatchCreateCapturedInputResponse>(response.bodyAsText())
+            assertEquals(100, result.created)
         }
 }
-
-@Serializable
-private data class AgentConfig(
-    val targetServices: Map<String, String> = emptyMap(),
-)
-
-@Serializable
-private data class BatchResult(
-    val created: Int,
-)
