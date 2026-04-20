@@ -24,6 +24,14 @@ dependencies {
     testImplementation(libs.testcontainers)
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.testcontainers.k3s)
+
+    // K8s client (for WorkloadTrafficIntegrationTest)
+    testImplementation(libs.fabric8.kubernetes.client)
+    testImplementation(libs.bouncycastle)
+
+    // Shared test fixtures (KubernetesWorkloadTestBase)
+    testImplementation(testFixtures(project(":shared")))
 
     // Testing
     testImplementation(libs.junit.jupiter)
@@ -31,17 +39,17 @@ dependencies {
     testImplementation(libs.logback)
 }
 
-// Build Docker images before running integration tests
+// Build Docker images before running e2e tests
 tasks.register<Exec>("buildAppImage") {
     group = "docker"
-    description = "Build the app Docker image for integration tests"
+    description = "Build the app Docker image for e2e tests"
     workingDir = rootProject.projectDir
     commandLine("docker", "build", "-t", "validation-app:test", "-f", "deploy/Dockerfile.app", ".")
 }
 
 tasks.register<Exec>("buildCollectorImage") {
     group = "docker"
-    description = "Build the collector Docker image for integration tests"
+    description = "Build the collector Docker image for e2e tests"
     workingDir = rootProject.projectDir
     commandLine("docker", "build", "-t", "validation-collector:test", "-f", "deploy/Dockerfile.collector", ".")
 }
@@ -51,6 +59,13 @@ tasks.test {
     workingDir = rootProject.projectDir
 
     dependsOn("buildAppImage", "buildCollectorImage")
+
+    // Build test service images for k3s workload tests
+    dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:order-service:jibDockerBuild")
+    dependsOn(":test-services:notification-service:jibDockerBuild")
+    dependsOn(":test-services:webhook-stub:jibDockerBuild")
+    dependsOn(":test-services:traffic-generator:jibDockerBuild")
 
     // Colima socket for TestContainers on macOS
     val colimaSocket = file("${System.getProperty("user.home")}/.colima/docker.sock")

@@ -59,6 +59,7 @@ jobs:
             app/build/test-results/test/TEST-*.xml
             collector/build/test-results/test/TEST-*.xml
             agent/build/test-results/test/TEST-*.xml
+            e2e-tests/build/test-results/test/TEST-*.xml
 
       - name: Coverage report
         if: always()

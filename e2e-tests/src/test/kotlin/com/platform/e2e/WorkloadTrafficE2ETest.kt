@@ -1,5 +1,6 @@
-package com.platform.kubernetes
+package com.platform.e2e
 
+import com.platform.kubernetes.KubernetesWorkloadTestBase
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
@@ -30,8 +31,8 @@ import kotlin.test.assertTrue
  * - traffic-generator producing concurrent load
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class WorkloadTrafficIntegrationTest : KubernetesWorkloadTestBase() {
-    private val logger = LoggerFactory.getLogger(WorkloadTrafficIntegrationTest::class.java)
+class WorkloadTrafficE2ETest : KubernetesWorkloadTestBase() {
+    private val logger = LoggerFactory.getLogger(WorkloadTrafficE2ETest::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
     private val httpClient =
