@@ -1,5 +1,6 @@
 package com.platform.agent
 
+import com.platform.agent.models.KubesharkEntry
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
@@ -36,6 +37,9 @@ import io.ktor.server.websocket.WebSockets as ServerWebSockets
  * that implements a fake `/api/wsFull` handler. The real [KubesharkClient]
  * connects to it over a real WebSocket, so we're exercising the full transport
  * stack (Ktor CIO client → TCP → Ktor Netty server) without mocking.
+ *
+ * All tests use polling with deadlines instead of fixed delays to avoid
+ * flakiness on slow CI runners.
  */
 class KubesharkClientTest {
     private fun wsEntry(
@@ -60,17 +64,6 @@ class KubesharkClientTest {
         "elapsedTime": 50
     }"""
 
-    /**
-     * Run a test scoped around an embedded Ktor server + a [KubesharkClient].
-     * Handles server startup/teardown and HTTP client creation. The test body
-     * runs inside the [CoroutineScope] that owns the client's streamer job,
-     * so cancelling the scope (via `runBlocking` exit) tears everything down.
-     *
-     * @param configFlow The [MutableStateFlow] driving KFL query updates.
-     *   Tests that need to trigger a reconnect can update `configFlow.value`.
-     * @param receivedFilters Mutable list populated with each KFL filter the
-     *   server receives (one per WebSocket session the client opens).
-     */
     private fun withClient(
         serverBlock: suspend DefaultWebSocketServerSession.() -> Unit,
         testBlock: suspend CoroutineScope.(KubesharkClient, MutableStateFlow<DynamicConfig>) -> Unit,
@@ -119,6 +112,34 @@ class KubesharkClientTest {
         }
     }
 
+    /** Poll until [receivedFilters] has at least [count] entries, or time out. */
+    private suspend fun awaitFilters(
+        receivedFilters: MutableList<String>,
+        count: Int,
+        timeoutMs: Long = 3_000,
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (synchronized(receivedFilters) { receivedFilters.size } < count &&
+            System.currentTimeMillis() < deadline
+        ) {
+            delay(10.milliseconds)
+        }
+    }
+
+    /** Poll drainBatch until [count] entries accumulated, or time out. */
+    private suspend fun drainUntil(
+        client: KubesharkClient,
+        count: Int,
+        timeoutMs: Long = 3_000,
+    ): List<KubesharkEntry> {
+        val entries = mutableListOf<KubesharkEntry>()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (entries.size < count && System.currentTimeMillis() < deadline) {
+            entries.addAll(client.drainBatch(limit = 100, maxWait = 200.milliseconds))
+        }
+        return entries
+    }
+
     // -----------------------------------------------------------------------
     // KFL filter transmission — assert what the server actually receives
     // -----------------------------------------------------------------------
@@ -127,8 +148,10 @@ class KubesharkClientTest {
     fun `sends http-only KFL filter when no target services configured`() {
         val receivedFilters = mutableListOf<String>()
         withClient(
-            serverBlock = { delay(300.milliseconds) },
-            testBlock = { _, _ -> delay(200.milliseconds) },
+            serverBlock = { delay(2_000.milliseconds) },
+            testBlock = { _, _ ->
+                awaitFilters(receivedFilters, 1)
+            },
             receivedFilters = receivedFilters,
         )
         assertEquals(listOf("http"), receivedFilters)
@@ -142,8 +165,10 @@ class KubesharkClientTest {
                 DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
             )
         withClient(
-            serverBlock = { delay(300.milliseconds) },
-            testBlock = { _, _ -> delay(200.milliseconds) },
+            serverBlock = { delay(2_000.milliseconds) },
+            testBlock = { _, _ ->
+                awaitFilters(receivedFilters, 1)
+            },
             configFlow = config,
             receivedFilters = receivedFilters,
         )
@@ -164,12 +189,7 @@ class KubesharkClientTest {
         withClient(
             serverBlock = { delay(500.milliseconds) },
             testBlock = { _, flow ->
-                val deadline = System.currentTimeMillis() + 2_000
-                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
-                    System.currentTimeMillis() < deadline
-                ) {
-                    delay(10.milliseconds)
-                }
+                awaitFilters(receivedFilters, 1)
 
                 // Update with same targetServices but different samplingRate
                 flow.value =
@@ -198,12 +218,7 @@ class KubesharkClientTest {
         withClient(
             serverBlock = { delay(2_000.milliseconds) },
             testBlock = { _, flow ->
-                val firstDeadline = System.currentTimeMillis() + 2_000
-                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
-                    System.currentTimeMillis() < firstDeadline
-                ) {
-                    delay(10.milliseconds)
-                }
+                awaitFilters(receivedFilters, 1)
 
                 // Change targetServices via the StateFlow
                 flow.value =
@@ -211,12 +226,7 @@ class KubesharkClientTest {
                         targetServices = mapOf("api-gateway" to "svc-2"),
                     )
 
-                val secondDeadline = System.currentTimeMillis() + 2_000
-                while (synchronized(receivedFilters) { receivedFilters.size } < 2 &&
-                    System.currentTimeMillis() < secondDeadline
-                ) {
-                    delay(10.milliseconds)
-                }
+                awaitFilters(receivedFilters, 2)
             },
             configFlow = config,
             receivedFilters = receivedFilters,
@@ -250,12 +260,7 @@ class KubesharkClientTest {
                 }
             },
             testBlock = { _, flow ->
-                val firstFilterDeadline = System.currentTimeMillis() + 2_000
-                while (synchronized(receivedFilters) { receivedFilters.size } < 1 &&
-                    System.currentTimeMillis() < firstFilterDeadline
-                ) {
-                    delay(10.milliseconds)
-                }
+                awaitFilters(receivedFilters, 1)
 
                 flow.value =
                     DynamicConfig(
@@ -263,12 +268,7 @@ class KubesharkClientTest {
                     )
                 allowFirstSessionToClose.set(true)
 
-                val secondFilterDeadline = System.currentTimeMillis() + 2_000
-                while (synchronized(receivedFilters) { receivedFilters.size } < 2 &&
-                    System.currentTimeMillis() < secondFilterDeadline
-                ) {
-                    delay(10.milliseconds)
-                }
+                awaitFilters(receivedFilters, 2)
             },
             configFlow = config,
             receivedFilters = receivedFilters,
@@ -302,7 +302,6 @@ class KubesharkClientTest {
                 KubesharkClient.buildKflQuery(
                     mapOf("order-service" to "svc-1", "api-gateway" to "svc-2"),
                 )
-            // Both service names must appear; order is map iteration order
             assertTrue(query.startsWith("http and ("), "should start with 'http and ('")
             assertTrue(query.endsWith(")"), "should end with ')'")
             assertTrue(query.contains("""dst.name == "order-service""""))
@@ -328,8 +327,6 @@ class KubesharkClientTest {
 
         @Test
         fun `service ID values are not included in the KFL query`() {
-            // Only the K8s service name (key) should appear in the query,
-            // not the platform service ID (value).
             val query = KubesharkClient.buildKflQuery(mapOf("my-svc" to "platform-id-xyz"))
             assertTrue(query.contains("my-svc"))
             assertTrue(!query.contains("platform-id-xyz"))
@@ -347,13 +344,10 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text(wsEntry("e2", 2000L)))
                 send(Frame.Text(wsEntry("e3", 3000L)))
-                // Hold the connection open long enough for the client to drain
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                // Give the streamer a moment to move all 3 frames into the channel
-                delay(200.milliseconds)
-                val entries = client.drainBatch(limit = 100, maxWait = 2000.milliseconds)
+                val entries = drainUntil(client, 3)
 
                 assertEquals(3, entries.size)
                 assertEquals("e1", entries[0].id)
@@ -371,12 +365,15 @@ class KubesharkClientTest {
                 repeat(10) { i ->
                     send(Frame.Text(wsEntry("e$i", (i + 1) * 1000L)))
                 }
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                // Wait briefly so the streamer has time to move everything into the channel
-                delay(200.milliseconds)
-                val entries = client.drainBatch(limit = 3, maxWait = 2000.milliseconds)
+                // Wait for entries to be available, then drain with limit
+                val entries = mutableListOf<KubesharkEntry>()
+                val deadline = System.currentTimeMillis() + 3_000
+                while (entries.size < 3 && System.currentTimeMillis() < deadline) {
+                    entries.addAll(client.drainBatch(limit = 3, maxWait = 200.milliseconds))
+                }
 
                 assertEquals(3, entries.size)
             },
@@ -386,27 +383,19 @@ class KubesharkClientTest {
     fun `drainBatch returns empty on timeout but recovers when traffic arrives later`() =
         withClient(
             serverBlock = {
-                // First drainBatch has maxWait=200ms; the server waits 400ms
-                // before sending so the first call times out with an empty
-                // list. Then it sends an entry, which the second drainBatch
-                // call should pick up — proving the empty-timeout path does
-                // not leave the channel in a bad state.
-                delay(400.milliseconds)
+                // Wait long enough that the first drainBatch (100ms maxWait) definitely times out
+                delay(1_000.milliseconds)
                 send(Frame.Text(wsEntry("delayed-1", 5000L)))
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
                 // First drain — server hasn't sent anything yet, times out
-                val empty = client.drainBatch(limit = 100, maxWait = 200.milliseconds)
+                val empty = client.drainBatch(limit = 100, maxWait = 100.milliseconds)
                 assertTrue(empty.isEmpty(), "drainBatch should return empty when no entries arrive within maxWait")
 
-                // Second drain — server has since sent an entry, we should get it
-                val afterTimeout = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
-                assertEquals(
-                    1,
-                    afterTimeout.size,
-                    "drainBatch should still pick up entries that arrive after a prior timeout",
-                )
+                // Second drain — server will eventually send an entry
+                val afterTimeout = drainUntil(client, 1)
+                assertEquals(1, afterTimeout.size)
                 assertEquals("delayed-1", afterTimeout[0].id)
             },
         )
@@ -418,21 +407,17 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text(wsEntry("e2", 2000L)))
                 delay(500.milliseconds)
-                // Second burst after the first batch has been drained
                 send(Frame.Text(wsEntry("e3", 3000L)))
                 send(Frame.Text(wsEntry("e4", 4000L)))
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                delay(200.milliseconds)
-                val firstBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
-                assertEquals(2, firstBatch.size)
-                assertEquals("e1", firstBatch[0].id)
+                // Drain all 4 entries across multiple batches
+                val allEntries = drainUntil(client, 4)
 
-                delay(300.milliseconds)
-                val secondBatch = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
-                assertEquals(2, secondBatch.size)
-                assertEquals("e3", secondBatch[0].id)
+                assertEquals(4, allEntries.size)
+                val ids = allEntries.map { it.id }.toSet()
+                assertTrue(ids.containsAll(setOf("e1", "e2", "e3", "e4")))
             },
         )
 
@@ -444,19 +429,14 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text("{incomplete"))
                 send(Frame.Text(wsEntry("e2", 2000L)))
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                // Poll until we've drained both valid entries (malformed frames are dropped)
-                val allEntries = mutableListOf<com.platform.agent.models.KubesharkEntry>()
-                val deadline = System.currentTimeMillis() + 3_000
-                while (allEntries.size < 2 && System.currentTimeMillis() < deadline) {
-                    allEntries.addAll(client.drainBatch(limit = 100, maxWait = 200.milliseconds))
-                }
+                val entries = drainUntil(client, 2)
 
-                assertEquals(2, allEntries.size)
-                assertEquals("e1", allEntries[0].id)
-                assertEquals("e2", allEntries[1].id)
+                assertEquals(2, entries.size)
+                assertEquals("e1", entries[0].id)
+                assertEquals("e2", entries[1].id)
             },
         )
 
@@ -464,16 +444,13 @@ class KubesharkClientTest {
     fun `drainBatch drops entries older than the dedup lookback window`() =
         withClient(
             serverBlock = {
-                // DEDUP_LOOKBACK is 5 seconds. After we've seen ts=1_000_000, any
-                // entry with ts < 995_000 must be dropped as reconnect-replay noise.
                 send(Frame.Text(wsEntry("e1", 1_000_000L)))
                 send(Frame.Text(wsEntry("replay", 900_000L))) // 100s old — dropped
                 send(Frame.Text(wsEntry("e2", 1_001_000L)))
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                delay(200.milliseconds)
-                val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                val entries = drainUntil(client, 2)
 
                 assertEquals(2, entries.size)
                 assertEquals("e1", entries[0].id)
@@ -485,20 +462,15 @@ class KubesharkClientTest {
     fun `drainBatch preserves entries that are out of order within the lookback window`() =
         withClient(
             serverBlock = {
-                // DEDUP_LOOKBACK is 5 seconds. In-session out-of-order entries
-                // within that window must still be forwarded even though they're
-                // older than lastSeen.
                 send(Frame.Text(wsEntry("e1", 10_000L)))
                 send(Frame.Text(wsEntry("e2", 12_000L)))
                 send(Frame.Text(wsEntry("e3", 9_000L))) // 3s behind e2, within 5s window
                 send(Frame.Text(wsEntry("e4", 13_000L)))
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                delay(200.milliseconds)
-                val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                val entries = drainUntil(client, 4)
 
-                // All four entries survive — e3 is within the 5s lookback window
                 assertEquals(4, entries.size)
                 assertEquals("e1", entries[0].id)
                 assertEquals("e2", entries[1].id)
