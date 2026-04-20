@@ -31,17 +31,17 @@ dependencies {
     testImplementation(libs.logback)
 }
 
-// Build Docker images before running integration tests
+// Build Docker images before running e2e tests
 tasks.register<Exec>("buildAppImage") {
     group = "docker"
-    description = "Build the app Docker image for integration tests"
+    description = "Build the app Docker image for e2e tests"
     workingDir = rootProject.projectDir
     commandLine("docker", "build", "-t", "validation-app:test", "-f", "deploy/Dockerfile.app", ".")
 }
 
 tasks.register<Exec>("buildCollectorImage") {
     group = "docker"
-    description = "Build the collector Docker image for integration tests"
+    description = "Build the collector Docker image for e2e tests"
     workingDir = rootProject.projectDir
     commandLine("docker", "build", "-t", "validation-collector:test", "-f", "deploy/Dockerfile.collector", ".")
 }

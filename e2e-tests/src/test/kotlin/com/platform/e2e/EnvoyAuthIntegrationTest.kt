@@ -1,4 +1,4 @@
-package com.platform.integration
+package com.platform.e2e
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
