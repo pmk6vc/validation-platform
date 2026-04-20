@@ -20,8 +20,7 @@ class AgentConfigTest {
         private val fullEnv =
             mapOf(
                 "KUBESHARK_URL" to "http://kubeshark:9090",
-                "COLLECTOR_URL" to "https://collector.example.com",
-                "APP_URL" to "https://app.example.com",
+                "PLATFORM_URL" to "https://platform.example.com",
                 "API_KEY" to "vp_key_test123",
             )
 
@@ -30,8 +29,7 @@ class AgentConfigTest {
             val config = StaticConfig.fromEnvironment(fullEnv::get)
 
             assertEquals("http://kubeshark:9090", config.kubesharkUrl)
-            assertEquals("https://collector.example.com", config.collectorUrl)
-            assertEquals("https://app.example.com", config.appUrl)
+            assertEquals("https://platform.example.com", config.platformUrl)
             assertEquals("vp_key_test123", config.apiKey)
         }
 
@@ -45,29 +43,15 @@ class AgentConfigTest {
         }
 
         @Test
-        fun `fromEnvironment throws when COLLECTOR_URL is missing`() {
-            val env = fullEnv - "COLLECTOR_URL"
+        fun `fromEnvironment throws when PLATFORM_URL is missing`() {
+            val env = fullEnv - "PLATFORM_URL"
 
             val exception =
                 assertThrows<IllegalStateException> {
                     StaticConfig.fromEnvironment(env::get)
                 }
             assertEquals(
-                "Required environment variable COLLECTOR_URL is not set",
-                exception.message,
-            )
-        }
-
-        @Test
-        fun `fromEnvironment throws when APP_URL is missing`() {
-            val env = fullEnv - "APP_URL"
-
-            val exception =
-                assertThrows<IllegalStateException> {
-                    StaticConfig.fromEnvironment(env::get)
-                }
-            assertEquals(
-                "Required environment variable APP_URL is not set",
+                "Required environment variable PLATFORM_URL is not set",
                 exception.message,
             )
         }

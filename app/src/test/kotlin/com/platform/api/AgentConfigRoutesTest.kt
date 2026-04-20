@@ -7,6 +7,7 @@ import com.platform.models.Organization
 import com.platform.models.Service
 import com.platform.module
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
@@ -16,7 +17,6 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class AgentConfigRoutesTest : AppDatabaseTestBase() {
     private val json = Json { ignoreUnknownKeys = true }
@@ -58,24 +58,17 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
     }
 
     @Test
-    fun `GET agent config returns 200 with empty targetServices when no services`() =
+    fun `GET agent config returns 401 without identity headers`() =
         testApplication {
             application { module(initDatabase = false) }
 
             val response = client.get("/api/agent/config")
 
-            assertEquals(HttpStatusCode.OK, response.status)
-            val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
-            assertTrue(config.targetServices.isEmpty())
-            assertEquals(1.0, config.samplingRate)
-            assertEquals(100, config.batchSize)
-            assertEquals(5000, config.captureInterval)
-            assertEquals(30000, config.configPollInterval)
-            assertEquals(60000, config.discoveryInterval)
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
         }
 
     @Test
-    fun `GET agent config returns registered services in targetServices map`() =
+    fun `GET agent config returns scoped services with identity headers`() =
         testApplication {
             application { module(initDatabase = false) }
 
@@ -83,7 +76,10 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
             val svc2 = createService("api-gateway")
 
             val response =
-                client.get("/api/agent/config?organizationId=${org.id}&cluster=prod")
+                client.get("/api/agent/config") {
+                    header("X-Organization-Id", org.id)
+                    header("X-Cluster", "prod")
+                }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
@@ -93,7 +89,7 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config filters by organizationId`() =
+    fun `GET agent config filters by organizationId from identity`() =
         testApplication {
             application { module(initDatabase = false) }
 
@@ -109,7 +105,10 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
             createService("other-service", organizationId = otherOrg.id)
 
             val response =
-                client.get("/api/agent/config?organizationId=${org.id}")
+                client.get("/api/agent/config") {
+                    header("X-Organization-Id", org.id)
+                    header("X-Cluster", "prod")
+                }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
@@ -118,7 +117,7 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config filters by cluster`() =
+    fun `GET agent config filters by cluster from identity`() =
         testApplication {
             application { module(initDatabase = false) }
 
@@ -126,7 +125,10 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
             createService("staging-service", cluster = "staging")
 
             val response =
-                client.get("/api/agent/config?organizationId=${org.id}&cluster=prod")
+                client.get("/api/agent/config") {
+                    header("X-Organization-Id", org.id)
+                    header("X-Cluster", "prod")
+                }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())

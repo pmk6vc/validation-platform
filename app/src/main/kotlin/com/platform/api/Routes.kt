@@ -7,6 +7,8 @@ import com.platform.models.Service
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
+import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.principal
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
@@ -68,23 +70,32 @@ fun Application.configureRouting() {
                 }
             }
 
-            route("/agent") {
-                // TODO: organizationId and cluster should be required, not optional.
-                //  When bearer token auth is added, resolve these from the API_KEY token
-                //  (each token is scoped to an org+cluster) instead of accepting them as
-                //  query params. Remove the query params at that point.
-                get("/config") {
-                    val organizationId = call.request.queryParameters["organizationId"]
-                    val cluster = call.request.queryParameters["cluster"]
-                    val services =
-                        ServiceRepository.find(
-                            organizationId = organizationId,
-                            cluster = cluster,
-                            limit = ServiceRepository.MAX_PAGE_SIZE,
-                        )
-                    val targetServices =
-                        services.items.associate { it.name to it.id }
-                    call.respond(AgentConfigResponse(targetServices = targetServices))
+            // Agent config requires identity (org + cluster from Envoy-forwarded JWT claims)
+            authenticate(ENVOY_IDENTITY_AUTH) {
+                route("/agent") {
+                    get("/config") {
+                        val identity = call.principal<AgentIdentity>()!!
+                        // TODO: Replace this graceful UUID handling with dedicated value-class
+                        //  typing (OrganizationId, ServiceId) so invalid IDs are caught at
+                        //  compile time rather than runtime. See ARCHITECTURE_REVIEW.md QUALITY-5.
+                        val orgId =
+                            try {
+                                UUID.fromString(identity.organizationId)
+                                identity.organizationId
+                            } catch (_: IllegalArgumentException) {
+                                // Non-UUID org ID in JWT claim — no services will match
+                                null
+                            }
+                        val services =
+                            ServiceRepository.find(
+                                organizationId = orgId,
+                                cluster = identity.cluster,
+                                limit = ServiceRepository.MAX_PAGE_SIZE,
+                            )
+                        val targetServices =
+                            services.items.associate { it.name to it.id }
+                        call.respond(AgentConfigResponse(targetServices = targetServices))
+                    }
                 }
             }
 

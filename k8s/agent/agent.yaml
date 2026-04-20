@@ -50,12 +50,13 @@ spec:
           env:
             - name: KUBESHARK_URL
               value: "http://kubeshark-front.default.svc.cluster.local:80"
-            - name: COLLECTOR_URL
-              value: "http://collector.validation.svc.cluster.local:8081"
-            - name: APP_URL
-              value: "http://app.validation.svc.cluster.local:8080"
+            - name: PLATFORM_URL
+              value: "http://envoy.validation.svc.cluster.local:8082"
             - name: API_KEY
-              value: "test-api-key"
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-key
+                  key: jwt-token
           livenessProbe:
             exec:
               command: ["sh", "-c", "find /tmp/agent-alive -mmin -1 | grep -q ."]

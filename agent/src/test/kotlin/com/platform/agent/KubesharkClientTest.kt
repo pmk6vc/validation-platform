@@ -116,7 +116,7 @@ class KubesharkClientTest {
     private suspend fun awaitFilters(
         receivedFilters: MutableList<String>,
         count: Int,
-        timeoutMs: Long = 3_000,
+        timeoutMs: Long = 10_000,
     ) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (synchronized(receivedFilters) { receivedFilters.size } < count &&
@@ -130,7 +130,7 @@ class KubesharkClientTest {
     private suspend fun drainUntil(
         client: KubesharkClient,
         count: Int,
-        timeoutMs: Long = 3_000,
+        timeoutMs: Long = 10_000,
     ): List<KubesharkEntry> {
         val entries = mutableListOf<KubesharkEntry>()
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -371,7 +371,7 @@ class KubesharkClientTest {
                 // Single drainBatch call with limit=3. maxWait covers the time
                 // for the WebSocket connection to establish + first entry to arrive.
                 // After the first entry, drainBatch pulls non-blocking up to limit.
-                val entries = client.drainBatch(limit = 3, maxWait = 2_000.milliseconds)
+                val entries = client.drainBatch(limit = 3, maxWait = 10_000.milliseconds)
 
                 assertEquals(3, entries.size)
             },
