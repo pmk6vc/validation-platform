@@ -1,14 +1,15 @@
 package com.platform.database
 
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import com.platform.models.Service
+import com.platform.models.ServiceId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.time.Instant
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -23,13 +24,13 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
         runBlocking {
             testOrg =
                 Organization(
-                    id = UUID.randomUUID().toString(),
+                    id = OrganizationId.generate(),
                     name = "Test Organization",
                     createdAt = Instant.now(),
                 )
             testOrg2 =
                 Organization(
-                    id = UUID.randomUUID().toString(),
+                    id = OrganizationId.generate(),
                     name = "Another Organization",
                     createdAt = Instant.now(),
                 )
@@ -39,8 +40,8 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     }
 
     private fun createTestService(
-        id: String = UUID.randomUUID().toString(),
-        organizationId: String = testOrg.id,
+        id: ServiceId = ServiceId.generate(),
+        organizationId: OrganizationId = testOrg.id,
         cluster: String = "prod-cluster",
         namespace: String = "default",
         name: String = "test-service",
@@ -105,7 +106,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `findById should return null when not exists`() =
         runBlocking {
-            val found = ServiceRepository.findById(UUID.randomUUID().toString())
+            val found = ServiceRepository.findById(ServiceId.generate())
 
             assertNull(found)
         }
@@ -269,7 +270,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `delete should return false when service not exists`() =
         runBlocking {
-            val deleted = ServiceRepository.delete(UUID.randomUUID().toString())
+            val deleted = ServiceRepository.delete(ServiceId.generate())
 
             assertTrue(!deleted)
         }
@@ -304,7 +305,7 @@ class ServiceRepositoryTest : AppDatabaseTestBase() {
             val laterTime = Instant.parse("2024-06-15T12:00:00Z")
             val updated =
                 original.copy(
-                    id = UUID.randomUUID().toString(), // Different ID but same identity
+                    id = ServiceId.generate(), // Different ID but same identity
                     provider = Provider.KUBERNETES,
                     lastSeenAt = laterTime,
                     metadata = mapOf("version" to "2.0", "region" to "us-east"),

@@ -8,7 +8,7 @@ import java.time.Instant
  */
 @Serializable
 data class Organization(
-    val id: String,
+    val id: OrganizationId,
     val name: String,
     @Serializable(with = InstantSerializer::class)
     val createdAt: Instant,

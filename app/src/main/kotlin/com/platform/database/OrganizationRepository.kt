@@ -1,6 +1,7 @@
 package com.platform.database
 
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import com.platform.models.Page
 import com.platform.models.decodeCursor
 import com.platform.models.encodeCursor
@@ -27,18 +28,18 @@ object OrganizationRepository {
     suspend fun create(organization: Organization): Organization =
         newSuspendedTransaction {
             Organizations.insert {
-                it[id] = UUID.fromString(organization.id)
+                it[id] = UUID.fromString(organization.id.value)
                 it[name] = organization.name
                 it[createdAt] = organization.createdAt
             }
             organization
         }
 
-    suspend fun findById(id: String): Organization? =
+    suspend fun findById(id: OrganizationId): Organization? =
         newSuspendedTransaction {
             Organizations
                 .selectAll()
-                .where { Organizations.id eq UUID.fromString(id) }
+                .where { Organizations.id eq UUID.fromString(id.value) }
                 .map { it.toOrganization() }
                 .singleOrNull()
         }
@@ -79,7 +80,7 @@ object OrganizationRepository {
             val items = if (hasMore) results.dropLast(1) else results
             val nextCursor =
                 if (hasMore) {
-                    encodeCursor(items.last().createdAt, items.last().id)
+                    encodeCursor(items.last().createdAt, items.last().id.value)
                 } else {
                     null
                 }
@@ -87,14 +88,14 @@ object OrganizationRepository {
             Page(items = items, nextCursor = nextCursor)
         }
 
-    suspend fun delete(id: String): Boolean =
+    suspend fun delete(id: OrganizationId): Boolean =
         newSuspendedTransaction {
-            Organizations.deleteWhere { Organizations.id eq UUID.fromString(id) } > 0
+            Organizations.deleteWhere { Organizations.id eq UUID.fromString(id.value) } > 0
         }
 
     private fun ResultRow.toOrganization(): Organization =
         Organization(
-            id = this[Organizations.id].toString(),
+            id = OrganizationId(this[Organizations.id].toString()),
             name = this[Organizations.name],
             createdAt = this[Organizations.createdAt],
         )

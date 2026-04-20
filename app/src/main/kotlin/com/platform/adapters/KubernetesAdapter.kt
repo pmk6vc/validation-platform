@@ -1,7 +1,9 @@
 package com.platform.adapters
 
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import com.platform.models.Service
+import com.platform.models.ServiceId
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientBuilder
 import kotlinx.coroutines.Dispatchers
@@ -9,7 +11,6 @@ import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.io.Closeable
 import java.time.Instant
-import java.util.UUID
 import io.fabric8.kubernetes.api.model.Service as K8sService
 
 /**
@@ -82,7 +83,7 @@ class KubernetesAdapter(
      * @param organizationId The organization context for discovered services
      * @return List of services discovered from Kubernetes
      */
-    override suspend fun discoverServices(organizationId: String): List<Service> {
+    override suspend fun discoverServices(organizationId: OrganizationId): List<Service> {
         logger.info("Starting service discovery for cluster: $clusterName")
 
         return try {
@@ -152,7 +153,7 @@ class KubernetesAdapter(
      */
     private fun normalizeService(
         k8sService: K8sService,
-        organizationId: String,
+        organizationId: OrganizationId,
     ): Service {
         val metadata = k8sService.metadata ?: error("Service missing metadata")
         val name = metadata.name ?: error("Service missing name")
@@ -163,7 +164,7 @@ class KubernetesAdapter(
         val serviceMetadata = buildServiceMetadata(k8sService)
 
         return Service(
-            id = UUID.randomUUID().toString(),
+            id = ServiceId.generate(),
             organizationId = organizationId,
             cluster = clusterName,
             namespace = namespace,

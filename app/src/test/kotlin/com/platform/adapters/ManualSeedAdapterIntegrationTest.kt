@@ -4,12 +4,12 @@ import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Instant
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -29,7 +29,7 @@ class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
         runBlocking {
             testOrg =
                 Organization(
-                    id = UUID.randomUUID().toString(),
+                    id = OrganizationId.generate(),
                     name = "Test Organization",
                     createdAt = Instant.now(),
                 )

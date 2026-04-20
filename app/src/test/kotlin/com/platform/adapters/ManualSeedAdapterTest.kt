@@ -1,9 +1,9 @@
 package com.platform.adapters
 
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -14,7 +14,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `discoverServices should return predefined seed services`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -25,7 +25,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `all seed services should have MANUAL_SEED provider`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -35,7 +35,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `seed data should include frontend services`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -48,7 +48,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `seed data should include backend services`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -62,7 +62,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `seed data should include messaging layer`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -74,7 +74,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `seed data should include data layer services`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -87,7 +87,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `all services should be in prod-us-east cluster`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -97,7 +97,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `all services should have metadata`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -107,7 +107,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `kafka service should have topics metadata`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -121,7 +121,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `services should have unique IDs`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -132,7 +132,7 @@ class ManualSeedAdapterTest {
     @Test
     fun `discoveredAt and lastSeenAt should be set`() =
         runBlocking {
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -143,8 +143,8 @@ class ManualSeedAdapterTest {
     @Test
     fun `different organization IDs should produce different service instances`() =
         runBlocking {
-            val org1 = UUID.randomUUID().toString()
-            val org2 = UUID.randomUUID().toString()
+            val org1 = OrganizationId.generate()
+            val org2 = OrganizationId.generate()
 
             val services1 = adapter.discoverServices(org1)
             val services2 = adapter.discoverServices(org2)

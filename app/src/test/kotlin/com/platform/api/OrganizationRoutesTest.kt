@@ -3,6 +3,7 @@ package com.platform.api
 import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import com.platform.models.Page
 import com.platform.module
 import io.ktor.client.request.get
@@ -54,8 +55,8 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
         testApplication {
             application { module(initDatabase = false) }
 
-            val org1 = Organization(UUID.randomUUID().toString(), "Org 1", Instant.now())
-            val org2 = Organization(UUID.randomUUID().toString(), "Org 2", Instant.now())
+            val org1 = Organization(OrganizationId.generate(), "Org 1", Instant.now())
+            val org2 = Organization(OrganizationId.generate(), "Org 2", Instant.now())
             OrganizationRepository.create(org1)
             OrganizationRepository.create(org2)
 
@@ -76,10 +77,10 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
         testApplication {
             application { module(initDatabase = false) }
 
-            val org = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
+            val org = Organization(OrganizationId.generate(), "Test Org", Instant.now())
             OrganizationRepository.create(org)
 
-            val response = client.get("/api/organizations/${org.id}")
+            val response = client.get("/api/organizations/${org.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = Json.decodeFromString<Organization>(response.bodyAsText())
@@ -160,7 +161,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             val created = Json.decodeFromString<com.platform.models.Organization>(createResponse.bodyAsText())
 
-            val getResponse = jsonClient.get("/api/organizations/${created.id}")
+            val getResponse = jsonClient.get("/api/organizations/${created.id.value}")
             assertEquals(HttpStatusCode.OK, getResponse.status)
             val fetched = Json.decodeFromString<Organization>(getResponse.bodyAsText())
             assertEquals("Persist Corp", fetched.name)
@@ -177,6 +178,16 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
                     contentType(ContentType.Application.Json)
                     setBody("{}")
                 }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
+    fun `GET organizations by invalid UUID id returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response = client.get("/api/organizations/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
@@ -203,7 +214,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             repeat(3) { i ->
                 OrganizationRepository.create(
-                    Organization(UUID.randomUUID().toString(), "Org $i", Instant.now()),
+                    Organization(OrganizationId.generate(), "Org $i", Instant.now()),
                 )
             }
 
@@ -227,7 +238,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             repeat(3) { i ->
                 OrganizationRepository.create(
-                    Organization(UUID.randomUUID().toString(), "Org $i", Instant.now()),
+                    Organization(OrganizationId.generate(), "Org $i", Instant.now()),
                 )
             }
 
@@ -253,7 +264,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             val count = OrganizationRepository.DEFAULT_PAGE_SIZE + 5
             repeat(count) { i ->
                 OrganizationRepository.create(
-                    Organization(UUID.randomUUID().toString(), "Org $i", Instant.now()),
+                    Organization(OrganizationId.generate(), "Org $i", Instant.now()),
                 )
             }
 

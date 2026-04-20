@@ -1,7 +1,9 @@
 package com.platform.collector.database
 
 import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.InputType
+import com.platform.collector.models.ServiceId
 import com.platform.models.Page
 import com.platform.models.decodeCursor
 import com.platform.models.encodeCursor
@@ -26,8 +28,8 @@ object CapturedInputRepository {
     suspend fun create(input: CapturedInput): CapturedInput =
         newSuspendedTransaction {
             CapturedInputs.insert {
-                it[id] = UUID.fromString(input.id)
-                it[serviceId] = UUID.fromString(input.serviceId)
+                it[id] = UUID.fromString(input.id.value)
+                it[serviceId] = UUID.fromString(input.serviceId.value)
                 it[inputType] = input.inputType
                 it[method] = input.method
                 it[url] = input.url
@@ -47,8 +49,8 @@ object CapturedInputRepository {
     suspend fun createBatch(inputs: List<CapturedInput>): List<CapturedInput> =
         newSuspendedTransaction {
             CapturedInputs.batchInsert(inputs) { input ->
-                this[CapturedInputs.id] = UUID.fromString(input.id)
-                this[CapturedInputs.serviceId] = UUID.fromString(input.serviceId)
+                this[CapturedInputs.id] = UUID.fromString(input.id.value)
+                this[CapturedInputs.serviceId] = UUID.fromString(input.serviceId.value)
                 this[CapturedInputs.inputType] = input.inputType
                 this[CapturedInputs.method] = input.method
                 this[CapturedInputs.url] = input.url
@@ -65,17 +67,17 @@ object CapturedInputRepository {
             inputs
         }
 
-    suspend fun findById(id: String): CapturedInput? =
+    suspend fun findById(id: CapturedInputId): CapturedInput? =
         newSuspendedTransaction {
             CapturedInputs
                 .selectAll()
-                .where { CapturedInputs.id eq UUID.fromString(id) }
+                .where { CapturedInputs.id eq UUID.fromString(id.value) }
                 .map { it.toCapturedInput() }
                 .singleOrNull()
         }
 
     suspend fun find(
-        serviceId: String? = null,
+        serviceId: ServiceId? = null,
         inputType: InputType? = null,
         limit: Int = DEFAULT_PAGE_SIZE,
         cursor: String? = null,
@@ -85,7 +87,7 @@ object CapturedInputRepository {
             val conditions = mutableListOf<Op<Boolean>>()
 
             serviceId?.let {
-                conditions.add(CapturedInputs.serviceId eq UUID.fromString(it))
+                conditions.add(CapturedInputs.serviceId eq UUID.fromString(it.value))
             }
             inputType?.let {
                 conditions.add(CapturedInputs.inputType eq it)
@@ -116,7 +118,7 @@ object CapturedInputRepository {
             val items = if (hasMore) results.dropLast(1) else results
             val nextCursor =
                 if (hasMore) {
-                    encodeCursor(items.last().capturedAt, items.last().id)
+                    encodeCursor(items.last().capturedAt, items.last().id.value)
                 } else {
                     null
                 }
@@ -124,25 +126,25 @@ object CapturedInputRepository {
             Page(items = items, nextCursor = nextCursor)
         }
 
-    suspend fun countByService(serviceId: String): Long =
+    suspend fun countByService(serviceId: ServiceId): Long =
         newSuspendedTransaction {
             CapturedInputs
                 .selectAll()
-                .where { CapturedInputs.serviceId eq UUID.fromString(serviceId) }
+                .where { CapturedInputs.serviceId eq UUID.fromString(serviceId.value) }
                 .count()
         }
 
-    suspend fun deleteByService(serviceId: String): Long =
+    suspend fun deleteByService(serviceId: ServiceId): Long =
         newSuspendedTransaction {
             CapturedInputs
-                .deleteWhere { CapturedInputs.serviceId eq UUID.fromString(serviceId) }
+                .deleteWhere { CapturedInputs.serviceId eq UUID.fromString(serviceId.value) }
                 .toLong()
         }
 
     private fun ResultRow.toCapturedInput(): CapturedInput =
         CapturedInput(
-            id = this[CapturedInputs.id].toString(),
-            serviceId = this[CapturedInputs.serviceId].toString(),
+            id = CapturedInputId(this[CapturedInputs.id].toString()),
+            serviceId = ServiceId(this[CapturedInputs.serviceId].toString()),
             inputType = this[CapturedInputs.inputType],
             method = this[CapturedInputs.method],
             url = this[CapturedInputs.url],
