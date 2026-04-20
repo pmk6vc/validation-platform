@@ -32,11 +32,22 @@ import kotlin.test.assertTrue
  * Tests the data path that real agents use: POST captured traffic through
  * Envoy to the collector, poll config through Envoy from the app, and
  * verify cross-org data isolation.
+ *
+ * JWTs are generated with real org UUIDs after creating orgs, matching
+ * how production works (platform issues JWT with real org ID).
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class PlatformPipelineE2ETest : PlatformStackTestBase() {
-    private val orgAToken = generateJwt(organizationId = "org-a", cluster = "prod-a")
-    private val orgBToken = generateJwt(organizationId = "org-b", cluster = "prod-b")
+    // Use a generic admin token for creating orgs (org ID doesn't matter for non-config endpoints)
+    private val adminToken = generateJwt(organizationId = "admin", cluster = "admin")
+
+    // These are populated by the setup tests and used by subsequent tests
+    private companion object {
+        var orgAId: String = ""
+        var orgBId: String = ""
+        var orgAToken: String = ""
+        var orgBToken: String = ""
+    }
 
     // --- Setup: create orgs and services ---
 
@@ -46,16 +57,18 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
         runBlocking {
             val orgResponse =
                 httpClient.post("$envoyUrl/api/organizations") {
-                    bearerAuth(orgAToken)
+                    bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Organization A"))
                 }
             assertEquals(HttpStatusCode.Created, orgResponse.status)
             val org = json.decodeFromString<Organization>(orgResponse.bodyAsText())
+            orgAId = org.id
+            orgAToken = generateJwt(organizationId = org.id, cluster = "prod-a")
 
             val svcResponse =
                 httpClient.post("$envoyUrl/api/services") {
-                    bearerAuth(orgAToken)
+                    bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
@@ -75,16 +88,18 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
         runBlocking {
             val orgResponse =
                 httpClient.post("$envoyUrl/api/organizations") {
-                    bearerAuth(orgBToken)
+                    bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Organization B"))
                 }
             assertEquals(HttpStatusCode.Created, orgResponse.status)
             val org = json.decodeFromString<Organization>(orgResponse.bodyAsText())
+            orgBId = org.id
+            orgBToken = generateJwt(organizationId = org.id, cluster = "prod-b")
 
             val svcResponse =
                 httpClient.post("$envoyUrl/api/services") {
-                    bearerAuth(orgBToken)
+                    bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
@@ -160,18 +175,18 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
 
     @Test
     @Order(20)
-    fun `agent config returns all services when no identity scoping`() =
+    fun `agent config is scoped by JWT claims - only sees own org and cluster`() =
         runBlocking {
-            val token = generateJwt()
             val response =
                 httpClient.get("$envoyUrl/api/agent/config") {
-                    bearerAuth(token)
+                    bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
             val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
+            assertEquals(1, config.targetServices.size, "Should only see org-a's services")
             assertTrue(
-                config.targetServices.size >= 2,
-                "Without identity scoping, should see services from multiple orgs",
+                config.targetServices.containsKey("order-service-a"),
+                "Should see order-service-a",
             )
         }
 

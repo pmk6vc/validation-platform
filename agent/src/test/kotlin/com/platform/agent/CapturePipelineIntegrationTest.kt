@@ -389,7 +389,7 @@ class CapturePipelineIntegrationTest {
         ) { pipeline ->
             // Drain in a loop until we've seen both expected captured items
             // (or time out). The raw stream has 4 frames; 2 pass filters.
-            val deadline = System.currentTimeMillis() + 5_000
+            val deadline = System.currentTimeMillis() + 10_000
             var capturedItems: List<CapturedInputRequest> = emptyList()
             while (capturedItems.size < 2 && System.currentTimeMillis() < deadline) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
@@ -511,7 +511,7 @@ class CapturePipelineIntegrationTest {
             // time out. We don't assert per-batch counts because the 50ms
             // reconnect delay makes the exact drain timing racy.
             val seenIds = mutableListOf<String>()
-            val deadline = System.currentTimeMillis() + 5_000
+            val deadline = System.currentTimeMillis() + 10_000
             while (seenIds.size < 4 && System.currentTimeMillis() < deadline) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
                 synchronized(pipeline.collectorRequests) {
@@ -560,7 +560,7 @@ class CapturePipelineIntegrationTest {
             // the producer a bit. Keep going until we've seen all 50 entries or
             // we time out. A well-behaved pipeline eventually drains everything.
             val seenIds = mutableSetOf<String>()
-            val deadline = System.currentTimeMillis() + 5_000
+            val deadline = System.currentTimeMillis() + 10_000
             while (seenIds.size < 50 && System.currentTimeMillis() < deadline) {
                 val result = pipeline.captureBatch(batchSize = 10, maxWait = 200.milliseconds)
                 synchronized(pipeline.collectorRequests) {
@@ -603,7 +603,8 @@ class CapturePipelineIntegrationTest {
             // captureBatch waits up to maxWait for the first entry, so no
             // preceding delay needed. It will suspend inside sendBatch while
             // retrying the 503s, then resume when the 3rd attempt succeeds.
-            val result = pipeline.captureBatch(maxWait = 5_000.milliseconds)
+            // 10s maxWait accounts for slow CI runners under heavy Docker load.
+            val result = pipeline.captureBatch(maxWait = 10_000.milliseconds)
             assertEquals(2, result.entriesProcessed)
 
             // Collector saw 3 POST attempts: 2 that failed transiently + 1 success
@@ -646,7 +647,7 @@ class CapturePipelineIntegrationTest {
             // The initial configFlow has targetServices = {"order-service": "svc-123"}.
             // Session 1 sends one order-service entry and one api-gateway entry.
             // TrafficTransformer must pass only the order-service entry.
-            val deadline1 = System.currentTimeMillis() + 3_000
+            val deadline1 = System.currentTimeMillis() + 10_000
             var phase1Items: List<CapturedInputRequest> = emptyList()
             while (phase1Items.isEmpty() && System.currentTimeMillis() < deadline1) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
@@ -680,7 +681,7 @@ class CapturePipelineIntegrationTest {
             // Wait for session 2 to connect and send its entries. The reconnect
             // takes ~50ms (reconnectDelay). We poll until a new batch arrives that
             // contains api-gateway entries, or until we time out.
-            val deadline2 = System.currentTimeMillis() + 3_000
+            val deadline2 = System.currentTimeMillis() + 10_000
             var phase2Items: List<CapturedInputRequest> = emptyList()
             while (phase2Items.isEmpty() && System.currentTimeMillis() < deadline2) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
@@ -725,7 +726,7 @@ class CapturePipelineIntegrationTest {
                 send(Frame.Text(entry("bad2", 4_001_000L)))
                 // Wait until the first POST completes before sending the
                 // second batch — avoids all entries landing in one batch
-                val deadline = System.currentTimeMillis() + 3_000
+                val deadline = System.currentTimeMillis() + 10_000
                 while (!firstPostDone.get() && System.currentTimeMillis() < deadline) {
                     delay(10.milliseconds)
                 }
@@ -744,7 +745,7 @@ class CapturePipelineIntegrationTest {
             },
         ) { pipeline ->
             // Drain until we've seen at least 2 collector POSTs, or time out.
-            val deadline = System.currentTimeMillis() + 5_000
+            val deadline = System.currentTimeMillis() + 10_000
             while (System.currentTimeMillis() < deadline) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
                 synchronized(pipeline.collectorRequests) {

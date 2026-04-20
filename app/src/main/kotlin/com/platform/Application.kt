@@ -2,6 +2,7 @@ package com.platform
 
 import com.platform.api.configureJwks
 import com.platform.api.configureRouting
+import com.platform.api.installAuth
 import com.platform.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -44,6 +45,7 @@ fun Application.module(initDatabase: Boolean = true) {
         )
     }
 
+    installAuth()
     configureJwks()
     configureRouting()
 }

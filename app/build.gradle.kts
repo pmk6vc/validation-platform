@@ -26,6 +26,7 @@ dependencies {
 
     // Ktor server
     implementation(libs.bundles.ktor.server)
+    implementation(libs.ktor.server.auth)
 
     // Database (Exposed + PostgreSQL) - needed for app-owned tables and repositories
     implementation(libs.bundles.exposed)
@@ -54,6 +55,23 @@ dependencies {
 
     // Ktor client for integration tests
     testImplementation(libs.bundles.ktor.client)
+}
+
+tasks.register<JavaExec>("generateToken") {
+    group = "auth"
+    description = "Generate a signed JWT for agent authentication"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.platform.auth.JwtTokenGeneratorKt")
+
+    // Read JWT_PRIVATE_KEY from .env if not already set in environment
+    val envFile = rootProject.file(".env")
+    if (envFile.exists() && System.getenv("JWT_PRIVATE_KEY") == null) {
+        envFile.readLines().forEach { line ->
+            if (line.startsWith("JWT_PRIVATE_KEY=")) {
+                environment("JWT_PRIVATE_KEY", line.removePrefix("JWT_PRIVATE_KEY="))
+            }
+        }
+    }
 }
 
 tasks.test {
