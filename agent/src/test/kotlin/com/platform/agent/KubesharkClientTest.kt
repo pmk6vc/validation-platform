@@ -368,12 +368,10 @@ class KubesharkClientTest {
                 delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                // Wait for entries to be available, then drain with limit
-                val entries = mutableListOf<KubesharkEntry>()
-                val deadline = System.currentTimeMillis() + 3_000
-                while (entries.size < 3 && System.currentTimeMillis() < deadline) {
-                    entries.addAll(client.drainBatch(limit = 3, maxWait = 200.milliseconds))
-                }
+                // Single drainBatch call with limit=3. maxWait covers the time
+                // for the WebSocket connection to establish + first entry to arrive.
+                // After the first entry, drainBatch pulls non-blocking up to limit.
+                val entries = client.drainBatch(limit = 3, maxWait = 2_000.milliseconds)
 
                 assertEquals(3, entries.size)
             },
