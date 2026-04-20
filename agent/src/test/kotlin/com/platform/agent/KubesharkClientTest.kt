@@ -447,13 +447,16 @@ class KubesharkClientTest {
                 delay(500.milliseconds)
             },
             testBlock = { client, _ ->
-                delay(200.milliseconds)
-                val entries = client.drainBatch(limit = 100, maxWait = 1000.milliseconds)
+                // Poll until we've drained both valid entries (malformed frames are dropped)
+                val allEntries = mutableListOf<com.platform.agent.models.KubesharkEntry>()
+                val deadline = System.currentTimeMillis() + 3_000
+                while (allEntries.size < 2 && System.currentTimeMillis() < deadline) {
+                    allEntries.addAll(client.drainBatch(limit = 100, maxWait = 200.milliseconds))
+                }
 
-                // The two valid entries survive; the malformed frames are dropped silently
-                assertEquals(2, entries.size)
-                assertEquals("e1", entries[0].id)
-                assertEquals("e2", entries[1].id)
+                assertEquals(2, allEntries.size)
+                assertEquals("e1", allEntries[0].id)
+                assertEquals("e2", allEntries[1].id)
             },
         )
 
