@@ -6,6 +6,9 @@ include("app")
 include("collector")
 include("agent")
 
+// Cross-module integration tests (Envoy + app + collector)
+include("integration-tests")
+
 // Test services - standalone microservices for k3s integration testing
 include("test-services:api-gateway")
 include("test-services:order-service")

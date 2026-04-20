@@ -38,70 +38,145 @@ The agent captures traffic from test services via Kubeshark and pushes to the pl
 
 ---
 
-## Phase 2: Basic bearer token auth
+## Phase 2: JWT auth via Envoy reverse proxy
 
-**Why:** No auth means any pod in the cluster can push arbitrary traffic or read captured data.
+**Why:** No auth means any pod in the cluster can push arbitrary traffic or read captured data. A reverse proxy centralizes auth, routes to independently-scaled backends, and establishes the real production traffic path. Envoy is the right choice over a custom Ktor proxy because it handles request forwarding, load balancing, health checking, and JWT validation out of the box.
 
-### 2a. Create shared auth interceptor
-- **File:** `shared/src/main/kotlin/com/platform/auth/BearerAuthPlugin.kt`
-- Ktor plugin that reads `API_KEY` from env, compares to `Authorization: Bearer <token>` header
-- Skip auth for `/health` and `/` paths
-- Return 401 if missing/invalid
-- Put in `shared/` since both app and collector need it
+**Why separate scaling matters:** The collector handles the hot path (agents pushing batches every ~2s), while the app handles low-frequency operations (config polls, service registration). They need independent replica counts (collector: 3-10+, app: 1-2). A routing layer is required regardless — Envoy provides it for free.
 
-### 2b. Install in both servers
-- **File:** `app/src/main/kotlin/com/platform/Application.kt` — install the plugin
-- **File:** `collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt` — install the plugin
-- Both read `API_KEY` from environment
+**Why RS256 over HMAC-SHA256:** Asymmetric signing (RS256) lets us serve the public verification key at a JWKS endpoint without exposing the signing secret. Envoy fetches the public key via `remote_jwks` — no secrets in Envoy config, no custom Dockerfile, no entrypoint scripts. This is the same pattern used by Google (`googleapis.com/oauth2/v3/certs`), Auth0, and every OIDC provider.
 
-### 2c. Update existing tests
-- All route tests in app and collector need to either:
-  - Set `API_KEY` env/config to a known value in test setup, OR
-  - Make auth configurable (e.g., `module(initDatabase = false, apiKey = "test-key")`) and pass the token in test requests
-- Simpler approach: make the plugin skip auth when `API_KEY` env var is unset (no key = no auth = dev/test mode)
+### Architecture
 
-### 2d. Move API_KEY to K8s Secret
-- **File:** `k8s/platform/secret.yaml` — create Secret with `api-key: <value>`
-- Update `k8s/agent/agent.yaml` to use `secretKeyRef` instead of plain text
-- Update platform manifests (Phase 3) to reference the same secret
+```
+Agent → Envoy (8082, all requests, Bearer <JWT>)
+         │
+         │  1. Validates JWT signature using public key
+         │     fetched from app's JWKS endpoint
+         │  2. Extracts claims → forwards as headers
+         │
+         ├── /api/captured-inputs/* → Collector (8081)
+         ├── /api/*                 → App (8080)
+         └── /health                → 200 OK (direct response)
+
+App serves:
+  GET /.well-known/jwks.json → RSA public key (JWKS format)
+  (used by Envoy for JWT verification)
+```
+
+**Key flow:**
+- RSA private key: stored in secrets manager / K8s Secret, read by app module only
+- RSA public key: served by app at `/.well-known/jwks.json`, fetched by Envoy
+- JWT tokens: signed by app (or a Gradle task for sandbox), contain `organizationId`, `cluster`, `role` claims
+- Envoy validates JWT using the public key, forwards claims as `X-Organization-Id`, `X-Cluster`, `X-Role` headers
+- Backend modules trust these headers — no JWT code in app or collector
+
+### 2a. JWKS endpoint + Envoy configuration
+
+**App module — JWKS endpoint:**
+- **`app/src/main/kotlin/com/platform/api/JwksRoute.kt`** — new file:
+  - `GET /.well-known/jwks.json` — serves the RSA public key in JWKS format
+  - Reads RSA private key from `JWT_PRIVATE_KEY` env var (PEM format) or a file path
+  - Derives the public key, formats as JWKS JSON (`kty: "RSA"`, `alg: "RS256"`, `n`, `e` fields)
+  - This endpoint is unauthenticated (Envoy needs it before it can validate anything)
+
+**Envoy config:**
+- **`deploy/envoy/envoy.yaml`** — static Envoy config, **no templating, no custom image**:
+  - **Listener** on port 8082
+  - **JWT authn filter** (`envoy.filters.http.jwt_authn`):
+    - `remote_jwks` pointing to `http://app:8080/.well-known/jwks.json`
+    - Envoy fetches and caches the public key, refreshes periodically
+    - Extracts `organizationId`, `cluster`, `role` claims
+    - Forwards as `X-Organization-Id`, `X-Cluster`, `X-Role` headers
+    - Bypasses auth for `/health`, `/`, and `/.well-known/jwks.json`
+  - **Route config**:
+    - `/api/captured-inputs/*` → `collector` cluster (port 8081)
+    - `/api/*` → `app` cluster (port 8080)
+    - `/.well-known/*` → `app` cluster (unauthenticated)
+    - `/health` → direct 200 response
+  - **Clusters**: `app` and `collector` with health checking
+- **Stock `envoyproxy/envoy:v1.31-latest` image** — no custom Dockerfile, no entrypoint script
+
+**Token generation — Gradle task:**
+- **`app/src/main/kotlin/com/platform/auth/JwtTokenGenerator.kt`** — Kotlin `main()` function:
+  - Reads RSA private key from env/file
+  - Accepts `--organizationId`, `--cluster`, `--role`, `--expiryDays` args
+  - Signs and prints a JWT using `com.auth0:java-jwt`
+  - Invoked via `./gradlew :app:run --args="generate-token --organizationId org-123 --cluster prod"` or a dedicated Gradle task
+- No shell scripts, no Python dependency
+
+### 2b. Replace auth in backend modules
+- **`app/src/main/kotlin/com/platform/api/Auth.kt`** — replace `BearerAuthPlugin` with `HeaderIdentityPlugin`:
+  - Reads `X-Organization-Id`, `X-Cluster`, `X-Role` headers (set by Envoy)
+  - Sets `AgentIdentity` as call attribute (same `AgentIdentityKey` used by Routes.kt)
+  - No token validation, no 401s — Envoy already handled that
+  - When headers absent, identity is null (backwards compatible for direct access in dev)
+- **`app/src/main/kotlin/com/platform/Application.kt`** — remove `apiKey`/`apiKeyOrgId`/`apiKeyCluster` params from `module()`
+- **`collector/src/main/kotlin/com/platform/collector/api/Auth.kt`** — delete entirely
+- **`collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt`** — remove `apiKey` param and `installAuth()` call
+
+### 2c. Simplify agent to single `PLATFORM_URL`
+- **`agent/src/main/kotlin/com/platform/agent/AgentConfig.kt`** — replace `collectorUrl` + `appUrl` with single `platformUrl` (from `PLATFORM_URL` env var). Keep `apiKey` — agent doesn't know it's a JWT.
+- **`agent/src/main/kotlin/com/platform/agent/AgentApplication.kt`** — pass `platformUrl` to both `CollectorClient` and `ConfigClient`
+
+### 2d. Deployment artifacts
+- **`deploy/docker-compose.yaml`** — add `envoy` service using stock `envoyproxy/envoy:v1.31-latest` image with volume-mounted config. Envoy is the only externally-exposed port (8082). App and collector internal only. App gets `JWT_PRIVATE_KEY` env var.
+- **`k8s/platform/secret.yaml`** — RSA private key (for app to sign tokens and serve JWKS) + pre-generated agent JWT + DB password
+- **`k8s/platform/envoy.yaml`** — Deployment + Service + ConfigMap (envoy config). No secrets needed — Envoy fetches public key from app's JWKS endpoint.
+- **`k8s/agent/agent.yaml`** — `PLATFORM_URL` pointing to Envoy, `API_KEY` reads JWT from secret
+
+### 2e. Integration tests (TestContainers, no docker-compose)
+- **`integration-tests/` module** — dedicated Gradle module for cross-module tests
+- Tests use TestContainers to spin up individual containers:
+  - `PostgreSQLContainer` for the database
+  - `GenericContainer` for app (built from `deploy/Dockerfile.app`)
+  - `GenericContainer` for collector (built from `deploy/Dockerfile.collector`)
+  - `GenericContainer` for Envoy (stock `envoyproxy/envoy:v1.31-latest`, config mounted)
+  - All containers on a shared TestContainers `Network`
+- No docker-compose file for tests — each container's lifecycle managed by test code
+- Uses `com.auth0:java-jwt` to generate test JWTs in Kotlin
+- Test coverage:
+  - Health endpoint accessible without auth
+  - Unauthenticated `/api/*` returns 401
+  - Invalid/expired/wrong-key JWT returns 401
+  - Valid JWT routes to correct upstream (app vs collector)
+  - Claims forwarded as headers (verified by agent config scoping)
+  - Multi-org isolation: JWT for org-A can't see org-B's services
 
 ---
 
 ## Phase 3: K8s manifests for platform
 
-**Why:** App, collector, and postgres have no K8s manifests — only docker-compose for local dev.
+**Why:** App, collector, Envoy, and postgres have no K8s manifests — only docker-compose for local dev.
 
 ### 3a. Create platform manifests
 - **New dir:** `k8s/platform/`
+- **`namespace.yaml`**: `validation` namespace
 - **`postgres.yaml`**: Deployment + Service + PVC (5Gi) + ConfigMap (db name/user) + Secret (password). Port 5432. Readiness probe: `pg_isready`.
-- **`app.yaml`**: Deployment (image `validation-app:latest`) + Service (port 8080). Env vars: `DATABASE_URL`, `DATABASE_USER`, `DATABASE_PASSWORD`, `API_KEY` from secrets. Health: `GET /health`.
-- **`collector.yaml`**: Same pattern, port 8081, image `validation-collector:latest`.
-- **`namespace.yaml`**: `validation` namespace (if not already created by agent.yaml)
+- **`app.yaml`**: Deployment (image `validation-app:latest`) + Service (port 8080, ClusterIP — not externally exposed). Env vars: `DATABASE_URL`, `DATABASE_USER`, `DATABASE_PASSWORD`. Health: `GET /health`.
+- **`collector.yaml`**: Same pattern, port 8081, ClusterIP. Independent replica count for scaling under ingest load.
+- **`envoy.yaml`**: Deployment (`envoyproxy/envoy:v1.31-latest`) + Service (port 8082) + ConfigMap (envoy config). JWT secret from K8s Secret.
+- **`secret.yaml`**: JWT signing secret + pre-generated agent JWT token + DB password
 - **`kustomization.yaml`**: Aggregate all platform resources
 
-### 3b. Deployment order matters
-- Postgres first (wait for ready) → app (runs Flyway, wait for healthy) → collector (Flyway is idempotent) → agent
-- Both app and collector share the same DB. Flyway advisory locks handle concurrent migration safely, but deploying app first is cleaner.
+### 3b. Deployment order
+- Postgres (wait for ready) → app (runs Flyway, wait for healthy) → collector → Envoy → agent
 
 ---
 
 ## Phase 4: Update sandbox-up.sh
 
-**Why:** Script needs to build/push platform images and deploy platform manifests.
+**Why:** Script needs to build/push platform images (including proxy) and deploy platform manifests.
 
 ### Changes to `scripts/sandbox-up.sh`:
-1. Build app and collector images: `docker build --platform linux/amd64 -t validation-app -f deploy/Dockerfile.app .` (and same for collector)
-2. Add `validation-app` and `validation-collector` to `IMAGES` array
-3. Deploy platform manifests after test services, before agent:
-   ```
-   kubectl apply -f k8s/platform/
-   kubectl wait postgres ready
-   kubectl wait app available
-   kubectl wait collector available
-   ```
-4. Update agent.yaml sed to also inject `APP_URL`
-5. Seed data: `curl POST /api/organizations` + `curl POST /api/services` for each test service, so `GET /api/agent/config` returns real `targetServices`
-6. Update final output with platform port-forward instructions
+1. Build app, collector, and proxy images: `docker build --platform linux/amd64 ...`
+2. Add `validation-app`, `validation-collector`, `validation-proxy` to `IMAGES` array
+3. Generate JWT signing secret and agent token: `scripts/generate-jwt.sh`
+4. Create K8s secret with JWT secret + token + DB password
+5. Deploy platform manifests in order: postgres → app → collector → proxy
+6. Deploy agent (reads JWT token from secret, `PLATFORM_URL` points to proxy)
+7. Seed data: `curl` through proxy with JWT to `POST /api/organizations` + `POST /api/services`
+8. Update final output with proxy port-forward instructions
 
 ---
 
@@ -109,12 +184,13 @@ The agent captures traffic from test services via Kubeshark and pushes to the pl
 
 After `sandbox-up.sh` completes:
 
-1. **Platform health:** `curl` app and collector health endpoints via port-forward
-2. **Auth works:** Unauthenticated request gets 401; authenticated request gets 200
-3. **Agent config:** `GET /api/agent/config` returns targetServices with test service IDs
+1. **Platform health:** `curl http://proxy:8082/health` returns 200
+2. **Auth works:** unauthenticated `curl http://proxy:8082/api/services` returns 401; with JWT returns 200
+3. **Agent config:** `GET /api/agent/config` through proxy returns targetServices scoped to the agent's org+cluster
 4. **Agent logs:** `kubectl logs -n validation deployment/validation-agent` shows "Captured N entries" batches
-5. **Data flows:** `GET /api/captured-inputs` via collector returns captured traffic from test services
+5. **Data flows:** `GET /api/captured-inputs` through proxy returns captured traffic
 6. **Performance:** Agent CPU/memory within limits, no OOMs, no excessive restarts
+7. **Multi-tenancy:** Create a second JWT with a different org — verify it only sees its own services
 
 ---
 
@@ -122,32 +198,141 @@ After `sandbox-up.sh` completes:
 
 | File | Action |
 |------|--------|
-| `app/src/main/kotlin/com/platform/api/Routes.kt` | Add `GET /api/agent/config` |
-| `agent/src/main/kotlin/com/platform/agent/AgentConfig.kt` | Add `appUrl` field |
-| `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` | Fix ConfigClient URL |
-| `shared/src/main/kotlin/com/platform/auth/BearerAuthPlugin.kt` | **New** — shared auth plugin |
-| `app/src/main/kotlin/com/platform/Application.kt` | Install auth plugin |
-| `collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt` | Install auth plugin |
-| `k8s/platform/namespace.yaml` | **New** |
-| `k8s/platform/postgres.yaml` | **New** |
-| `k8s/platform/app.yaml` | **New** |
-| `k8s/platform/collector.yaml` | **New** |
-| `k8s/platform/secret.yaml` | **New** — API key + DB password |
-| `k8s/platform/kustomization.yaml` | **New** |
-| `k8s/agent/agent.yaml` | Add `APP_URL`, use secretKeyRef for `API_KEY` |
-| `scripts/sandbox-up.sh` | Build/push/deploy platform, seed data |
-| App + collector route tests | Add auth token to requests |
-| Agent config tests | Test new `appUrl` field |
-| App routes test | Test `GET /api/agent/config` |
+| `deploy/envoy/envoy.yaml` | **New** — static Envoy config (remote JWKS, JWT filter, routing, clusters) |
+| `app/src/main/kotlin/com/platform/api/JwksRoute.kt` | **New** — `GET /.well-known/jwks.json` serving RSA public key |
+| `app/src/main/kotlin/com/platform/auth/JwtTokenGenerator.kt` | **New** — Kotlin CLI for generating signed JWTs |
+| `app/src/main/kotlin/com/platform/api/Auth.kt` | Replace BearerAuthPlugin with HeaderIdentityPlugin |
+| `app/src/main/kotlin/com/platform/Application.kt` | Remove auth params, add JWKS route |
+| `collector/src/main/kotlin/com/platform/collector/api/Auth.kt` | **Delete** |
+| `collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt` | Remove auth |
+| `agent/src/main/kotlin/com/platform/agent/AgentConfig.kt` | Replace collectorUrl+appUrl with platformUrl |
+| `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` | Use platformUrl for both clients |
+| `deploy/docker-compose.yaml` | Add envoy service (stock image, volume mount), internalize app+collector |
+| `.dockerignore` | **New** — exclude build/, .gradle/, .git/ from Docker context |
+| `gradle/libs.versions.toml` | Add `java-jwt` dependency |
+| `settings.gradle.kts` | Add `include("integration-tests")` |
+| `integration-tests/build.gradle.kts` | **New** — TestContainers + java-jwt + Ktor client |
+| `integration-tests/src/test/.../EnvoyAuthIntegrationTest.kt` | **New** — full-stack integration tests |
+| `k8s/platform/envoy.yaml` | **New** — Deployment + Service + ConfigMap (no secrets) |
+| `k8s/platform/secret.yaml` | RSA private key + pre-generated agent JWT + DB password |
+| `k8s/agent/agent.yaml` | PLATFORM_URL, jwt-token from secret |
+| App + collector + agent tests | Update for header-based identity + platformUrl |
+
+---
+
+## Security & Hardening Roadmap
+
+Sequenced by when each capability is needed, not by implementation difficulty.
+
+### Sandbox milestone (now) — unblock end-to-end pipeline
+- [ ] RS256 JWT with `organizationId`, `cluster`, `role` claims
+- [ ] App serves RSA public key at `/.well-known/jwks.json`
+- [ ] Envoy validates JWT via remote JWKS, forwards claims as headers
+- [ ] Backend reads identity from forwarded headers
+- [ ] Token generation via Kotlin Gradle task (no shell scripts, no Python)
+- [ ] Stock Envoy image (no custom Dockerfile, no entrypoint scripts)
+
+### Before multi-tenant beta (2+ customers sharing the platform)
+
+**Row-level security (RLS) in Postgres:**
+- RLS policies on `services` and `captured_inputs` tables scoped by `organization_id`
+- Even if app code has a bug, Postgres won't return another org's data
+- Set `app.current_organization_id` session variable from the `X-Organization-Id` header before each transaction
+- Policies: `CREATE POLICY org_isolation ON services USING (organization_id = current_setting('app.current_organization_id')::uuid)`
+- Must come before the second customer onboards, not after
+
+**Role claim enforcement:**
+- Add `role` to JWT (`agent`, `admin`, `reader`)
+- Envoy forwards as `X-Role` header
+- Backend checks role before allowing operations:
+  - `agent`: `POST /api/captured-inputs`, `GET /api/agent/config`, `POST /api/services`
+  - `admin`: all endpoints
+  - `reader`: `GET` endpoints only
+- Prevents a leaked agent token from reading captured data or creating orgs
+
+**Audit logging:**
+- Log every authenticated request: org, cluster, role, endpoint, method, timestamp, response status
+- Essential for debugging multi-tenant issues and customer trust
+- Can be a simple structured log line per request (Envoy access log + app-level logging)
+
+### Before GA / production customers
+
+**Short-lived JWTs + client credentials (OAuth2 client_credentials flow):**
+- Agent gets `client_id` + `client_secret` (long-lived, stored in K8s Secret)
+- Agent calls `POST /api/auth/token` with credentials → receives JWT valid for 1 hour
+- Agent refreshes before expiry (add refresh logic to `ConfigClient` or a new `AuthClient`)
+- Platform can revoke client credentials immediately — next refresh fails
+- Window of exposure: lifetime of last issued JWT (1 hour), not 365 days
+- Token endpoint lives behind Envoy but is unauthenticated (it *is* the auth endpoint)
+
+**Customer onboarding flow:**
+- `POST /api/organizations` (admin-only) returns the org + a one-time bootstrap credential
+- Customer runs: `kubectl create secret generic agent-credentials --from-literal=client-id=X --from-literal=client-secret=Y`
+- Agent handles auth automatically on startup
+- Future: CLI tool (`validation-cli agent install --org org-123 --cluster prod`) that automates secret creation
+
+**Zero-downtime key rotation:**
+- The JWKS endpoint (`/.well-known/jwks.json`) supports returning multiple keys, each with a unique `kid` (key ID)
+- JWTs include a `kid` header that tells Envoy which key to use for verification
+- Rotation procedure:
+  1. Generate new RSA key pair, assign a new `kid`
+  2. Add the new public key to the JWKS response (app now serves both old and new keys)
+  3. Start signing new agent JWTs with the new private key (new `kid` in JWT header)
+  4. Roll out new JWTs to agents (update K8s Secrets, agents restart)
+  5. Wait for all old JWTs to expire (or for all agents to have restarted)
+  6. Remove old key from JWKS response, delete old private key
+- During the transition window, Envoy validates both old and new tokens — no downtime
+- Implementation: `configureJwks()` reads a list of private keys (e.g., `JWT_PRIVATE_KEY` + `JWT_PREVIOUS_PRIVATE_KEY`), serves all corresponding public keys in the JWKS array
+- Emergency rotation (compromised key): skip steps 4-5, immediately remove old key from JWKS. All agents with old tokens break and must be re-provisioned. Acceptable trade-off for a security incident.
+
+**Rate limiting per org:**
+- Envoy's `envoy.filters.http.ratelimit` filter with per-org descriptors
+- Prevents one customer's agent from starving the collector for others
+- Separate limits for ingest (`POST /api/captured-inputs`) vs reads
+
+**Column-level security:**
+- Restrict which fields are visible by role
+- Agent role shouldn't see other agents' captured request/response bodies
+- Less urgent than RLS (which prevents cross-org access entirely)
+- Implement via Postgres column-level privileges or app-layer field filtering
+
+### Additional hardening (ongoing)
+
+**Network policies:**
+- K8s NetworkPolicy: only Envoy can reach app/collector pods, only agent can reach Envoy
+- App/collector cannot initiate outbound connections (except to Postgres)
+- Prevents lateral movement if a pod is compromised
+
+**mTLS between services:**
+- Envoy → app/collector communication over mTLS
+- Prevents a compromised pod from impersonating Envoy and injecting fake `X-Organization-Id` headers
+- Envoy has native mTLS support; can also use a service mesh (Istio/Linkerd) if already deployed
+
+**Secret encryption at rest:**
+- Enable K8s `EncryptionConfiguration` for Secrets (etcd encryption)
+- Or use an external secrets manager (AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault)
+- Prevents secrets from being readable in etcd backups
+
+**Input validation hardening:**
+- Request body size limits on Envoy (prevent OOM from oversized payloads beyond the app-level `MAX_BATCH_SIZE`)
+- Request timeout enforcement on Envoy (prevent slow-loris attacks)
+- Header size limits
+
+**Dependency scanning:**
+- Add `dependabot` or `renovate` for automated dependency updates
+- CVE scanning on container images (Trivy, Snyk)
 
 ---
 
 ## Implementation order
 
-Phases 1, 2, and 3 are independent — can be done in parallel or any order. Suggested serial order for smallest PRs:
-
-1. **Phase 1** (config endpoint + APP_URL) — unblocks agent config polling
-2. **Phase 2** (auth) — unblocks secure deployment
-3. **Phase 3** (K8s manifests) — unblocks GKE deployment
+1. **Phase 1** (config endpoint + APP_URL) — DONE (PRs #45, #47)
+2. **Phase 2** (Envoy + JWT auth + backend simplification + agent PLATFORM_URL)
+   - PR 1: Envoy config + backend auth simplification + agent PLATFORM_URL
+   - PR 2: Token generation script + deployment artifacts (docker-compose, K8s)
+3. **Phase 3** (K8s manifests for app, collector, postgres) — depends on Phase 2 for Envoy manifest
 4. **Phase 4** (sandbox script) — ties it all together
 5. **Phase 5** (verify) — manual on GKE
+6. **Phase 6** (multi-tenant hardening) — RLS, role enforcement, audit logging
+7. **Phase 7** (production auth) — short-lived JWTs, client credentials, onboarding flow
+8. **Phase 8** (infrastructure hardening) — network policies, mTLS, secret encryption, rate limiting

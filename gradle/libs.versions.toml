@@ -10,6 +10,7 @@ serialization-json = "1.7.3"
 junit = "5.10.0"
 testcontainers = "2.0.3"
 mockk = "1.13.9"
+java-jwt = "4.4.0"
 bouncycastle = "1.79"
 ktlint-plugin = "12.1.2"
 ktlint = "1.5.0"
@@ -56,6 +57,7 @@ testcontainers-junit = { module = "org.testcontainers:testcontainers-junit-jupit
 testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
 testcontainers-k3s = { module = "org.testcontainers:testcontainers-k3s", version.ref = "testcontainers" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
 bouncycastle = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
 
 [bundles]

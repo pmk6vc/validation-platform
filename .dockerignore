@@ -1,0 +1,10 @@
+**/build/
+**/.gradle/
+.git/
+.claude/
+.idea/
+*.iml
+integration-tests/
+test-services/
+k8s/
+*.md

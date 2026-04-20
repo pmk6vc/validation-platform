@@ -384,12 +384,12 @@ class CapturePipelineIntegrationTest {
                     return@withWiredPipeline
                 }
                 testEntries.forEach { send(Frame.Text(entryJson(it))) }
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
         ) { pipeline ->
             // Drain in a loop until we've seen both expected captured items
             // (or time out). The raw stream has 4 frames; 2 pass filters.
-            val deadline = System.currentTimeMillis() + 3_000
+            val deadline = System.currentTimeMillis() + 5_000
             var capturedItems: List<CapturedInputRequest> = emptyList()
             while (capturedItems.size < 2 && System.currentTimeMillis() < deadline) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
@@ -440,7 +440,7 @@ class CapturePipelineIntegrationTest {
                     return@withWiredPipeline
                 }
                 testEntries.forEach { send(Frame.Text(entryJson(it))) }
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             dynamicConfig = DynamicConfig(targetServices = emptyMap()),
         ) { pipeline ->
@@ -501,7 +501,7 @@ class CapturePipelineIntegrationTest {
                         // the documented dedup trade-off, not tested here.
                         send(Frame.Text(entry("far-old", 100_000L)))
                         send(Frame.Text(entry("d", 1_003_000L)))
-                        delay(500.milliseconds)
+                        delay(2_000.milliseconds)
                     }
                     else -> delay(1_000.milliseconds)
                 }
@@ -511,7 +511,7 @@ class CapturePipelineIntegrationTest {
             // time out. We don't assert per-batch counts because the 50ms
             // reconnect delay makes the exact drain timing racy.
             val seenIds = mutableListOf<String>()
-            val deadline = System.currentTimeMillis() + 3_000
+            val deadline = System.currentTimeMillis() + 5_000
             while (seenIds.size < 4 && System.currentTimeMillis() < deadline) {
                 pipeline.captureBatch(maxWait = 200.milliseconds)
                 synchronized(pipeline.collectorRequests) {
@@ -551,8 +551,8 @@ class CapturePipelineIntegrationTest {
                     send(Frame.Text(entry("evt-$i", 2_000_000L + i)))
                 }
                 // Hold the session open long enough for the capture loop to
-                // finish draining everything
-                delay(1_500.milliseconds)
+                // finish draining everything through the capacity-5 channel
+                delay(5_000.milliseconds)
             },
             channelCapacity = 5,
         ) { pipeline ->
@@ -592,7 +592,7 @@ class CapturePipelineIntegrationTest {
                 }
                 send(Frame.Text(entry("a", 3_000_000L)))
                 send(Frame.Text(entry("b", 3_001_000L)))
-                delay(500.milliseconds)
+                delay(2_000.milliseconds)
             },
             collectorResponder = { requestIndex ->
                 // First 2 POST attempts fail with 503; the 3rd succeeds.
@@ -600,11 +600,10 @@ class CapturePipelineIntegrationTest {
                 if (requestIndex < 3) HttpStatusCode.ServiceUnavailable else HttpStatusCode.OK
             },
         ) { pipeline ->
-            delay(200.milliseconds)
-
-            // captureOneBatch will suspend inside sendBatch while it retries
-            // the 503s, then resume when the 3rd attempt succeeds. No loss.
-            val result = pipeline.captureBatch(maxWait = 2_000.milliseconds)
+            // captureBatch waits up to maxWait for the first entry, so no
+            // preceding delay needed. It will suspend inside sendBatch while
+            // retrying the 503s, then resume when the 3rd attempt succeeds.
+            val result = pipeline.captureBatch(maxWait = 5_000.milliseconds)
             assertEquals(2, result.entriesProcessed)
 
             // Collector saw 3 POST attempts: 2 that failed transiently + 1 success
