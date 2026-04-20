@@ -81,6 +81,15 @@ tasks.register<JacocoReport>("jacocoAggregatedReport") {
     }
 }
 
+// Sequence e2e tests after all other test tasks to avoid container contention on CI.
+// e2e-tests spins up a full platform stack (PostgreSQL + App + Collector + Envoy + k3s)
+// which competes for resources with app:test's k3s cluster on a 2-core / 7GB runner.
+project(":e2e-tests").afterEvaluate {
+    tasks.named("test") {
+        mustRunAfter(":shared:test", ":app:test", ":collector:test", ":agent:test")
+    }
+}
+
 // Project-level tasks (docker, test services deployment)
 tasks.register<Exec>("dockerUp") {
     group = "docker"
