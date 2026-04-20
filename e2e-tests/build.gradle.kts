@@ -24,6 +24,14 @@ dependencies {
     testImplementation(libs.testcontainers)
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.testcontainers.k3s)
+
+    // K8s client (for WorkloadTrafficIntegrationTest)
+    testImplementation(libs.fabric8.kubernetes.client)
+    testImplementation(libs.bouncycastle)
+
+    // Shared test fixtures (KubernetesWorkloadTestBase)
+    testImplementation(testFixtures(project(":shared")))
 
     // Testing
     testImplementation(libs.junit.jupiter)
@@ -51,6 +59,13 @@ tasks.test {
     workingDir = rootProject.projectDir
 
     dependsOn("buildAppImage", "buildCollectorImage")
+
+    // Build test service images for k3s workload tests
+    dependsOn(":test-services:api-gateway:jibDockerBuild")
+    dependsOn(":test-services:order-service:jibDockerBuild")
+    dependsOn(":test-services:notification-service:jibDockerBuild")
+    dependsOn(":test-services:webhook-stub:jibDockerBuild")
+    dependsOn(":test-services:traffic-generator:jibDockerBuild")
 
     // Colima socket for TestContainers on macOS
     val colimaSocket = file("${System.getProperty("user.home")}/.colima/docker.sock")
