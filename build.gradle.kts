@@ -3,7 +3,6 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ktor) apply false
     alias(libs.plugins.ktlint)
-    jacoco
 }
 
 group = "com.platform"
@@ -15,78 +14,19 @@ repositories {
 
 val ktlintVersion = versionCatalogs.named("libs").findVersion("ktlint").get().requiredVersion
 
-// Apply ktlint and JaCoCo to all subprojects (except test-services which have their own conventions)
+// Apply ktlint to all subprojects (except test-services which have their own conventions)
 subprojects {
     if (!path.startsWith(":test-services")) {
         apply(plugin = "org.jlleitschuh.gradle.ktlint")
-        apply(plugin = "jacoco")
 
         configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
             version.set(ktlintVersion)
         }
 
-        tasks.withType<JacocoReport> {
-            dependsOn(tasks.named("test"))
-            reports {
-                xml.required.set(true)
-                html.required.set(true)
-            }
-        }
-
         tasks.withType<Test> {
-            finalizedBy(tasks.withType<JacocoReport>())
             reports.junitXml.includeSystemOutLog.set(false)
             reports.junitXml.includeSystemErrLog.set(false)
         }
-    }
-}
-
-// Aggregated JaCoCo coverage report across all platform modules
-val platformModules = listOf(":shared", ":app", ":collector", ":agent")
-
-tasks.register<JacocoReport>("jacocoAggregatedReport") {
-    group = "verification"
-    description = "Generates an aggregated JaCoCo coverage report for all platform modules"
-
-    dependsOn(platformModules.map { "$it:jacocoTestReport" })
-
-    executionData.setFrom(
-        platformModules.map { modulePath ->
-            fileTree(project(modulePath).layout.buildDirectory) {
-                include("jacoco/test.exec")
-            }
-        },
-    )
-
-    sourceDirectories.setFrom(
-        platformModules.map { modulePath ->
-            files("${project(modulePath).projectDir}/src/main/kotlin")
-        },
-    )
-
-    classDirectories.setFrom(
-        platformModules.map { modulePath ->
-            fileTree(project(modulePath).layout.buildDirectory) {
-                include("classes/kotlin/main/**")
-                exclude("**/generated/**")
-            }
-        },
-    )
-
-    reports {
-        xml.required.set(true)
-        html.required.set(true)
-        xml.outputLocation.set(layout.buildDirectory.file("reports/jacoco/aggregated/jacocoAggregatedReport.xml"))
-        html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco/aggregated/html"))
-    }
-}
-
-// Sequence e2e tests after all other test tasks to avoid container contention on CI.
-// e2e-tests spins up a full platform stack (PostgreSQL + App + Collector + Envoy + k3s)
-// which competes for resources with app:test's k3s cluster on a 2-core / 7GB runner.
-project(":e2e-tests").afterEvaluate {
-    tasks.named("test") {
-        mustRunAfter(":shared:test", ":app:test", ":collector:test", ":agent:test")
     }
 }
 
