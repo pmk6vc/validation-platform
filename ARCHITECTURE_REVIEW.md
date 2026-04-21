@@ -10,26 +10,18 @@
 
 | Priority | Issue | Severity | Effort | Why Now |
 |----------|-------|----------|--------|---------|
-| 1 | [ARCH-1](#arch-1-databasefactory-has-no-connection-pool) | Architectural | Medium | No connection pool, validation, or leak detection in production. |
-| 2 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
-| 3 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 4 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 5 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
+| 1 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
+| 2 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
+| 3 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 4 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
 ## Architectural Issues
 
-### ARCH-1: `DatabaseFactory` Has No Connection Pool
-
-- **Location**: `shared/src/main/kotlin/com/platform/database/DatabaseFactory.kt`
-- **Issue**: `Database.connect(...)` without a `DataSource` uses Exposed's default pool (not HikariCP). CLAUDE.md claims HikariCP but the code doesn't use it. No pool sizing, timeout config, or connection validation.
-- **Impact**: Production reliability risk.
-- **Fix**: Pass a `HikariDataSource` to `Database.connect` with proper pool configuration from env vars.
-
 ### ARCH-2: Repositories Are `object` Singletons
 
-- **Location**: `app/.../OrganizationRepository.kt`, `app/.../ServiceRepository.kt`, `collector/.../CapturedInputRepository.kt`
+- **Location**: `platform/.../OrganizationRepository.kt`, `platform/.../ServiceRepository.kt`, `collector/.../CapturedInputRepository.kt`
 - **Issue**: All repositories are Kotlin `object` singletons called as global state. Cannot inject mocks for route-level unit tests.
 - **Impact**: Every route test requires TestContainers + Docker. Pattern should not spread to new modules.
 - **Fix**: Convert to classes, inject via Ktor `Application` extension function.
@@ -46,7 +38,7 @@
 
 ### QUALITY-6: `ignoreUnknownKeys` on Server-Side JSON
 
-- **Location**: `app/.../Application.kt`, line 41; `collector/.../CollectorApplication.kt`
+- **Location**: `platform/.../Application.kt`, line 41; `collector/.../CollectorApplication.kt`
 - **Issue**: Server silently accepts unrecognized fields. `{"organizationid": "..."}` (typo) gives a confusing missing-field error.
 - **Fix**: Only use `ignoreUnknownKeys = true` on the agent (client-side). Remove it from server JSON config.
 
@@ -100,3 +92,5 @@
 19. **`AppApiTestHelper.createOrganizationAndService` consolidates Ktor startups.** A single `testApplication` session creates both org and service fixtures, saving one Ktor boot cycle per test (~50-100ms × 42 tests).
 
 20. **`value class` ID wrappers enforce UUID validity at compile time.** `OrganizationId`, `ServiceId` (app module), `CapturedInputId`, `ServiceId` (collector module) validate UUID format in `init` with descriptive error messages. Zero runtime overhead (inline classes). Each module owns its own ID types — collector has its own `ServiceId` rather than importing from app, preserving module boundaries.
+
+21. **`DatabaseFactory` uses HikariCP connection pool.** Configurable pool size, connection timeout, and leak detection via environment variables. Proper connection lifecycle management for production workloads.
