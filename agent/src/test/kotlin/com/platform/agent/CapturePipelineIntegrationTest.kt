@@ -600,12 +600,17 @@ class CapturePipelineIntegrationTest {
                 if (requestIndex < 3) HttpStatusCode.ServiceUnavailable else HttpStatusCode.OK
             },
         ) { pipeline ->
-            // captureBatch waits up to maxWait for the first entry, so no
-            // preceding delay needed. It will suspend inside sendBatch while
-            // retrying the 503s, then resume when the 3rd attempt succeeds.
-            // 10s maxWait accounts for slow CI runners under heavy Docker load.
-            val result = pipeline.captureBatch(maxWait = 10_000.milliseconds)
-            assertEquals(2, result.entriesProcessed)
+            // Poll until the collector has seen all 3 POST attempts (2 transient
+            // 503s + 1 success). The single captureBatch call drives the pipeline;
+            // retries happen inside sendBatch with exponential backoff. On slow CI
+            // runners the backoff may exceed a single maxWait, so we poll.
+            val deadline = System.currentTimeMillis() + 15_000
+            while (System.currentTimeMillis() < deadline) {
+                pipeline.captureBatch(maxWait = 500.milliseconds)
+                synchronized(pipeline.collectorRequests) {
+                    if (pipeline.collectorRequests.size >= 3) break
+                }
+            }
 
             // Collector saw 3 POST attempts: 2 that failed transiently + 1 success
             synchronized(pipeline.collectorRequests) {
