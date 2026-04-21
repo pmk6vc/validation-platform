@@ -362,20 +362,24 @@ class KubesharkClientTest {
     fun `drainBatch respects the limit parameter`() =
         withClient(
             serverBlock = {
-                repeat(10) { i ->
+                repeat(200) { i ->
                     send(Frame.Text(wsEntry("e$i", (i + 1) * 1000L)))
                 }
                 delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                // Drain a few entries first to ensure the WebSocket session is
-                // established and remaining entries are buffered in the channel.
-                drainUntil(client, 3)
-
-                // Now the channel has entries ready — limit is the only constraint.
-                val batch = client.drainBatch(limit = 3, maxWait = 1_000.milliseconds)
-                assertTrue(batch.isNotEmpty(), "should have entries buffered")
-                assertTrue(batch.size <= 3, "batch size ${batch.size} exceeded limit 3")
+                // Drain all 200 entries via drainUntil, which internally calls
+                // drainBatch(limit=100). Every batch must respect the limit.
+                val all = mutableListOf<KubesharkEntry>()
+                val deadline = System.currentTimeMillis() + 10_000
+                while (all.size < 200 && System.currentTimeMillis() < deadline) {
+                    val batch = client.drainBatch(limit = 3, maxWait = 200.milliseconds)
+                    if (batch.isNotEmpty()) {
+                        assertTrue(batch.size <= 3, "batch size ${batch.size} exceeded limit 3")
+                    }
+                    all.addAll(batch)
+                }
+                assertEquals(200, all.size, "all entries should be drained")
             },
         )
 
