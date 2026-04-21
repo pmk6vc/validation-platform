@@ -1,10 +1,15 @@
 package com.platform.database
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.Database
 
 /**
  * Database configuration and initialization.
+ *
+ * Creates a HikariCP connection pool and passes it to both Flyway and Exposed.
+ * Pool size and connection timeout are configurable via env vars with sensible defaults.
  */
 object DatabaseFactory {
     fun initFromEnvironment() {
@@ -21,24 +26,29 @@ object DatabaseFactory {
         username: String,
         password: String,
     ) {
-        runMigrations(jdbcUrl, username, password)
+        val poolSize = System.getenv("DATABASE_POOL_SIZE")?.toIntOrNull() ?: 10
+        val connectionTimeoutMs = System.getenv("DATABASE_CONNECTION_TIMEOUT_MS")?.toLongOrNull() ?: 30_000L
 
-        Database.connect(
-            url = jdbcUrl,
-            driver = "org.postgresql.Driver",
-            user = username,
-            password = password,
-        )
+        val dataSource =
+            HikariDataSource(
+                HikariConfig().apply {
+                    this.jdbcUrl = jdbcUrl
+                    this.username = username
+                    this.password = password
+                    this.maximumPoolSize = poolSize
+                    this.connectionTimeout = connectionTimeoutMs
+                    this.driverClassName = "org.postgresql.Driver"
+                },
+            )
+
+        runMigrations(dataSource)
+        Database.connect(dataSource)
     }
 
-    private fun runMigrations(
-        jdbcUrl: String,
-        username: String,
-        password: String,
-    ) {
+    private fun runMigrations(dataSource: HikariDataSource) {
         Flyway
             .configure()
-            .dataSource(jdbcUrl, username, password)
+            .dataSource(dataSource)
             .locations("classpath:db/migration")
             .load()
             .migrate()

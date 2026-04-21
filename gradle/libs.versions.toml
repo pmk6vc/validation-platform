@@ -4,6 +4,7 @@ ktor = "3.3.3"
 exposed = "0.57.0"
 postgresql = "42.7.7"
 flyway = "9.22.3"
+hikari = "5.1.0"
 logback = "1.5.26"
 fabric8 = "6.10.0"
 serialization-json = "1.7.3"
@@ -43,6 +44,7 @@ exposed-java-time = { module = "org.jetbrains.exposed:exposed-java-time", versio
 exposed-json = { module = "org.jetbrains.exposed:exposed-json", version.ref = "exposed" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
+hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
 
 # Kubernetes
 fabric8-kubernetes-client = { module = "io.fabric8:kubernetes-client", version.ref = "fabric8" }

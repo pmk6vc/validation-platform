@@ -22,6 +22,9 @@ dependencies {
     // Database migrations
     implementation(libs.flyway.core)
 
+    // Connection pool
+    implementation(libs.hikari)
+
     // Test fixtures: shared test infrastructure for integration tests
     testFixturesImplementation(libs.junit.jupiter)
     testFixturesImplementation(libs.testcontainers)
