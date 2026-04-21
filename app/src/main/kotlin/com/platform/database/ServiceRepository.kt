@@ -1,7 +1,9 @@
 package com.platform.database
 
+import com.platform.models.OrganizationId
 import com.platform.models.Page
 import com.platform.models.Service
+import com.platform.models.ServiceId
 import com.platform.models.decodeCursor
 import com.platform.models.encodeCursor
 import org.jetbrains.exposed.sql.Op
@@ -28,8 +30,8 @@ object ServiceRepository {
     suspend fun create(service: Service): Service =
         newSuspendedTransaction {
             Services.insert {
-                it[id] = UUID.fromString(service.id)
-                it[organizationId] = UUID.fromString(service.organizationId)
+                it[id] = UUID.fromString(service.id.value)
+                it[organizationId] = UUID.fromString(service.organizationId.value)
                 it[cluster] = service.cluster
                 it[namespace] = service.namespace
                 it[name] = service.name
@@ -41,11 +43,11 @@ object ServiceRepository {
             service
         }
 
-    suspend fun findById(id: String): Service? =
+    suspend fun findById(id: ServiceId): Service? =
         newSuspendedTransaction {
             Services
                 .selectAll()
-                .where { Services.id eq UUID.fromString(id) }
+                .where { Services.id eq UUID.fromString(id.value) }
                 .map { it.toService() }
                 .singleOrNull()
         }
@@ -61,7 +63,7 @@ object ServiceRepository {
      * @return Page containing services and nextCursor for pagination
      */
     suspend fun find(
-        organizationId: String? = null,
+        organizationId: OrganizationId? = null,
         cluster: String? = null,
         namespace: String? = null,
         limit: Int = DEFAULT_PAGE_SIZE,
@@ -72,7 +74,7 @@ object ServiceRepository {
             val conditions = mutableListOf<Op<Boolean>>()
 
             organizationId?.let {
-                conditions.add(Services.organizationId eq UUID.fromString(it))
+                conditions.add(Services.organizationId eq UUID.fromString(it.value))
             }
             cluster?.let {
                 conditions.add(Services.cluster eq it)
@@ -107,7 +109,7 @@ object ServiceRepository {
             val items = if (hasMore) results.dropLast(1) else results
             val nextCursor =
                 if (hasMore) {
-                    encodeCursor(items.last().discoveredAt, items.last().id)
+                    encodeCursor(items.last().discoveredAt, items.last().id.value)
                 } else {
                     null
                 }
@@ -129,8 +131,8 @@ object ServiceRepository {
                         Services.discoveredAt,
                     ),
             ) {
-                it[id] = UUID.fromString(service.id)
-                it[organizationId] = UUID.fromString(service.organizationId)
+                it[id] = UUID.fromString(service.id.value)
+                it[organizationId] = UUID.fromString(service.organizationId.value)
                 it[cluster] = service.cluster
                 it[namespace] = service.namespace
                 it[name] = service.name
@@ -146,7 +148,7 @@ object ServiceRepository {
             Services
                 .selectAll()
                 .where {
-                    (Services.organizationId eq UUID.fromString(service.organizationId)) and
+                    (Services.organizationId eq UUID.fromString(service.organizationId.value)) and
                         (Services.cluster eq service.cluster) and
                         (Services.namespace eq service.namespace) and
                         (Services.name eq service.name)
@@ -154,15 +156,15 @@ object ServiceRepository {
                 .single()
         }
 
-    suspend fun delete(id: String): Boolean =
+    suspend fun delete(id: ServiceId): Boolean =
         newSuspendedTransaction {
-            Services.deleteWhere { Services.id eq UUID.fromString(id) } > 0
+            Services.deleteWhere { Services.id eq UUID.fromString(id.value) } > 0
         }
 
     private fun ResultRow.toService(): Service =
         Service(
-            id = this[Services.id].toString(),
-            organizationId = this[Services.organizationId].toString(),
+            id = ServiceId(this[Services.id].toString()),
+            organizationId = OrganizationId(this[Services.organizationId].toString()),
             cluster = this[Services.cluster],
             namespace = this[Services.namespace],
             name = this[Services.name],

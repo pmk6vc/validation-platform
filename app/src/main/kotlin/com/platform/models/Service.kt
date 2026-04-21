@@ -10,8 +10,8 @@ import java.time.Instant
  */
 @Serializable
 data class Service(
-    val id: String,
-    val organizationId: String,
+    val id: ServiceId,
+    val organizationId: OrganizationId,
     val cluster: String,
     val namespace: String,
     val name: String,

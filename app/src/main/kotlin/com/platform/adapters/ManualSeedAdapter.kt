@@ -1,9 +1,10 @@
 package com.platform.adapters
 
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import com.platform.models.Service
+import com.platform.models.ServiceId
 import java.time.Instant
-import java.util.UUID
 
 /**
  * Adapter that provides hardcoded seed data for testing and development.
@@ -28,13 +29,13 @@ class ManualSeedAdapter : ServiceAdapter {
      *
      * All services are deployed in the "prod-us-east" cluster across different namespaces.
      */
-    override suspend fun discoverServices(organizationId: String): List<Service> {
+    override suspend fun discoverServices(organizationId: OrganizationId): List<Service> {
         val now = Instant.now()
 
         return listOf(
             // Frontend layer
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "frontend",
@@ -50,7 +51,7 @@ class ManualSeedAdapter : ServiceAdapter {
                     ),
             ),
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "frontend",
@@ -67,7 +68,7 @@ class ManualSeedAdapter : ServiceAdapter {
             ),
             // Backend services
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "backend",
@@ -84,7 +85,7 @@ class ManualSeedAdapter : ServiceAdapter {
                     ),
             ),
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "backend",
@@ -101,7 +102,7 @@ class ManualSeedAdapter : ServiceAdapter {
                     ),
             ),
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "backend",
@@ -118,7 +119,7 @@ class ManualSeedAdapter : ServiceAdapter {
             ),
             // Messaging layer
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "messaging",
@@ -136,7 +137,7 @@ class ManualSeedAdapter : ServiceAdapter {
             ),
             // Data layer
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "data",
@@ -152,7 +153,7 @@ class ManualSeedAdapter : ServiceAdapter {
                     ),
             ),
             Service(
-                id = UUID.randomUUID().toString(),
+                id = ServiceId.generate(),
                 organizationId = organizationId,
                 cluster = "prod-us-east",
                 namespace = "data",

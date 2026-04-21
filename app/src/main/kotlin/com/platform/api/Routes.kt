@@ -3,7 +3,9 @@ package com.platform.api
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import com.platform.models.Service
+import com.platform.models.ServiceId
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
@@ -17,7 +19,6 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import java.time.Instant
-import java.util.UUID
 
 fun Application.configureRouting() {
     routing {
@@ -48,7 +49,7 @@ fun Application.configureRouting() {
                     }
                     val organization =
                         Organization(
-                            id = UUID.randomUUID().toString(),
+                            id = OrganizationId.generate(),
                             name = request.name,
                             createdAt = Instant.now(),
                         )
@@ -57,9 +58,18 @@ fun Application.configureRouting() {
                 }
 
                 get("/{id}") {
-                    val id =
+                    val rawId =
                         call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                    val id =
+                        try {
+                            OrganizationId(rawId)
+                        } catch (_: IllegalArgumentException) {
+                            return@get call.respond(
+                                HttpStatusCode.BadRequest,
+                                "Invalid organization ID (must be UUID): $rawId",
+                            )
+                        }
 
                     val organization = OrganizationRepository.findById(id)
                     if (organization != null) {
@@ -75,25 +85,14 @@ fun Application.configureRouting() {
                 route("/agent") {
                     get("/config") {
                         val identity = call.principal<AgentIdentity>()!!
-                        // TODO: Replace this graceful UUID handling with dedicated value-class
-                        //  typing (OrganizationId, ServiceId) so invalid IDs are caught at
-                        //  compile time rather than runtime. See ARCHITECTURE_REVIEW.md QUALITY-5.
-                        val orgId =
-                            try {
-                                UUID.fromString(identity.organizationId)
-                                identity.organizationId
-                            } catch (_: IllegalArgumentException) {
-                                // Non-UUID org ID in JWT claim — no services will match
-                                null
-                            }
                         val services =
                             ServiceRepository.find(
-                                organizationId = orgId,
+                                organizationId = identity.organizationId,
                                 cluster = identity.cluster,
                                 limit = ServiceRepository.MAX_PAGE_SIZE,
                             )
                         val targetServices =
-                            services.items.associate { it.name to it.id }
+                            services.items.associate { it.name to it.id.value }
                         call.respond(AgentConfigResponse(targetServices = targetServices))
                     }
                 }
@@ -106,9 +105,22 @@ fun Application.configureRouting() {
                             ?: ServiceRepository.DEFAULT_PAGE_SIZE
                     val cursor = call.request.queryParameters["cursor"]
 
+                    val rawOrgId = call.request.queryParameters["organizationId"]
+                    val organizationId =
+                        rawOrgId?.let {
+                            try {
+                                OrganizationId(it)
+                            } catch (_: IllegalArgumentException) {
+                                return@get call.respond(
+                                    HttpStatusCode.BadRequest,
+                                    "Invalid organizationId (must be UUID): $it",
+                                )
+                            }
+                        }
+
                     val page =
                         ServiceRepository.find(
-                            organizationId = call.request.queryParameters["organizationId"],
+                            organizationId = organizationId,
                             cluster = call.request.queryParameters["cluster"],
                             namespace = call.request.queryParameters["namespace"],
                             limit = limit,
@@ -125,7 +137,7 @@ fun Application.configureRouting() {
                     val now = Instant.now()
                     val service =
                         Service(
-                            id = UUID.randomUUID().toString(),
+                            id = ServiceId.generate(),
                             organizationId = request.organizationId,
                             cluster = request.cluster,
                             namespace = request.namespace,
@@ -140,9 +152,18 @@ fun Application.configureRouting() {
                 }
 
                 get("/{id}") {
-                    val id =
+                    val rawId =
                         call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                    val id =
+                        try {
+                            ServiceId(rawId)
+                        } catch (_: IllegalArgumentException) {
+                            return@get call.respond(
+                                HttpStatusCode.BadRequest,
+                                "Invalid service ID (must be UUID): $rawId",
+                            )
+                        }
 
                     val service = ServiceRepository.findById(id)
                     if (service != null) {

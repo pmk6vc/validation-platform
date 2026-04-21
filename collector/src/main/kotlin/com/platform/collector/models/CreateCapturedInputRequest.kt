@@ -6,7 +6,7 @@ import java.time.Instant
 
 @Serializable
 data class CreateCapturedInputRequest(
-    val serviceId: String,
+    val serviceId: ServiceId,
     val inputType: InputType = InputType.HTTP,
     val method: String,
     val url: String,

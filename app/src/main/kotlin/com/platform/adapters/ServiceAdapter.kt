@@ -1,5 +1,6 @@
 package com.platform.adapters
 
+import com.platform.models.OrganizationId
 import com.platform.models.Service
 
 /**
@@ -22,5 +23,5 @@ interface ServiceAdapter {
      * @param organizationId The organization context for discovered services
      * @return List of services normalized into the unified Service model
      */
-    suspend fun discoverServices(organizationId: String): List<Service>
+    suspend fun discoverServices(organizationId: OrganizationId): List<Service>
 }

@@ -1,11 +1,11 @@
 package com.platform.database
 
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.time.Instant
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 
 class OrganizationRepositoryTest : AppDatabaseTestBase() {
     private fun createTestOrganization(
-        id: String = UUID.randomUUID().toString(),
+        id: OrganizationId = OrganizationId.generate(),
         name: String = "Test Organization",
         createdAt: Instant = Instant.now(),
     ) = Organization(id = id, name = name, createdAt = createdAt)
@@ -45,7 +45,7 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `findById should return null when not exists`() =
         runBlocking {
-            val found = OrganizationRepository.findById(UUID.randomUUID().toString())
+            val found = OrganizationRepository.findById(OrganizationId.generate())
 
             assertNull(found)
         }
@@ -65,7 +65,7 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `delete should return false when organization not exists`() =
         runBlocking {
-            val deleted = OrganizationRepository.delete(UUID.randomUUID().toString())
+            val deleted = OrganizationRepository.delete(OrganizationId.generate())
 
             assertTrue(!deleted)
         }
@@ -73,7 +73,7 @@ class OrganizationRepositoryTest : AppDatabaseTestBase() {
     @Test
     fun `create should fail with duplicate id`() {
         runBlocking {
-            val id = UUID.randomUUID().toString()
+            val id = OrganizationId.generate()
             val org1 = createTestOrganization(id = id, name = "Org 1")
             val org2 = createTestOrganization(id = id, name = "Org 2")
 

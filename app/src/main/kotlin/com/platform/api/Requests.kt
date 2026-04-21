@@ -1,5 +1,6 @@
 package com.platform.api
 
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import kotlinx.serialization.Serializable
 
@@ -25,7 +26,7 @@ data class AgentConfigResponse(
 
 @Serializable
 data class CreateServiceRequest(
-    val organizationId: String,
+    val organizationId: OrganizationId,
     val cluster: String,
     val namespace: String,
     val name: String,

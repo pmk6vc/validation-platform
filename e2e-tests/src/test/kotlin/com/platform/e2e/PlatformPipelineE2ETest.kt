@@ -25,6 +25,7 @@ import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.platform.collector.models.ServiceId as CollectorServiceId
 
 /**
  * E2E tests for the full agent → Envoy → platform pipeline.
@@ -63,8 +64,8 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 }
             assertEquals(HttpStatusCode.Created, orgResponse.status)
             val org = json.decodeFromString<Organization>(orgResponse.bodyAsText())
-            orgAId = org.id
-            orgAToken = generateJwt(organizationId = org.id, cluster = "prod-a")
+            orgAId = org.id.value
+            orgAToken = generateJwt(organizationId = org.id.value, cluster = "prod-a")
 
             val svcResponse =
                 httpClient.post("$envoyUrl/api/services") {
@@ -94,8 +95,8 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 }
             assertEquals(HttpStatusCode.Created, orgResponse.status)
             val org = json.decodeFromString<Organization>(orgResponse.bodyAsText())
-            orgBId = org.id
-            orgBToken = generateJwt(organizationId = org.id, cluster = "prod-b")
+            orgBId = org.id.value
+            orgBToken = generateJwt(organizationId = org.id.value, cluster = "prod-b")
 
             val svcResponse =
                 httpClient.post("$envoyUrl/api/services") {
@@ -134,7 +135,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                     items =
                         listOf(
                             CreateCapturedInputRequest(
-                                serviceId = serviceId,
+                                serviceId = CollectorServiceId(serviceId),
                                 inputType = InputType.HTTP,
                                 method = "GET",
                                 url = "/api/orders/1",
@@ -143,7 +144,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                                 capturedAt = now,
                             ),
                             CreateCapturedInputRequest(
-                                serviceId = serviceId,
+                                serviceId = CollectorServiceId(serviceId),
                                 inputType = InputType.HTTP,
                                 method = "POST",
                                 url = "/api/orders",
@@ -201,7 +202,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                     items =
                         listOf(
                             CreateCapturedInputRequest(
-                                serviceId = "non-existent-service-id",
+                                serviceId = CollectorServiceId("00000000-0000-0000-0000-000000000000"),
                                 inputType = InputType.HTTP,
                                 method = "GET",
                                 url = "/test",
@@ -240,7 +241,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                     items =
                         (1..100).map { i ->
                             CreateCapturedInputRequest(
-                                serviceId = serviceId,
+                                serviceId = CollectorServiceId(serviceId),
                                 inputType = InputType.HTTP,
                                 method = "GET",
                                 url = "/api/orders/$i",

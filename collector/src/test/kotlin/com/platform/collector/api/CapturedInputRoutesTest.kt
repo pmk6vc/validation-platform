@@ -6,9 +6,11 @@ import com.platform.collector.database.CollectorDatabaseTestBase
 import com.platform.collector.models.BatchCreateCapturedInputRequest
 import com.platform.collector.models.BatchCreateCapturedInputResponse
 import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.CreateCapturedInputRequest
 import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
+import com.platform.collector.models.ServiceId
 import com.platform.collector.module
 import com.platform.models.Page
 import io.ktor.client.HttpClient
@@ -37,6 +39,9 @@ import kotlin.test.assertTrue
 
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private val lenientJson = Json { ignoreUnknownKeys = true }
+
+    // Keep as String because lateinit is not allowed on inline (value) class types.
+
     private lateinit var testServiceId: String
 
     private fun ApplicationTestBuilder.createJsonClient(): HttpClient =
@@ -67,8 +72,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         responseStatus: Int = 200,
         responseBody: String? = """{"orders":[]}""",
     ) = CapturedInput(
-        id = id,
-        serviceId = serviceId,
+        id = CapturedInputId(id),
+        serviceId = ServiceId(serviceId),
         inputType = inputType,
         method = method,
         url = url,
@@ -168,6 +173,39 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
+    fun `GET captured-inputs with invalid serviceId UUID returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response = client.get("/api/captured-inputs?serviceId=not-a-uuid")
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("Invalid serviceId"))
+        }
+
+    @Test
+    fun `GET captured-input by invalid UUID id returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response = client.get("/api/captured-inputs/not-a-uuid")
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("Invalid id"))
+        }
+
+    @Test
+    fun `DELETE captured-inputs with invalid serviceId UUID returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response = client.delete("/api/captured-inputs?serviceId=not-a-uuid")
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(response.bodyAsText().contains("Invalid serviceId"))
+        }
+
+    @Test
     fun `GET captured-inputs with invalid inputType should return 400`() =
         testApplication {
             application { module(initDatabase = false) }
@@ -264,7 +302,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
                 )
             CapturedInputRepository.create(input)
 
-            val response = client.get("/api/captured-inputs/${input.id}")
+            val response = client.get("/api/captured-inputs/${input.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = lenientJson.decodeFromString<CapturedInput>(response.bodyAsText())
@@ -338,7 +376,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             items =
                 (1..count).map { i ->
                     CreateCapturedInputRequest(
-                        serviceId = serviceId,
+                        serviceId = ServiceId(serviceId),
                         inputType = InputType.HTTP,
                         method = "GET",
                         url = "/api/orders/$i",

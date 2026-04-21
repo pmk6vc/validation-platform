@@ -4,8 +4,10 @@ import com.platform.collector.database.CapturedInputRepository
 import com.platform.collector.models.BatchCreateCapturedInputRequest
 import com.platform.collector.models.BatchCreateCapturedInputResponse
 import com.platform.collector.models.CapturedInput
+import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
+import com.platform.collector.models.ServiceId
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
@@ -17,7 +19,6 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
-import java.util.UUID
 
 const val MAX_BATCH_SIZE = 1000
 
@@ -43,7 +44,7 @@ fun Application.configureRouting() {
                     val inputs =
                         request.items.map { item ->
                             CapturedInput(
-                                id = UUID.randomUUID().toString(),
+                                id = CapturedInputId.generate(),
                                 serviceId = item.serviceId,
                                 inputType = item.inputType,
                                 method = item.method,
@@ -76,9 +77,22 @@ fun Application.configureRouting() {
                             }
                         }
 
+                    val rawServiceId = call.request.queryParameters["serviceId"]
+                    val serviceId =
+                        rawServiceId?.let {
+                            try {
+                                ServiceId(it)
+                            } catch (_: IllegalArgumentException) {
+                                return@get call.respond(
+                                    HttpStatusCode.BadRequest,
+                                    "Invalid serviceId (must be UUID): $it",
+                                )
+                            }
+                        }
+
                     val page =
                         CapturedInputRepository.find(
-                            serviceId = call.request.queryParameters["serviceId"],
+                            serviceId = serviceId,
                             inputType = inputType,
                             limit = limit,
                             cursor = cursor,
@@ -87,9 +101,15 @@ fun Application.configureRouting() {
                 }
 
                 get("/{id}") {
-                    val id =
+                    val rawId =
                         call.parameters["id"]
                             ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                    val id =
+                        try {
+                            CapturedInputId(rawId)
+                        } catch (_: IllegalArgumentException) {
+                            return@get call.respond(HttpStatusCode.BadRequest, "Invalid id (must be UUID): $rawId")
+                        }
 
                     val input = CapturedInputRepository.findById(id)
                     if (input != null) {
@@ -100,11 +120,21 @@ fun Application.configureRouting() {
                 }
 
                 delete {
-                    val serviceId = call.request.queryParameters["serviceId"]
-                    if (serviceId == null) {
+                    val rawServiceId = call.request.queryParameters["serviceId"]
+                    if (rawServiceId == null) {
                         call.respond(HttpStatusCode.BadRequest, "Missing required query parameter: serviceId")
                         return@delete
                     }
+
+                    val serviceId =
+                        try {
+                            ServiceId(rawServiceId)
+                        } catch (_: IllegalArgumentException) {
+                            return@delete call.respond(
+                                HttpStatusCode.BadRequest,
+                                "Invalid serviceId (must be UUID): $rawServiceId",
+                            )
+                        }
 
                     val deleted = CapturedInputRepository.deleteByService(serviceId)
                     call.respond(DeleteResponse(deleted = deleted))

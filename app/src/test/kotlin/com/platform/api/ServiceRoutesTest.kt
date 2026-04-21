@@ -4,9 +4,11 @@ import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
+import com.platform.models.OrganizationId
 import com.platform.models.Page
 import com.platform.models.Provider
 import com.platform.models.Service
+import com.platform.models.ServiceId
 import com.platform.module
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -36,7 +38,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @BeforeEach
     fun setupOrg() {
         runBlocking {
-            testOrg = Organization(UUID.randomUUID().toString(), "Test Org", Instant.now())
+            testOrg = Organization(OrganizationId.generate(), "Test Org", Instant.now())
             OrganizationRepository.create(testOrg)
         }
     }
@@ -55,7 +57,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
         provider: Provider = Provider.KUBERNETES,
         metadata: Map<String, String>? = null,
     ) = Service(
-        id = UUID.randomUUID().toString(),
+        id = ServiceId.generate(),
         organizationId = testOrg.id,
         cluster = cluster,
         namespace = namespace,
@@ -110,13 +112,13 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
         testApplication {
             application { module(initDatabase = false) }
 
-            val otherOrg = Organization(UUID.randomUUID().toString(), "Other Org", Instant.now())
+            val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
             OrganizationRepository.create(otherOrg)
 
             val svc1 = createService(name = "my-service")
             val svc2 =
                 Service(
-                    id = UUID.randomUUID().toString(),
+                    id = ServiceId.generate(),
                     organizationId = otherOrg.id,
                     cluster = "prod",
                     namespace = "default",
@@ -129,7 +131,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
 
-            val response = client.get("/api/services?organizationId=${testOrg.id}")
+            val response = client.get("/api/services?organizationId=${testOrg.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -151,7 +153,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
 
-            val response = client.get("/api/services?organizationId=${testOrg.id}&cluster=prod-us-east")
+            val response = client.get("/api/services?organizationId=${testOrg.id.value}&cluster=prod-us-east")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -173,7 +175,10 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
 
-            val response = client.get("/api/services?organizationId=${testOrg.id}&cluster=prod&namespace=payments")
+            val response =
+                client.get(
+                    "/api/services?organizationId=${testOrg.id.value}&cluster=prod&namespace=payments",
+                )
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -260,7 +265,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             val svc = createService(name = "my-service", metadata = mapOf("version" to "1.0"))
             ServiceRepository.create(svc)
 
-            val response = client.get("/api/services/${svc.id}")
+            val response = client.get("/api/services/${svc.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = Json.decodeFromString<Service>(response.bodyAsText())
@@ -340,7 +345,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
             val created = Json.decodeFromString<Service>(createResponse.bodyAsText())
 
-            val getResponse = jsonClient.get("/api/services/${created.id}")
+            val getResponse = jsonClient.get("/api/services/${created.id.value}")
             assertEquals(HttpStatusCode.OK, getResponse.status)
             val fetched = Json.decodeFromString<Service>(getResponse.bodyAsText())
             assertEquals("persist-service", fetched.name)
@@ -402,7 +407,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = UUID.randomUUID().toString(),
+                            organizationId = OrganizationId.generate(),
                             cluster = "prod",
                             namespace = "default",
                             name = "orphan-service",
@@ -450,7 +455,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
                 )
             ServiceRepository.create(svc)
 
-            val response = client.get("/api/services/${svc.id}")
+            val response = client.get("/api/services/${svc.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = Json.decodeFromString<Service>(response.bodyAsText())
@@ -460,6 +465,16 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
             assertEquals(Provider.KUBERNETES, result.provider)
             assertEquals(mapOf("team" to "platform", "tier" to "critical"), result.metadata)
             assertEquals(testOrg.id, result.organizationId)
+        }
+
+    @Test
+    fun `GET service by invalid UUID id returns 400`() =
+        testApplication {
+            application { module(initDatabase = false) }
+
+            val response = client.get("/api/services/not-a-uuid")
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test

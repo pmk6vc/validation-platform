@@ -1,5 +1,6 @@
 package com.platform.adapters
 
+import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import io.fabric8.kubernetes.api.model.ObjectMeta
 import io.fabric8.kubernetes.api.model.Service
@@ -14,7 +15,6 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -33,7 +33,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns emptyList()
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -55,7 +55,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -81,7 +81,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(userService, systemService, publicService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -105,7 +105,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(defaultService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -134,7 +134,7 @@ class KubernetesAdapterTest {
                     client = client,
                     excludeSystemNamespaces = false,
                 )
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -166,7 +166,7 @@ class KubernetesAdapterTest {
                     client = client,
                     namespaces = listOf("namespace-1", "namespace-2"),
                 )
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -194,7 +194,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -218,7 +218,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(service1, service2)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -245,7 +245,7 @@ class KubernetesAdapterTest {
                     client = client,
                     clusterName = "prod-us-west",
                 )
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -273,7 +273,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -302,7 +302,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -345,7 +345,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -384,7 +384,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -417,7 +417,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -452,7 +452,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -477,7 +477,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(validService, invalidService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -496,7 +496,7 @@ class KubernetesAdapterTest {
             every { servicesOperation.inAnyNamespace() } throws RuntimeException("Connection failed")
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -518,7 +518,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(k8sService)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 
@@ -544,7 +544,7 @@ class KubernetesAdapterTest {
             every { serviceList.items } returns listOf(service1, service2, service3)
 
             val adapter = KubernetesAdapter(client = client)
-            val organizationId = UUID.randomUUID().toString()
+            val organizationId = OrganizationId.generate()
 
             val services = adapter.discoverServices(organizationId)
 

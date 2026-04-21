@@ -2,6 +2,7 @@ package com.platform.collector.database
 
 import com.platform.api.CreateOrganizationRequest
 import com.platform.api.CreateServiceRequest
+import com.platform.models.OrganizationId
 import com.platform.module
 import io.ktor.client.HttpClient
 import io.ktor.client.request.post
@@ -88,7 +89,7 @@ object AppApiTestHelper {
                 contentType(ContentType.Application.Json)
                 setBody(
                     CreateServiceRequest(
-                        organizationId = organizationId,
+                        organizationId = OrganizationId(organizationId),
                         cluster = cluster,
                         namespace = namespace,
                         name = name,

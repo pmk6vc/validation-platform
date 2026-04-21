@@ -6,8 +6,8 @@ import java.time.Instant
 
 @Serializable
 data class CapturedInput(
-    val id: String,
-    val serviceId: String,
+    val id: CapturedInputId,
+    val serviceId: ServiceId,
     val inputType: InputType,
     val method: String,
     val url: String,
