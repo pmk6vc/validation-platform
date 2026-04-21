@@ -47,7 +47,7 @@ abstract class PlatformStackTestBase {
         lateinit var envoyUrl: String
 
         fun generateJwt(
-            organizationId: String = "org-test",
+            organizationId: String = "00000000-0000-0000-0000-000000000001",
             cluster: String = "test-cluster",
             role: String = "admin",
             expiresAt: Date = Date.from(Instant.now().plusSeconds(3600)),

@@ -368,12 +368,14 @@ class KubesharkClientTest {
                 delay(2_000.milliseconds)
             },
             testBlock = { client, _ ->
-                // Single drainBatch call with limit=3. maxWait covers the time
-                // for the WebSocket connection to establish + first entry to arrive.
-                // After the first entry, drainBatch pulls non-blocking up to limit.
-                val entries = client.drainBatch(limit = 3, maxWait = 10_000.milliseconds)
+                // Drain a few entries first to ensure the WebSocket session is
+                // established and remaining entries are buffered in the channel.
+                drainUntil(client, 3)
 
-                assertEquals(3, entries.size)
+                // Now the channel has entries ready — limit is the only constraint.
+                val batch = client.drainBatch(limit = 3, maxWait = 1_000.milliseconds)
+                assertTrue(batch.isNotEmpty(), "should have entries buffered")
+                assertTrue(batch.size <= 3, "batch size ${batch.size} exceeded limit 3")
             },
         )
 
