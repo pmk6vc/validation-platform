@@ -43,37 +43,42 @@ This is a **validation and release platform** that helps engineering teams valid
 
 ### What's Working Now
 
-- **Two Ktor servers**: `app` on port 8080 (organizations, services) and `collector` on port 8081 (captured inputs)
-- **PostgreSQL database** with Flyway migrations (V0001–V0005), all migrations in `shared/`
-- **Multi-tenant data model** with Organizations and Services (owned by `app`)
-- **CapturedInput model** (owned by `collector`) — HTTP-first, non-nullable method/url/responseStatus
+- **Two Ktor servers**: `platform` on port 8080 (organizations, services) and `collector` on port 8081 (captured inputs)
+- **Envoy reverse proxy** on port 8082: JWT (RS256) validation via JWKS, routes `/api/captured-inputs/*` to collector, all other `/api/*` to platform; extracts `organizationId`, `cluster`, `role` claims into forwarded headers
+- **PostgreSQL database** with Flyway migrations (V0001–V0006), all migrations in `shared/`
+- **Multi-tenant data model** with Organizations and Services (owned by `platform`); `OrganizationId` and `ServiceId` value classes for type safety
+- **CapturedInput model** (owned by `collector`) — HTTP-first, non-nullable method/url/responseStatus; no DB-level FK to services (decoupled at DB layer since V0006)
 - **Collector batch ingest** — `POST /api/captured-inputs` accepts `BatchCreateCapturedInputRequest` from the agent
+- **JWT auth**: platform generates tokens via `JwtTokenGenerator` (`./gradlew :platform:generateToken`); platform serves public key at `/.well-known/jwks.json`; Envoy validates on all `/api/*` routes
 - **Pagination and filtering** on all list endpoints (cursor-based); limit clamping tested (0, -1 → 1; >100 → 100)
-- **Docker deployment** — app, collector, and db all start by default; health checks on both services
+- **Docker deployment** — platform, collector, envoy, and db all start by default; health checks on all services
 - **Test infrastructure** with TestContainers (PostgreSQL + k3s Kubernetes)
 - **Code quality** with ktlint
 - **Adapter pattern** with ServiceAdapter interface
 - **Service discovery** via ManualSeedAdapter and KubernetesAdapter (implements `Closeable`)
 - **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES)
-- **Modular monolith** with enforced module boundaries: cross-module data access goes through REST APIs, not shared repositories
-- **Validation agent** — three-loop Kotlin process deployed to customer cluster; streams traffic from Kubeshark WebSocket with server-side KFL filtering, samples, and pushes to collector; file-based liveness probe; non-root container
+- **Modular monolith** with enforced module boundaries: cross-module data access goes through REST APIs, not shared repositories; no DB-level FK between modules
+- **Validation agent** — three-loop Kotlin process deployed to customer cluster; streams traffic from Kubeshark WebSocket with server-side KFL filtering, samples, and pushes to platform via Envoy; file-based liveness probe; non-root container; API key stored in Kubernetes Secret
+- **E2E tests** — `e2e-tests/` module tests the full platform stack (Envoy + platform + collector) using TestContainers
 
 ### Module Ownership
 
-Each module owns its tables, models, and repositories. Cross-module communication is via HTTP API calls.
+Each module owns its tables, models, and repositories. Cross-module communication is via HTTP API calls, with no DB-level foreign keys across modules.
 
 | Module | Owns | Port |
 |--------|------|------|
 | `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer) | — |
-| `app/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server | 8080 |
+| `platform/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server; JWKS endpoint; JWT token generator | 8080 |
 | `collector/` | CapturedInputs table; CapturedInputRepository; Ktor server | 8081 |
-| `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding to collector | — (standalone process) |
+| `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding to platform via Envoy | — (standalone process) |
+| `e2e-tests/` | End-to-end tests for the full platform stack (Envoy + platform + collector) | — |
 | `test-services/` | Standalone Kotlin microservices for k3s integration testing | — |
 
-### App Module API Endpoints (port 8080)
+### Platform Module API Endpoints (port 8080, behind Envoy at 8082)
 
 ```
-GET    /health                             # Health check
+GET    /health                             # Health check (no auth)
+GET    /.well-known/jwks.json              # RSA public key for Envoy JWT validation (no auth)
 GET    /api/organizations                  # List organizations (paginated)
 POST   /api/organizations                  # Create organization
 GET    /api/organizations/{id}             # Get organization by ID
@@ -82,68 +87,74 @@ POST   /api/services                       # Create service
 GET    /api/services/{id}                  # Get service by ID
 ```
 
-### Collector Module API Endpoints (port 8081)
+### Collector Module API Endpoints (port 8081, behind Envoy at 8082)
 
 ```
-GET    /health                                    # Health check
+GET    /health                                    # Health check (no auth)
 POST   /api/captured-inputs                       # Ingest a batch of captured inputs (agent pushes here)
 GET    /api/captured-inputs                       # List captured inputs (paginated, filterable by serviceId/inputType)
 GET    /api/captured-inputs/{id}                  # Get captured input by ID
 DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs for a service
 ```
 
+### Envoy Reverse Proxy (port 8082)
+
+`deploy/envoy/envoy.yaml` — the public entry point for all API traffic. Responsibilities:
+- JWT validation (RS256) via `remote_jwks` fetched from `app:8080/.well-known/jwks.json` (cached 5 min)
+- Extracts `organizationId`, `cluster`, `role` JWT claims → forwards as `X-Organization-Id`, `X-Cluster`, `X-Role` headers
+- Routes `/api/captured-inputs/*` → collector; all other `/api/*` → platform
+- `/health` and `/.well-known/*` bypass auth
+- No secrets in the config file; the platform reads `JWT_PRIVATE_KEY` from its own environment
+
+**Auth on the platform side**: `platform/src/main/kotlin/com/platform/api/Auth.kt` defines `EnvoyIdentityProvider`, which reads `X-Organization-Id` and `X-Cluster` headers forwarded by Envoy and resolves them into an `AgentIdentity` principal. Routes that need the caller's identity use `call.principal<AgentIdentity>()`.
+
 ### Current Data Models
 
 ```kotlin
-// --- app module ---
+// --- platform module ---
+
+// OrganizationId / ServiceId — inline value classes, UUID-validated at construction
+// platform/src/main/kotlin/com/platform/models/Ids.kt
+@JvmInline value class OrganizationId(val value: String)
+@JvmInline value class ServiceId(val value: String)
 
 // Organization - a tenant/team in the platform
-// app/src/main/kotlin/com/platform/models/Organization.kt
 data class Organization(
-    val id: String,
+    val id: OrganizationId,
     val name: String,
     val createdAt: Instant,
-    // Note: no updatedAt — organizations are immutable after creation
 )
 
 // Service - a deployable unit discovered from various providers
 // Uniquely identified by: organizationId + cluster + namespace + name
-// app/src/main/kotlin/com/platform/models/Service.kt
 data class Service(
-    val id: String,
-    val organizationId: String,
+    val id: ServiceId,
+    val organizationId: OrganizationId,
     val cluster: String,
     val namespace: String,
     val name: String,
     val provider: Provider = Provider.UNKNOWN,
     val discoveredAt: Instant,
     val lastSeenAt: Instant,
-    val metadata: Map<String, String>? = null
+    val metadata: Map<String, String>? = null,
 )
 
-// Provider - tracks where a service was discovered
-// app/src/main/kotlin/com/platform/models/Provider.kt
-enum class Provider {
-    UNKNOWN,        // Provider unknown or not specified
-    MANUAL_SEED,    // Manually seeded test data
-    KUBERNETES,     // Discovered via Kubernetes API
-    // KUBESHARK - Reserved for future Kubeshark adapter
-}
+enum class Provider { UNKNOWN, MANUAL_SEED, KUBERNETES }
 
 // --- collector module ---
 
 // CapturedInput - an HTTP req/res pair captured from production traffic
 // HTTP-only for now; method, url, responseStatus are non-nullable
-// collector/src/main/kotlin/com/platform/collector/models/CapturedInput.kt
+// serviceId is a plain String — no DB-level FK to services table (decoupled at DB layer)
 data class CapturedInput(
     val id: String,
     val serviceId: String,
     val inputType: InputType,
-    val method: String,           // non-nullable: HTTP-only for now
-    val url: String,              // non-nullable: HTTP-only for now
+    val method: String,
+    val url: String,
     val requestHeaders: Map<String, String>? = null,
     val requestBody: String? = null,
-    val responseStatus: Int,      // non-nullable: HTTP-only for now
+    val responseStatus: Int,
     val responseHeaders: Map<String, String>? = null,
     val responseBody: String? = null,
     val latencyMs: Long? = null,
@@ -152,36 +163,25 @@ data class CapturedInput(
     val capturedAt: Instant,
 )
 
-// InputType - HTTP-first; UNKNOWN for unrecognized protocols
-// KAFKA and PUBSUB removed (YAGNI — will add when replay engine needs them)
-// collector/src/main/kotlin/com/platform/collector/models/InputType.kt
-enum class InputType {
-    HTTP,
-    UNKNOWN,
-}
+// InputType - HTTP-first; KAFKA and PUBSUB deferred (YAGNI)
+enum class InputType { HTTP, UNKNOWN }
 ```
 
-### Request DTOs (app module)
+### Request/Response DTOs
 
 ```kotlin
-// app/src/main/kotlin/com/platform/api/Requests.kt
+// platform module — platform/src/main/kotlin/com/platform/api/Requests.kt
 data class CreateOrganizationRequest(val name: String)
-
 data class CreateServiceRequest(
-    val organizationId: String,
+    val organizationId: OrganizationId,
     val cluster: String,
     val namespace: String,
     val name: String,
     val provider: Provider = Provider.UNKNOWN,
     val metadata: Map<String, String>? = null,
 )
-```
 
-### Request/Response DTOs (collector module)
-
-```kotlin
-// collector/src/main/kotlin/com/platform/collector/models/CreateCapturedInputRequest.kt
-// Used by POST /api/captured-inputs (agent → collector)
+// collector module — collector/src/main/kotlin/com/platform/collector/models/
 data class CreateCapturedInputRequest(
     val serviceId: String,
     val inputType: InputType = InputType.HTTP,
@@ -197,7 +197,6 @@ data class CreateCapturedInputRequest(
     val destinationIp: String? = null,
     val capturedAt: Instant,
 )
-
 data class BatchCreateCapturedInputRequest(val items: List<CreateCapturedInputRequest>)
 data class BatchCreateCapturedInputResponse(val created: Int)
 ```
@@ -206,19 +205,21 @@ data class BatchCreateCapturedInputResponse(val created: Int)
 
 ```bash
 # Prerequisites (macOS): Install Colima for TestContainers
-# Why Colima? Docker Desktop has socket compatibility issues with TestContainers.
-# Colima provides a lightweight Docker runtime that works reliably with both
-# TestContainers and Jib. build.gradle.kts auto-detects Colima's socket.
+# Colima provides a Docker runtime compatible with both TestContainers and Jib.
+# build.gradle.kts auto-detects Colima's socket.
 brew install colima docker && colima start
 
-# Start all services (app + collector + db; all start by default)
+# Start all services (platform + collector + envoy + db)
 ./gradlew dockerUp
 
 # Run application servers individually
-./gradlew :app:run          # app server on port 8080
-./gradlew :collector:run    # collector server on port 8081
+./gradlew :platform:run    # platform server on port 8080
+./gradlew :collector:run   # collector server on port 8081
 
-# Run tests (includes k3s Kubernetes integration tests)
+# Generate a JWT for testing (reads JWT_PRIVATE_KEY env var)
+./gradlew :platform:generateToken --args="--org <uuid> --cluster <name>"
+
+# Run tests
 ./gradlew test
 
 # Lint code
@@ -226,15 +227,16 @@ brew install colima docker && colima start
 ```
 
 **Module structure:**
-- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0005`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
-- `app/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; depends on `:shared`
+- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
+- `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; JWKS endpoint; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
-- `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to collector; no dependency on `shared/`, `app/`, or `collector/` (API contract only)
+- `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to platform via Envoy; no dependency on `shared/`, `platform/`, or `collector/` (API contract only)
+- `e2e-tests/` — Integration tests for the full stack (Envoy + platform + collector + DB) using TestContainers
 - `test-services/` — Standalone Kotlin microservices for k3s integration testing
 
-**Note on collector config:** The collector uses `application.yaml` (not HOCON `.conf`). This is required by Ktor 3, which uses the YAML config parser.
+**Note on collector config:** The collector uses `application.yaml` (not HOCON `.conf`). This is required by Ktor 3's YAML config parser.
 
-**Optional:** Deploy test workloads to local Kubernetes (kind/minikube) for manual testing:
+**Optional:** Deploy test workloads to local Kubernetes for manual testing:
 ```bash
 ./gradlew testServicesUp              # Deploy test services
 ./gradlew testServicesStatus          # Check status
@@ -259,15 +261,17 @@ CUSTOMER'S PRODUCTION CLUSTER
 │  notification-svc          namespace filters)   │
 │                         3. Poll Kubeshark →     │
 │                            filter + sample →    │
-│                            POST to collector    │
+│                            POST to Envoy (8082) │
 └───────────────────────────┬─────────────────────┘
-                            │ HTTPS (push)
+                            │ HTTPS (push, JWT auth)
                             ▼
 PLATFORM
 ┌────────────────────────────────────────────────────────────────────┐
-│  Collector (8081)          App (8080)                              │
-│  POST /api/captured-inputs POST /api/services (agent registers)   │
-│  stores req/res pairs      GET /api/agent/config (agent polls)    │
+│  Envoy (8082)              Platform (8080)   Collector (8081)      │
+│  JWT validation            Organizations     CapturedInputs        │
+│  Routes /api/captured-     Services          POST (agent ingest)   │
+│  inputs/* → collector      JWKS endpoint     GET/DELETE            │
+│  Other /api/* → platform   Agent config                            │
 │                                                                    │
 │  Replay Engine (planned):                                          │
 │  1. Fetch captured inputs from collector                           │
@@ -291,7 +295,7 @@ CUSTOMER'S STAGING CLUSTER
 ```
 1. CAPTURE (production, continuous, push model)
    Kubeshark eBPF captures HTTP request/response pairs at L7
-   Validation agent polls Kubeshark, filters by registered services, samples, and pushes to collector
+   Validation agent polls Kubeshark, filters by registered services, samples, and pushes to collector via Envoy
 
 2. BASELINE RUN (staging, current version)
    Replay captured read traffic against current version in staging
@@ -314,28 +318,16 @@ CUSTOMER'S STAGING CLUSTER
 
 1. **Staging-based validation**: Customer provides staging environments with real dependencies. Platform captures production traffic and replays it against staging — no dependency mocking needed.
 2. **Read-only replay by default**: Only replay safe (read) requests to avoid mutating staging DB state between sequential runs. Full replay available when customer provides a DB reset hook.
-3. **HTTP-first, protocol-extensible model**: `CapturedInput` uses an `InputType` enum (`HTTP`, `UNKNOWN`). KAFKA and PUBSUB variants are intentionally deferred (YAGNI) until the replay engine needs them. The data model can extend without breaking changes.
-4. **Module ownership via APIs**: Each module owns its tables and repositories. Cross-module data access (e.g., the collector needing a service fixture in tests) goes through REST API calls, not direct repository imports.
+3. **HTTP-first, protocol-extensible model**: `CapturedInput` uses an `InputType` enum (`HTTP`, `UNKNOWN`). KAFKA and PUBSUB variants are intentionally deferred (YAGNI).
+4. **Module ownership via APIs**: Each module owns its tables and repositories. No DB-level FKs across module boundaries. Cross-module access goes through REST API calls.
 5. **eBPF for capture and observation**: Kubeshark in production for traffic capture, Kubeshark in staging for observability during replay.
 6. **Statistical rigor**: Use proper statistical tests (Mann-Whitney U, linear regression), not arbitrary thresholds.
 
 ### Staging-Based Validation (Architectural Pivot)
 
-**Why staging instead of isolated namespaces with dependency mocking?**
+The original design used PCAP-based record-replay proxies to mock all dependencies in an isolated namespace. A **TLS blocker** was discovered: production databases (RDS, CloudSQL) use TLS, and Kubeshark's eBPF hooks cannot capture the Postgres wire protocol through TLS. Building protocol-specific proxies for every database flavor adds months of complexity.
 
-The original design used PCAP-based record-replay proxies to mock all dependencies (databases, APIs, queues) in an isolated validation namespace. Testing on minikube (2026-04-02) revealed a **TLS blocker**: almost all production databases (RDS, CloudSQL) use TLS encryption. Kubeshark's eBPF hooks intercept plaintext via `SSL_read`/`SSL_write`, but a serialization bug drops binary protocol data (Postgres wire protocol). Building protocol-specific recording proxies for every database flavor adds months of complexity.
-
-**The pivot**: require customers to provide staging environments with real dependencies already wired up. The platform focuses on what it does uniquely well — capture real traffic, replay it, compare behavior — without needing to mock every protocol.
-
-**What was preserved from the original PCAP validation (2026-04-02):**
-
-| Finding | Status |
-|---------|--------|
-| Kubeshark captures HTTP req/res pairs at L7 (even over TLS) | Works, used for traffic capture |
-| PCAP contains full Postgres queries for non-TLS connections | Validated, not needed with staging approach |
-| PCAP contains full Kafka messages for non-TLS connections | Validated, not needed with staging approach |
-| No PCAP truncation (11,324 frames, zero data loss) | Validated |
-| TLS-encrypted DB traffic invisible in PCAPs | **Blocker** that motivated the pivot |
+**The pivot**: require customers to provide staging environments with real dependencies already wired up. The platform focuses on what it does uniquely well — capture real traffic, replay it, compare behavior.
 
 ### Validation Agent (Push Model)
 
@@ -347,36 +339,25 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 |------|----------|----------------|
 | Service discovery | ~60s | Query K8s API for services → diff against in-memory map → register new services with platform via `POST /api/services` → receive service ID map |
 | Config polling | ~60s | `GET /api/agent/config` → update sampling rate, namespace filters, batch size, poll interval |
-| Traffic capture | continuous | Drain up to batchSize entries from `KubesharkClient`'s persistent WebSocket channel (waits up to captureIntervalMs for the first entry) → filter by target services → sample → `POST /api/captured-inputs` to collector |
+| Traffic capture | continuous | Drain up to batchSize entries from `KubesharkClient`'s persistent WebSocket channel → filter by target services → sample → `POST /api/captured-inputs` via Envoy |
 
-**Concurrency model:** Config is stored in a `MutableStateFlow<DynamicConfig>`. `KubesharkClient` and `TrafficTransformer` observe this flow directly. The traffic capture loop reads the latest snapshot. No locks, no coordination.
+**Concurrency model:** Config is stored in a `MutableStateFlow<DynamicConfig>`. `KubesharkClient` and `TrafficTransformer` observe this flow directly. No locks, no coordination.
 
 **Static config (env vars, set at deploy time):**
-- `COLLECTOR_URL` — platform collector endpoint
-- `API_KEY` — bearer token for authentication
+- `PLATFORM_URL` — platform Envoy endpoint (e.g., `http://envoy.validation.svc.cluster.local:8082`)
+- `API_KEY` — JWT bearer token (stored in Kubernetes Secret `platform-api-key`, key `jwt-token`)
 - `KUBESHARK_URL` — in-cluster Kubeshark front URL (default: `http://kubeshark-front.default:80`)
 
 **Dynamic config (polled from platform):**
-- Sampling rate per service
-- Namespace filters
-- Batch size
-- Poll intervals
+- Sampling rate per service, namespace filters, batch size, poll intervals
 
-**Kubeshark WebSocket transport (validated 2026-04-11):**
-- Kubeshark v53+ removed the REST `/api/entries` endpoint. Traffic data is served exclusively over WebSocket at `/api/wsFull` (proxied through `kubeshark-front` nginx to `kubeshark-hub`).
-- The server accepts a KFL (Kubeshark Filter Language) query as the first text frame. The agent sends a KFL query built by `KubesharkClient.buildKflQuery()` that restricts the stream to HTTP entries for configured target services (e.g. `http and (dst.name == "order-service" or dst.name == "api-gateway")`). When no target services are configured, the query is `"http"` (not empty, which means no filter at all). `TrafficTransformer` keeps its client-side filters as a safety net during the brief reconnect window after a config change.
-- Entries arrive as individual JSON text frames in HAR-like shape: `{id, timestamp, protocol, src, dst, request, response, ...}`. Request body lives at `request.postData.text` (plaintext, HAR's `postData` applies to any method with a body); response body at `response.content.text` is **base64-encoded** (binary-safe) when `content.encoding == "base64"` — the agent decodes before forwarding.
-- **Persistent session model (2026-04-11):** `KubesharkClient` maintains a single long-lived WebSocket for the agent's lifetime. A bounded `Channel<KubesharkEntry>` (capacity 1000) buffers incoming entries between the streamer coroutine and the capture loop. Backpressure: `Channel.send` suspends when full, the streamer stops reading frames, Ktor's receive buffer fills, TCP window closes, Kubeshark slows emission. The agent never OOMs under load.
-- **Reactive KFL updates (2026-04-18):** `KubesharkClient` observes the shared `StateFlow<DynamicConfig>` via a `configWatcherJob`. When `targetServices` changes, it rebuilds the KFL query and immediately cancels the active WebSocket session, forcing a reconnect with the new filter. No manual `updateKflQuery()` calls needed — the `KubesharkClient` and `AgentApplication` are fully decoupled on config propagation.
-- **Why persistent not connect-per-poll:** every fresh Kubeshark WebSocket session replays ~4-10s of recent history before reaching live entries (measured on the test cluster). Connect-per-poll would re-parse ~300 entries per reconnect at 75 entries/sec.
-- **Reconnect dedup:** the client tracks `lastSeenTimestamp` (max across the session lifetime) and a `DEDUP_LOOKBACK = 5s` sliding window. Entries with `ts < (lastSeen - 5s)` are dropped as reconnect-replay noise. 5s covers 100% of observed in-session out-of-order jitter (measured p50 8ms, p95 1.8s, p99 3s, max 4.8s). Trade-off: on reconnect, up to `lookback × arrival_rate` dupes slip through (~375/reconnect at 75/sec). Reconnects are rare, so this is an acceptable loss versus the alternative of dropping in-session out-of-order entries on every batch. ID-based LRU dedup was rejected because at high traffic it silently fails once the cache overflows.
-
-**Key design decisions:**
-- Push model: agent pushes to platform, not platform pulling from customer cluster. Only requires outbound network access.
-- Agent has its own DTOs (`CapturedInputRequest`), no compile-time dependency on platform modules. API contract only.
-- Source/destination dedup: Kubeshark shows each call from both src and dst perspective. Agent filters on `dst.name` matching a target service, which naturally deduplicates.
-- Sampling: stateless per-entry random check against configured rate. Acceptable to lose some traffic.
-- KFL query pushed server-side: `KubesharkClient.buildKflQuery()` builds a valid KFL string from target service names. Kubeshark filters before sending entries over the wire, reducing agent CPU for traffic filtering. `TrafficTransformer` keeps its protocol/dst checks as a safety net.
+**Kubeshark WebSocket transport:**
+- Kubeshark v53+ serves traffic exclusively over WebSocket at `/api/wsFull`. The REST `/api/entries` endpoint was removed.
+- The server accepts a KFL (Kubeshark Filter Language) query as the first text frame. `KubesharkClient.buildKflQuery()` sends `http` or `http and (dst.name == X or ...)`. When no target services are configured, the query is `"http"`.
+- Entries arrive as HAR-ish JSON frames: request body at `request.postData.text` (plaintext); response body at `response.content.text` is base64-encoded when `content.encoding == "base64"` — the agent decodes before forwarding.
+- **Persistent session**: `KubesharkClient` maintains a single long-lived WebSocket. A bounded `Channel<KubesharkEntry>` (capacity 1000) buffers entries with backpressure — `Channel.send` suspends when full, which propagates TCP backpressure to Kubeshark. The agent never OOMs under load.
+- **Reactive KFL updates**: `KubesharkClient` observes the `StateFlow<DynamicConfig>` via a `configWatcherJob`. When `targetServices` changes it immediately cancels and reconnects with the updated KFL query.
+- **Reconnect dedup**: tracks `lastSeenTimestamp` with a 5s lookback window. Entries older than `lastSeen - 5s` are dropped as reconnect-replay noise, covering observed in-session out-of-order jitter.
 
 **Agent module structure:**
 ```
@@ -394,13 +375,13 @@ agent/
 ```
 
 **Deployment artifacts:**
-- `deploy/Dockerfile.agent` — multi-stage Dockerfile for environments without a Docker daemon socket for Jib.
-- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest` directly into a local or remote Docker daemon.
-- `k8s/agent/agent.yaml` — reference Kubernetes Deployment manifest (namespace `validation`, single replica). Used by both the minikube dev loop and `scripts/sandbox-up.sh` (which rewrites the image reference to GCR).
+- `deploy/Dockerfile.agent` — multi-stage Dockerfile (non-root user via `USER agent`)
+- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest`
+- `k8s/agent/agent.yaml` — Kubernetes Deployment (namespace `validation`, single replica); `API_KEY` from `secretKeyRef: platform-api-key/jwt-token`; file-based liveness probe on `/tmp/agent-alive`
 
 ### Read/Write Traffic Classification (Planned — Not Yet Implemented)
 
-To avoid mutating staging state between sequential baseline/candidate runs, the platform will classify traffic and default to read-only replay. The `TrafficClassifier` was previously stubbed in the app module but removed as premature — it belongs in the replay engine, which will own this logic.
+The `TrafficClassifier` was removed as premature — it belongs in the replay engine.
 
 | Protocol | Read | Write | Reliability |
 |---|---|---|---|
@@ -408,19 +389,11 @@ To avoid mutating staging state between sequential baseline/candidate runs, the 
 | gRPC | Method name: `Get*`, `List*`, `Search*`, `Find*`, `Query*` | Everything else | ~80% |
 | GraphQL | `query` in body | `mutation` in body | ~99% |
 
-Conservative default: ambiguous = write = skip. User can override specific endpoints (e.g., mark `POST /api/search` as safe).
+Conservative default: ambiguous = write = skip. User can override specific endpoints.
 
 ### Message Queue Support (Future, De-Risked)
 
-Message queues use built-in fan-out for safe capture:
-- **Kafka**: Separate consumer group, zero impact on production consumers
-- **GCP Pub/Sub**: Mirror subscription on same topic
-- **AWS SNS**: Add capture SQS queue as subscriber
-- **RabbitMQ**: Bind capture queue to same exchange
-
-**Key insight**: If the message *producer* is a service we're already replaying HTTP to, Kafka messages flow naturally as a side effect in staging. Separate message capture is only needed for "entry point" messages from external systems.
-
-**Limitations**: Consumer offset resets, idempotency guards, cross-partition ordering, timing sensitivity.
+Message queues use built-in fan-out for safe capture: Kafka (separate consumer group), Pub/Sub (mirror subscription), SNS (capture SQS subscriber), RabbitMQ (bind to same exchange). If the message producer is a service already replaying HTTP to, Kafka messages flow naturally as a side effect in staging.
 
 ### What Customers Provide
 
@@ -434,7 +407,7 @@ Message queues use built-in fan-out for safe capture:
 
 ### Adapter Implementation Status
 
-**ServiceAdapter Interface** (`app/src/main/kotlin/com/platform/adapters/ServiceAdapter.kt`):
+**ServiceAdapter Interface** (`platform/src/main/kotlin/com/platform/adapters/ServiceAdapter.kt`):
 ```kotlin
 interface ServiceAdapter {
     suspend fun discoverServices(organizationId: String): List<Service>
@@ -442,76 +415,38 @@ interface ServiceAdapter {
 ```
 
 **Implemented Adapters:**
-
-1. **ManualSeedAdapter** - Provides 8 hardcoded services (frontend, backend, messaging, data layers) for testing and development without external dependencies.
-
-2. **KubernetesAdapter** - Discovers services from Kubernetes clusters via the Kubernetes API. Supports in-cluster config, KUBECONFIG, and ~/.kube/config. Filters system namespaces by default. Extracts metadata from labels and annotations.
-
-3. **KubesharkAdapter** - Planned: pull captured HTTP traffic from Kubeshark API for the collector module.
+1. **ManualSeedAdapter** — 8 hardcoded services for testing without external dependencies
+2. **KubernetesAdapter** — Discovers services from Kubernetes via the API. Supports in-cluster, KUBECONFIG, and `~/.kube/config`. Implements `Closeable`.
+3. **KubesharkAdapter** — Planned
 
 **Test Infrastructure:**
 
-- `KubernetesWorkloadTestBase` - Spins up k3s cluster with test workloads using TestContainers
-- Manifests in `k8s/test-services/` used for both automated tests and local development
-- Handles Colima socket complexities for image loading
-- 3 namespaces: `infrastructure`, `production`, `external`
-- 7 discoverable K8s Services (traffic-generator has no Service resource)
+- `KubernetesWorkloadTestBase` — spins up k3s cluster with test workloads using TestContainers
+- 3 namespaces: `infrastructure`, `production`, `external`; 7 discoverable K8s Services
 
-**Deployed test services (exercises every dependency type):**
 ```
 traffic-generator → api-gateway → order-service → orders-db (PostgreSQL)
                                 → Redis (cache)   → Kafka (produce: order-events)
-
 Kafka (consume: order-events) → notification-service → webhook-stub (external)
 ```
 
 | Namespace | Services |
 |-----------|----------|
-| infrastructure | orders-db (PostgreSQL 16), redis (7-alpine, 2MB maxmemory + allkeys-lru), kafka (apache/kafka:3.7.0, KRaft mode) |
-| production | api-gateway (HTTP proxy + Redis cache), order-service (HTTP API + PostgreSQL + Kafka producer), notification-service (Kafka consumer + webhook caller), traffic-generator (5 reader + 1 writer coroutines, no Service resource) |
-| external | webhook-stub (simulates third-party API endpoint) |
-
-| Dependency type | Exercised by |
-|----------------|-------------|
-| APPLICATION | api-gateway → order-service |
-| DATASTORE | order-service → orders-db |
-| MESSAGE_QUEUE | order-service → Kafka → notification-service |
-| CACHE | api-gateway → Redis |
-| EXTERNAL | notification-service → webhook-stub |
-
-Per-service PostgreSQL is colocated with service manifests (not shared). The Kafka path creates a real async coupling between order-service and notification-service.
+| infrastructure | orders-db (PostgreSQL 16), redis (7-alpine), kafka (apache/kafka:3.7.0, KRaft mode) |
+| production | api-gateway, order-service, notification-service, traffic-generator (no Service resource) |
+| external | webhook-stub |
 
 ---
 
 ## Tech Stack
 
-### Language: Kotlin
-
-- Strong typing catches errors early, aids refactoring
-- Coroutines provide clean async handling for I/O-heavy workload
-- Data classes reduce boilerplate
-- JetBrains support ensures good tooling
-
-### Framework: Ktor
-
-- Kotlin-native, built by JetBrains
-- Coroutines are first-class
-- Lightweight, only include what you need
-- Simple mental model, no magic annotations
-
-### Database: PostgreSQL
-
-- Production-grade relational database
-- Exposed ORM for type-safe queries
-- Flyway for schema migrations
-
-### Key Libraries
-
-- **Ktor**: Kotlin-native web framework
-- **Exposed + PostgreSQL**: Type-safe database access
-- **Fabric8 Kubernetes Client**: Service discovery from K8s clusters
-- **TestContainers**: Integration testing with PostgreSQL and k3s
-- See `build.gradle.kts` for complete dependency list
+- **Language**: Kotlin — coroutines, data classes, strong typing
+- **Framework**: Ktor — Kotlin-native, coroutines-first, lightweight
+- **Database**: PostgreSQL with Exposed ORM + Flyway migrations
+- **Auth**: RS256 JWT — platform generates tokens, serves JWKS; Envoy validates
+- **Proxy**: Envoy — JWT validation, claim extraction, routing
+- **Key Libraries**: Ktor, Exposed + PostgreSQL, Fabric8 Kubernetes Client, TestContainers
+- See `build.gradle.kts` for the complete dependency list
 
 ---
 
@@ -519,8 +454,8 @@ Per-service PostgreSQL is colocated with service manifests (not shared). The Kaf
 
 | Model | Purpose | Module | Status |
 |-------|---------|--------|--------|
-| Organization | Tenant/team in the platform | `app` | Implemented |
-| Service | Deployable unit discovered from various providers | `app` | Implemented |
+| Organization | Tenant/team in the platform | `platform` | Implemented |
+| Service | Deployable unit discovered from various providers | `platform` | Implemented |
 | CapturedInput | HTTP req/res pair captured from production traffic | `collector` | Implemented |
 | ReplayRun | A replay run against staging (config, status, collected responses) | TBD (likely its own module) | Planned |
 | ReplayResponse | Per-request response collected during replay (status, body, latency) | TBD | Planned |
@@ -532,35 +467,27 @@ Per-service PostgreSQL is colocated with service manifests (not shared). The Kaf
 
 ## Planned Features
 
-### Feature 1: Traffic Capture (via Kubeshark/eBPF)
-
-Pull HTTP request/response pairs from Kubeshark in production. Classify as read/write. Store for replay. Protocol-agnostic model supports future Kafka/gRPC capture.
+### Feature 1: Traffic Capture (via Kubeshark/eBPF) — Implemented
+HTTP req/res pairs captured via agent, stored in collector. See Phase 3 below.
 
 ### Feature 2: Replay Engine
-
 Send captured traffic to a target service in the customer's staging cluster. Configurable concurrency (QUICK/STANDARD/LOAD). Read-only by default, full replay with optional DB reset hook.
 
 ### Feature 3: Staging Observation
-
-During replay, collect metrics via Kubeshark in staging (outbound connections, call patterns) and K8s Metrics API (pod CPU/memory). Detect behavioral changes like increased DB connection counts.
+During replay, collect metrics via Kubeshark in staging (outbound connections, call patterns) and K8s Metrics API (pod CPU/memory).
 
 ### Feature 4: Comparison & Verdicts
-
-Compare baseline run (current version) vs candidate run (PR branch). Response diffs, latency (Mann-Whitney U), error rates, outbound connection delta, memory trends (linear regression). Generate PASS/FAIL/INCONCLUSIVE verdict with evidence.
+Compare baseline vs candidate replay runs. Response diffs, latency (Mann-Whitney U), error rates, outbound connection delta, memory trends (linear regression). Generate PASS/FAIL/INCONCLUSIVE verdict with evidence.
 
 ### Feature 5: Orchestration API
-
-Single `POST /api/validations` endpoint that orchestrates: capture traffic → baseline replay → (optional reset) → candidate replay → compare → verdict.
+Single `POST /api/validations` endpoint: capture → baseline replay → (optional reset) → candidate replay → compare → verdict.
 
 ### Feature 6: Message Queue Capture (Future)
-
-Capture Kafka/PubSub messages via separate consumer groups. Replay by producing to staging topics. Only needed for "entry point" messages from external systems.
+Capture Kafka/PubSub messages via separate consumer groups. Only needed for "entry point" messages from external systems.
 
 ---
 
 ## Adapter Implementation Matrix
-
-Adapters normalize data from different sources into the unified model.
 
 | Adapter | Status | Services | Traffic Capture | Staging Observation |
 |---------|--------|----------|----------------|---------------------|
@@ -572,93 +499,48 @@ Adapters normalize data from different sources into the unified model.
 
 ## Delivery Plan
 
-### Phase 1: Foundation
+### Phase 1: Foundation — COMPLETE
 
-**Week 1: Project Setup + Data Model** - COMPLETE
-- [x] Initialize Gradle project with dependencies
-- [x] Create package structure
-- [x] Define Organization and Service models
-- [x] Create Exposed table definitions
-- [x] Implement database repositories with CRUD and pagination
-- [x] Write database tests with TestContainers
-- [x] Set up Docker deployment
-- [x] Configure Flyway migrations
-- [x] Set up ktlint for code quality
+Project setup, Gradle, Organization + Service models, Exposed tables, repositories, pagination, Docker, Flyway, ktlint. ServiceAdapter interface, KubernetesAdapter, ManualSeedAdapter, k3s TestContainers infrastructure, Colima config.
 
-**Week 2: Kubernetes Integration + Manual Seed** - COMPLETE
-- [x] Implement ServiceAdapter interface
-- [x] Implement KubernetesAdapter with service discovery
-- [x] Create ManualSeedAdapter with hardcoded test data
-- [x] Set up KubernetesWorkloadTestBase with k3s integration tests
-- [x] Create test workloads (PostgreSQL, Redis, API Gateway, traffic generator)
-- [x] Configure Colima for TestContainers on macOS
-- [ ] Create API endpoints: `POST /api/seed`, `GET /api/topology` (deferred)
-
-**Milestone:** Adapter pattern implemented, services discoverable from Kubernetes and manual seed data
+**Milestone:** Adapter pattern implemented, services discoverable from Kubernetes and manual seed data.
 
 ---
 
-### Phase 2: Test Services + Kubeshark Validation
+### Phase 2: Test Services + Kubeshark Validation — COMPLETE
 
-**Week 3: Expand Test Microservices** - COMPLETE
-- [x] Implement order-service (HTTP API, PostgreSQL for orders-db, Kafka producer)
-- [x] Implement notification-service (Kafka consumer, external HTTP call to webhook-stub)
-- [x] Add Kafka (apache/kafka:3.7.0, KRaft mode) to k8s/test-services infrastructure
-- [x] Add per-service PostgreSQL (orders-db colocated with service manifest)
-- [x] Add webhook-stub in external namespace for EXTERNAL dep testing
-- [x] Update api-gateway to proxy to order-service with Redis LRU cache
-- [x] Update traffic-generator with concurrent coroutines (5 readers + 1 writer)
-- [x] Update KubernetesWorkloadTestBase and integration tests (7-service topology)
-
-**Week 4: Kubeshark/eBPF Validation** - COMPLETE
-- [x] Deploy Kubeshark to minikube with test services
-- [x] Validate HTTP traffic capture at L7 (req/res pairs with bodies)
-- [x] Validate PCAP extraction for Postgres (non-TLS) and Kafka
-- [x] De-risk: TLS-encrypted connections → **BLOCKER** for PCAP-only approach
-- [x] De-risk: PCAP size limits → NOT A RISK (11,324 frames, zero truncation)
-- [x] Architecture decision: pivot from record-replay proxy to staging-based validation
+Expanded test microservices (order-service, notification-service, Kafka KRaft, Redis, webhook-stub). Kubeshark validated for HTTP capture at L7. TLS blocker confirmed for PCAP-based DB capture → architecture pivot to staging-based validation.
 
 **Milestone:** Kubeshark validated for HTTP capture. Staging-based approach chosen over PCAP record-replay.
 
 ---
 
-### Phase 3: Traffic Capture + Replay - IN PROGRESS
+### Phase 3: Traffic Capture + Replay — IN PROGRESS
 
-**Traffic Capture (Feature 1)**
-- [x] CapturedInput model (HTTP-first, non-nullable method/url/responseStatus) — `collector/src/main/kotlin/com/platform/collector/models/`
-- [x] InputType enum simplified to HTTP + UNKNOWN (YAGNI: KAFKA, PUBSUB deferred)
-- [x] TrafficClassification enum and TrafficClassifier removed — not needed until replay engine
-- [x] CapturedInputs table definition — `collector/src/main/kotlin/com/platform/collector/database/CapturedInputs.kt`
-- [x] Database migration V0004 (method/url/responseStatus non-nullable) — `shared/src/main/resources/db/migration/`
-- [x] CapturedInputRepository (create, createBatch, findById, find, countByService, deleteByService) — `collector/src/main/kotlin/com/platform/collector/database/`
-- [x] Collector API: `GET /api/captured-inputs`, `GET /api/captured-inputs/{id}`, `DELETE /api/captured-inputs?serviceId=` (port 8081)
-- [x] POST endpoints in app module: `POST /api/organizations`, `POST /api/services`
-- [x] Collector module: full Ktor server on port 8081 (no longer a skeleton)
-- [x] Test infrastructure: 18 CapturedInputRepository tests, 12 CapturedInputRoutesTest, 1 HealthRoutesTest, 6 new POST endpoint tests in app
-- [x] AppApiTestHelper: collector tests create org/service fixtures via POST API calls to app module (enforces module boundary)
-- [x] Agent module: KubesharkClient (WebSocket), CollectorClient, ConfigClient, TrafficTransformer, AgentConfig, AgentApplication
-- [x] Agent DTOs: KubesharkEntry/KubesharkProtocol/KubesharkRequest/KubesharkResponse/KubesharkPostData/KubesharkContent/KubesharkHeader (Kubeshark wire format), CapturedInputRequest/BatchCapturedInputRequest (collector POST)
-- [x] Kubeshark WebSocket validated (2026-04-11): `/api/wsFull` streams HAR-ish JSON entries with request/response bodies inline. Request body at `request.postData.text` (plaintext), response body at `response.content.text` base64-encoded when `content.encoding == "base64"`. Empty KFL filter = stream all; non-empty strings silently match nothing if KFL syntax is wrong.
-- [x] Agent base64-decodes response bodies before forwarding to collector
-- [x] Agent config architecture: static env vars (URLs, auth) + dynamic polling (sampling, target services, batch size)
-- [x] Agent Loop 2: `ConfigClient` polls `GET /api/agent/config` (with graceful fallback to defaults when endpoint doesn't exist)
-- [x] Agent Loop 3: `KubesharkClient` WebSocket poll → `TrafficTransformer` filter → `CollectorClient` batch POST
-- [x] Agent tests: 79+ unit/integration tests across KubesharkClient (WebSocket with embedded Ktor server), TrafficTransformer, LoopLogic, CapturePipelineIntegration, ConfigClient, CollectorClient, AgentConfig
-- [x] End-to-end minikube verification (2026-04-11): agent deployed to `validation` namespace streams 100 entries/batch every ~2s via `kubeshark-front:80/api/wsFull` with zero WebSocket errors
-- [x] Deployment artifacts: `deploy/Dockerfile.agent` (non-root user via `USER agent`), `agent/build.gradle.kts` Jib config, `k8s/agent/agent.yaml` (file-based liveness probe on `/tmp/agent-alive`), `scripts/sandbox-up.sh` builds+pushes agent image to GCR
-- [x] Collector: `POST /api/captured-inputs` batch endpoint (accepts `BatchCreateCapturedInputRequest`, returns `BatchCreateCapturedInputResponse{created: Int}`) — #42 (2026-04-12)
-- [x] Push HTTP + service-name filtering into KFL query for server-side filtering — `KubesharkClient.buildKflQuery()` sends `http` or `http and (dst.name == X or ...)` as the first WebSocket frame; `KubesharkClient` observes `StateFlow<DynamicConfig>` and forces reconnect on `targetServices` change — #41 (2026-04-18)
-- [x] KubernetesAdapter implements `Closeable` — `close()` propagates to the underlying Kubernetes client connection pool; usable with Kotlin `use` extension — #43 (2026-04-18)
-- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map (stubbed as `discoverServices()` no-op; needs K8s client + platform registration endpoint)
-- [ ] Platform: `GET /api/agent/config` endpoint (agent polls this — currently returns fallback defaults since endpoint doesn't exist; `ConfigClient` points at `COLLECTOR_URL` which is also wrong per ARCH-1)
-- [ ] HTTP gzip on agent→collector POST (wire bandwidth optimization; pending load numbers to justify)
+**Traffic Capture (Feature 1) — Largely Complete**
+- [x] CapturedInput model + InputType enum (HTTP + UNKNOWN) + CapturedInputs table
+- [x] Flyway migrations V0001–V0006 (V0006 drops FK between `captured_inputs.service_id` and `services.id`)
+- [x] CapturedInputRepository (create, createBatch, findById, find, countByService, deleteByService)
+- [x] Collector API: POST/GET/DELETE `/api/captured-inputs` (port 8081)
+- [x] Platform module (renamed from `app`): POST/GET `/api/organizations`, `/api/services`
+- [x] `OrganizationId` and `ServiceId` value classes (UUID-validated inline value classes)
+- [x] Envoy reverse proxy (`deploy/envoy/envoy.yaml`): JWT RS256 validation via JWKS, claim forwarding, routing (port 8082)
+- [x] `AgentIdentity` auth: `EnvoyIdentityProvider` reads `X-Organization-Id` + `X-Cluster` headers from Envoy
+- [x] JWKS endpoint (`/.well-known/jwks.json`): platform derives RSA public key from `JWT_PRIVATE_KEY` env var
+- [x] `JwtTokenGenerator`: CLI tool to generate signed JWTs (`./gradlew :platform:generateToken`)
+- [x] Agent: `KubesharkClient` (WebSocket), `CollectorClient`, `ConfigClient`, `TrafficTransformer`, `AgentConfig`, `AgentApplication`; uses `PLATFORM_URL` env var pointing at Envoy
+- [x] Agent deployment: `API_KEY` sourced from Kubernetes Secret (`secretKeyRef: platform-api-key/jwt-token`)
+- [x] Agent 79+ unit/integration tests; e2e-tests module with Envoy + platform + collector stack tests
+- [x] KubernetesAdapter implements `Closeable`
+- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map (stubbed as no-op)
+- [ ] Platform: `GET /api/agent/config` endpoint (agent polls this; currently returns fallback defaults)
+- [ ] HTTP gzip on agent→collector POST (wire bandwidth optimization)
 
 **Replay Engine (Feature 2)**
 - [ ] ReplayRun model + database migration (likely in its own module)
 - [ ] ReplayEngine: send captured HTTP requests to staging target (fetches inputs via collector API)
 - [ ] Configurable fidelity: QUICK (sequential), STANDARD (10-50 concurrent), LOAD (prod-rate)
-- [ ] Read-only flag (skip write-classified requests)
-- [ ] Optional DB reset hook between runs
+- [ ] Read-only flag; optional DB reset hook between runs
 - [ ] API: `POST /api/replay-runs`, `GET /api/replay-runs/{id}`
 
 **Milestone:** Captured traffic replayable against staging services via API.
@@ -667,14 +549,8 @@ Adapters normalize data from different sources into the unified model.
 
 ### Phase 4: Observation + Verdicts
 
-**Staging Observation (Feature 3)**
-- [ ] StagingObserver: poll Kubeshark in staging during replay
-- [ ] ResourceMonitor: poll K8s Metrics API for pod CPU/memory
-- [ ] Collect outbound connection destinations, call counts
-
-**Comparison & Verdicts (Feature 4)**
-- [ ] ComparisonEngine: diff baseline vs candidate replay runs
-- [ ] StatisticalTests: Mann-Whitney U (latency), linear regression (memory trends)
+- [ ] StagingObserver: poll Kubeshark in staging during replay; ResourceMonitor: poll K8s Metrics API
+- [ ] ComparisonEngine: response diffs, latency (Mann-Whitney U), error rates, memory trends (linear regression)
 - [ ] VerdictGenerator: PASS/FAIL/INCONCLUSIVE with evidence
 - [ ] API: `GET /api/validations/{id}`
 
@@ -684,16 +560,9 @@ Adapters normalize data from different sources into the unified model.
 
 ### Phase 5: Orchestration + Hardening
 
-**Orchestration API (Feature 5)**
-- [ ] ValidationOrchestrator: capture → baseline → (reset) → candidate → compare → verdict
-- [ ] API: `POST /api/validations` (single endpoint)
+- [ ] ValidationOrchestrator: `POST /api/validations` (capture → baseline → reset → candidate → compare → verdict)
 - [ ] Candidate deployment to staging (image tag swap)
-
-**Hardening**
-- [ ] Error handling and retry logic
-- [ ] Logging and observability
-- [ ] End-to-end tests
-- [ ] Message queue capture support (Feature 6)
+- [ ] Error handling, logging, observability, message queue capture support
 
 **Milestone:** Production-ready V1 API
 
@@ -701,7 +570,7 @@ Adapters normalize data from different sources into the unified model.
 
 ## Future Features (V2+)
 
-- **CLI**: Optional command-line interface wrapping the API for terminal workflows
+- **CLI**: Optional command-line interface wrapping the API
 - **Web UI**: Dashboard for visualizing topology, validation results, and anomalies
 - **PR Integration**: GitHub/GitLab webhook integration, automatic validation on PR
 - **Deployment Correlation**: Correlate anomalies with recent deploys
@@ -714,34 +583,29 @@ Adapters normalize data from different sources into the unified model.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Validation approach | Staging-based (customer provides staging env) | TLS blocks PCAP-based dependency mocking for production databases. Staging-based avoids protocol-specific proxies entirely. Simpler, shippable sooner. |
-| Traffic capture | Kubeshark (eBPF) for HTTP at L7 | Zero instrumentation in production. HTTP req/res pairs captured with bodies. Validated on minikube 2026-04-02. |
-| Module boundaries | Cross-module access via HTTP API, not shared repositories | Enforces clean ownership. Collector tests create org/service fixtures via POST to app routes (AppApiTestHelper), not by importing app repositories directly. |
-| InputType enum | HTTP + UNKNOWN only (KAFKA, PUBSUB removed) | YAGNI: message queue capture deferred until replay engine needs it. Enum can extend without breaking changes. |
-| CapturedInput fields | method, url, responseStatus non-nullable | HTTP-only for now; nullable fields were premature abstraction before non-HTTP capture exists. |
-| TrafficClassifier | Removed from app module | Premature: classification is only needed during replay, which may be its own module. Re-add there when the time comes. |
-| Collector config format | `application.yaml` (not HOCON) | Ktor 3 requires the YAML config parser; HOCON is legacy Ktor 2 behavior. |
-| Test base hierarchy | `DatabaseTestBase` (shared fixtures) → `AppDatabaseTestBase` / `CollectorDatabaseTestBase` | Each module's test base cleans only its own tables, preserving module ownership in tests. |
-| Replay model | `CapturedInput` with InputType field | HTTP-first, but `type: HTTP | UNKNOWN` allows extension to KAFKA/PUBSUB without model changes. |
-| Replay safety | Read-only by default, full with reset hook | Avoids DB mutation between sequential baseline/candidate runs. Conservative classification (ambiguous = write = skip). |
-| Run model | Sequential (baseline then candidate) | Simpler than parallel — one set of staging infra. For 5-15 min runs, environmental drift is negligible. |
-| Staging observation | Kubeshark in staging + K8s Metrics API | Kubeshark gives outbound connection counts and patterns. K8s Metrics gives CPU/memory for leak detection. |
-| Statistical tests | Mann-Whitney U | Non-parametric, handles skewed latency distributions |
-| Leak detection | Linear regression | Detect memory growth trend over time |
-| Interface | API-first (CLI deferred) | Enables UI/webhook integration without binary distribution; CLI can wrap API later if needed |
-| Traffic capture model | Push (agent → collector) not pull (platform → Kubeshark) | Agent in customer cluster pushes to platform. Only requires outbound network access. Platform never reaches into customer clusters. Scales naturally — N agents push, zero fan-out from platform. |
-| Agent language | Kotlin (same as platform) | Same build toolchain, CI, team knowledge. Image size (~150MB with JRE vs ~10MB Go) acceptable for long-running agent. Swappable later — agent communicates via HTTP only. |
-| Agent config | Static env vars (URLs, auth) + dynamic polling (sampling, filters) | Mutable config polled from platform avoids redeploying agent for config changes. Env vars only for deployment-time facts (cluster name, endpoints). |
-| Agent service discovery | Agent queries K8s API directly, registers with platform | Agent has visibility into cluster service inventory. Platform can't know about new deployments without being told. Agent registers services and receives ID map. |
-| Agent ↔ platform contract | Separate DTOs, API contract only, no shared compile-time types | Agent ships as container to customer clusters, versions independently. `ignoreUnknownKeys = true` on both sides enables additive API evolution without lockstep releases. |
-| Traffic loss tolerance | Acceptable to lose some traffic (sampling, reconnect dupes/gaps, drops on permanent 4xx) | For mature high-traffic services, sampling is required anyway. On WebSocket reconnect, dedup window may miss or double-count a few seconds of entries — acceptable. `CollectorClient` retries 5xx/network errors indefinitely with backoff; 4xx are dropped as permanent failures rather than hammering the server. |
-| Kubeshark transport (v53+) | WebSocket `/api/wsFull` with KFL query for server-side filtering | Kubeshark v53 removed the REST `/api/entries` endpoint. `KubesharkClient.buildKflQuery()` constructs a valid KFL string (`http` or `http and (dst.name == X or ...)`). KFL syntax nailed down 2026-04-18 — non-empty strings silently match nothing if syntax is wrong; confirmed `http and dst.name == "svc"` works. Agent now pushes filtering server-side; `TrafficTransformer` keeps client-side checks as a safety net during reconnect windows. |
-| Response body encoding | Kubeshark base64-encodes `response.content.text`; agent decodes | Binary-safe for non-UTF-8 payloads (images, protobuf). Request bodies at `request.postData.text` are NOT encoded. Agent's `TrafficTransformer.decodeContent` checks `content.encoding == "base64"` and decodes before forwarding. Base64 decode is microseconds per 10KB — negligible against agent's 200m CPU budget. |
-| Agent ↔ Kubeshark session model | Long-lived persistent WebSocket session + bounded channel, reconnect on failure with 5s backoff | Every fresh Kubeshark session replays ~4-10s of history before reaching live entries (measured 2026-04-11). Connect-per-poll would re-parse ~300 entries per reconnect at 75/sec. A persistent session pays the backlog cost once and streams live forever. Bounded channel (default 1000) applies TCP-level backpressure if the capture loop falls behind: `Channel.send` suspends → streamer stops reading → Ktor receive buffer fills → TCP window closes → Kubeshark slows. Agent never OOMs. |
-| Agent reconnect dedup | `lastSeenTimestamp` sliding-window with 5s lookback (reject entries older than `lastSeen - 5s`) | Kubeshark's reconnect-replay would double-count ~10s of traffic without dedup. In-session out-of-order jitter goes up to ~5s on our test cluster (p50 8ms, p95 1.8s, max 4.8s), so 5s lookback covers 100% of observed jitter without dropping in-session data. Trade-off: up to ~5s worth of dupes per reconnect slip through — acceptable because reconnects are rare events. ID-based LRU dedup was rejected because it silently fails at high traffic once the cache overflows. |
-| Agent abstractions | No `TrafficSource` interface; `KubesharkClient` used directly, mocked in tests via mockk | Earlier rev had a `TrafficSource` interface to decouple tests from WebSocket transport. Removed as YAGNI — still leaked `KubesharkEntry`, had a single impl, and mockk handles final-class mocking on JVM. |
-| Config propagation | `MutableStateFlow<DynamicConfig>` shared between all three loops | Replaced `AtomicReference<DynamicConfig>` (2026-04-18). `KubesharkClient` observes via `configWatcherJob` and triggers reconnect when `targetServices` changes. `TrafficTransformer` reads `.value` on each transform call. Decouples config changes from imperative method calls — `AgentApplication` doesn't need to know about `KubesharkClient.updateKflQuery`. |
-| KubernetesAdapter lifecycle | Implements `Closeable`; `close()` delegates to Kubernetes client | Connection pool is released when adapter goes out of scope. Usable with Kotlin `use` extension or Java try-with-resources. Added 2026-04-18. |
+| Validation approach | Staging-based | TLS blocks PCAP-based dependency mocking for production DBs. Staging avoids protocol-specific proxies entirely. |
+| Traffic capture | Kubeshark (eBPF) for HTTP at L7 | Zero instrumentation in production. HTTP req/res pairs with bodies. |
+| Auth model | RS256 JWT via Envoy reverse proxy | Envoy validates JWT and forwards claims as headers. Platform reads headers via `EnvoyIdentityProvider`. No JWT validation logic in app servers. |
+| Module DB boundaries | No FK across modules (V0006 drops `captured_inputs → services` FK) | Modules are fully decoupled at DB level. Referential integrity enforced at application layer: agent registers services, receives IDs, uses those IDs when posting to collector. |
+| Module boundaries | Cross-module access via HTTP API, not shared repositories | Enforces clean ownership. Replay engine will fetch captured inputs via `GET /api/captured-inputs`, not by importing `CapturedInputRepository`. |
+| Value classes | `OrganizationId`, `ServiceId` as `@JvmInline value class` | UUID validated at construction, type-safe at compile time, zero runtime overhead. |
+| InputType enum | HTTP + UNKNOWN only | YAGNI: message queue capture deferred until replay engine needs it. Enum can extend without breaking changes. |
+| CapturedInput fields | method, url, responseStatus non-nullable | HTTP-only for now; nullable fields were premature abstraction. |
+| Collector config format | `application.yaml` (not HOCON) | Ktor 3 requires YAML config parser; HOCON is legacy Ktor 2. |
+| Test base hierarchy | `DatabaseTestBase` → `PlatformDatabaseTestBase` / `CollectorDatabaseTestBase` | Each module's test base cleans only its own tables. |
+| Replay safety | Read-only by default, full with reset hook | Avoids DB mutation between sequential baseline/candidate runs. |
+| Run model | Sequential (baseline then candidate) | Simpler than parallel — one set of staging infra. |
+| Statistical tests | Mann-Whitney U (latency), linear regression (memory) | Non-parametric; handles skewed latency distributions. Detects growth trends. |
+| Traffic capture model | Push (agent → platform via Envoy) not pull | Only requires outbound network access. Platform never reaches into customer clusters. |
+| Agent language | Kotlin | Same build toolchain, CI, team knowledge. Swappable — agent communicates via HTTP only. |
+| Agent config | Static env vars (URLs, auth) + dynamic polling | Mutable config polled from platform avoids redeploying agent for config changes. |
+| Agent ↔ platform contract | Separate DTOs, API contract only, no shared compile-time types | Agent ships as container, versions independently. `ignoreUnknownKeys = true` enables additive API evolution. |
+| Kubeshark transport | WebSocket `/api/wsFull` + KFL server-side filtering | v53+ removed REST endpoint. KFL pushes filtering to Kubeshark, reducing agent CPU. `TrafficTransformer` keeps client-side checks as reconnect safety net. |
+| Response body encoding | Kubeshark base64-encodes `response.content.text`; agent decodes | Binary-safe for non-UTF-8 payloads. Request bodies at `request.postData.text` are NOT encoded. |
+| Agent session model | Persistent WebSocket + bounded channel (1000) | Persistent session avoids replaying ~4-10s of Kubeshark history on every reconnect. Bounded channel provides backpressure without OOM risk. |
+| Agent reconnect dedup | `lastSeenTimestamp` with 5s lookback | Covers in-session out-of-order jitter without dropping live entries. Dupes per reconnect are acceptable vs complexity of ID-based LRU. |
+| Config propagation | `MutableStateFlow<DynamicConfig>` | `KubesharkClient` observes via `configWatcherJob` and triggers reconnect on `targetServices` changes. Decouples config propagation from imperative calls. |
+| KubernetesAdapter lifecycle | Implements `Closeable` | Connection pool released when adapter goes out of scope. Usable with Kotlin `use`. |
 
 ---
 
@@ -750,15 +614,16 @@ Adapters normalize data from different sources into the unified model.
 ### Module Assignment
 
 Before implementing a feature, decide which module owns it:
-- **`app`**: Organizations, Services, topology/discovery, agent config endpoint
+- **`platform`**: Organizations, Services, topology/discovery, agent config endpoint, JWKS, token generation
 - **`collector`**: CapturedInputs, traffic ingestion (POST endpoint for agent)
 - **`agent`**: Kubeshark polling, K8s service discovery, traffic capture and forwarding (standalone process, no platform dependencies)
+- **`e2e-tests`**: Full-stack integration tests (Envoy + platform + collector + DB)
 - **Future replay module**: ReplayRuns, ReplayResponses, ReplayEngine
 
 ### Implementation Order (per module)
 
 1. Data model in the owning module's `models/` package
-2. Database migration in `shared/src/main/resources/db/migration/` (V-numbered, sequential)
+2. Database migration in `shared/src/main/resources/db/migration/` (V-numbered, sequential, currently at V0006)
 3. Exposed table definition in the owning module's `database/` package
 4. Repository in the owning module's `database/` package
 5. API endpoint in the owning module's `api/Routes.kt`
@@ -766,11 +631,9 @@ Before implementing a feature, decide which module owns it:
 
 ### Cross-Module Access
 
-Cross-module data access uses HTTP REST calls, not direct repository imports.
+Cross-module data access uses HTTP REST calls, not direct repository imports. There are no DB-level foreign keys between modules (V0006 removed the last one).
 
-Example: collector tests need org/service fixtures. They call `AppApiTestHelper`, which starts a `testApplication` with the app module's routing and issues `POST /api/organizations` and `POST /api/services`. The collector's `build.gradle.kts` declares `testImplementation(project(":app"))` only for this purpose.
-
-This pattern will extend to the replay engine: it fetches captured inputs via `GET /api/captured-inputs` from the collector, not by importing `CapturedInputRepository` directly.
+The replay engine will fetch captured inputs via `GET /api/captured-inputs` from the collector, not by importing `CapturedInputRepository` directly.
 
 ### Shared Infrastructure
 

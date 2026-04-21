@@ -83,9 +83,9 @@ abstract class PlatformStackTestBase {
             val jdbcUrl = "jdbc:postgresql://db:5432/platform_test"
 
             app =
-                GenericContainer("validation-app:test")
+                GenericContainer("validation-platform:test")
                     .withNetwork(network)
-                    .withNetworkAliases("app")
+                    .withNetworkAliases("platform")
                     .withExposedPorts(8080)
                     .withEnv("DATABASE_URL", jdbcUrl)
                     .withEnv("DATABASE_USER", "test")

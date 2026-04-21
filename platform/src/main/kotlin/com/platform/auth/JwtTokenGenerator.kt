@@ -16,7 +16,7 @@ import java.util.Date
  * CLI tool for generating signed JWTs for agent authentication.
  *
  * Usage:
- *   ./gradlew :app:generateToken --args="--org org-123 --cluster prod"
+ *   ./gradlew :platform:generateToken --args="--org org-123 --cluster prod"
  *
  * Reads the RSA private key from JWT_PRIVATE_KEY env var (pipe-delimited PEM).
  * Prints the signed JWT to stdout.

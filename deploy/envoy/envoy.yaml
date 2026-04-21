@@ -1,14 +1,14 @@
 # Envoy reverse proxy configuration for the validation platform.
 #
 # Responsibilities:
-#   - JWT validation (RS256) via remote JWKS from the app's /.well-known/jwks.json
+#   - JWT validation (RS256) via remote JWKS from the platform's /.well-known/jwks.json
 #   - Extracts organizationId, cluster, and role claims from the JWT
 #   - Forwards claims as X-Organization-Id, X-Cluster, X-Role headers to backends
-#   - Routes /api/captured-inputs/* to the collector, everything else under /api/* to the app
+#   - Routes /api/captured-inputs/* to the collector, everything else under /api/* to the platform
 #   - Health endpoint returns 200 directly (no upstream, no auth)
 #
-# No secrets in this file. Envoy fetches the RSA public key from the app.
-# The app reads the RSA private key from its own environment.
+# No secrets in this file. Envoy fetches the RSA public key from the platform service.
+# The platform service reads the RSA private key from its own environment.
 #
 # Usage:
 #   docker-compose: volume-mounted from deploy/envoy/envoy.yaml
@@ -46,11 +46,11 @@ static_resources:
                                 key: content-type
                                 value: text/plain
 
-                        # JWKS endpoint — pass through to app, no auth
+                        # JWKS endpoint — pass through to platform, no auth
                         - match:
                             prefix: "/.well-known/"
                           route:
-                            cluster: app
+                            cluster: platform
 
                         # Collector routes
                         - match:
@@ -58,11 +58,11 @@ static_resources:
                           route:
                             cluster: collector
 
-                        # App routes (everything else under /api/)
+                        # Platform routes (everything else under /api/)
                         - match:
                             prefix: "/api/"
                           route:
-                            cluster: app
+                            cluster: platform
 
                         # Root
                         - match:
@@ -79,12 +79,12 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
                       providers:
                         platform_jwt:
-                          # Fetch RSA public key from the app's JWKS endpoint.
+                          # Fetch RSA public key from the platform's JWKS endpoint.
                           # Same pattern as Google (googleapis.com/oauth2/v3/certs).
                           remote_jwks:
                             http_uri:
-                              uri: http://app:8080/.well-known/jwks.json
-                              cluster: app
+                              uri: http://platform:8080/.well-known/jwks.json
+                              cluster: platform
                               timeout: 5s
                             cache_duration: 300s
                           from_headers:
@@ -117,18 +117,18 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
-    - name: app
+    - name: platform
       connect_timeout: 5s
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
       load_assignment:
-        cluster_name: app
+        cluster_name: platform
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
                     socket_address:
-                      address: app
+                      address: platform
                       port_value: 8080
       health_checks:
         - timeout: 2s

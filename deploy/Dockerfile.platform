@@ -1,0 +1,14 @@
+# Build stage
+FROM gradle:8.11-jdk21 AS build
+WORKDIR /app
+COPY --chown=gradle:gradle . .
+RUN gradle :platform:buildFatJar --no-daemon
+
+# Run stage
+FROM eclipse-temurin:21-jre-alpine
+RUN addgroup -S platform && adduser -S platform -G platform
+WORKDIR /app
+COPY --from=build /app/platform/build/libs/validation-platform.jar platform.jar
+USER platform
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "platform.jar"]
