@@ -49,6 +49,7 @@ jobs:
         if: always()
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
+          comment_mode: off
           check_name: Unit Test Results
           files: |
             shared/build/test-results/test/TEST-*.xml
@@ -78,5 +79,6 @@ jobs:
         if: always()
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
+          comment_mode: off
           check_name: E2E Test Results
           files: e2e-tests/build/test-results/test/TEST-*.xml
