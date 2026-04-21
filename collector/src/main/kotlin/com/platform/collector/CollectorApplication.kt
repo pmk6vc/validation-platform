@@ -29,7 +29,6 @@ fun Application.module(initDatabase: Boolean = true) {
         exception<ExposedSQLException> { call, cause ->
             when (cause.sqlState) {
                 "23505" -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Resource already exists"))
-                "23503" -> call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Referenced resource not found"))
                 else -> throw cause
             }
         }

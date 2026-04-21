@@ -1,6 +1,5 @@
 package com.platform.collector.api
 
-import com.platform.collector.database.AppApiTestHelper
 import com.platform.collector.database.CapturedInputRepository
 import com.platform.collector.database.CollectorDatabaseTestBase
 import com.platform.collector.models.BatchCreateCapturedInputRequest
@@ -26,9 +25,7 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
@@ -39,10 +36,7 @@ import kotlin.test.assertTrue
 
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private val lenientJson = Json { ignoreUnknownKeys = true }
-
-    // Keep as String because lateinit is not allowed on inline (value) class types.
-
-    private lateinit var testServiceId: String
+    private val testServiceId: ServiceId = ServiceId(UUID.randomUUID().toString())
 
     private fun ApplicationTestBuilder.createJsonClient(): HttpClient =
         createClient {
@@ -51,21 +45,9 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             }
         }
 
-    @BeforeEach
-    fun setupServiceFixture() {
-        runBlocking {
-            val (_, service) =
-                AppApiTestHelper.createOrganizationAndService(
-                    orgName = "Test Organization",
-                    serviceName = "order-service",
-                )
-            testServiceId = service.id
-        }
-    }
-
     private fun createTestInput(
         id: String = UUID.randomUUID().toString(),
-        serviceId: String = testServiceId,
+        serviceId: ServiceId = testServiceId,
         inputType: InputType = InputType.HTTP,
         method: String = "GET",
         url: String = "/api/orders",
@@ -73,7 +55,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         responseBody: String? = """{"orders":[]}""",
     ) = CapturedInput(
         id = CapturedInputId(id),
-        serviceId = ServiceId(serviceId),
+        serviceId = serviceId,
         inputType = inputType,
         method = method,
         url = url,
@@ -126,20 +108,14 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         testApplication {
             application { module(initDatabase = false) }
 
-            val (_, otherService) =
-                runBlocking {
-                    AppApiTestHelper.createOrganizationAndService(
-                        orgName = "Other Org",
-                        serviceName = "other-service",
-                    )
-                }
+            val otherServiceId = ServiceId(UUID.randomUUID().toString())
 
             val input1 = createTestInput(serviceId = testServiceId, url = "/api/mine")
-            val input2 = createTestInput(serviceId = otherService.id, url = "/api/other")
+            val input2 = createTestInput(serviceId = otherServiceId, url = "/api/other")
             CapturedInputRepository.create(input1)
             CapturedInputRepository.create(input2)
 
-            val response = client.get("/api/captured-inputs?serviceId=$testServiceId")
+            val response = client.get("/api/captured-inputs?serviceId=${testServiceId.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -339,7 +315,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
             repeat(3) { CapturedInputRepository.create(createTestInput()) }
 
-            val response = client.delete("/api/captured-inputs?serviceId=$testServiceId")
+            val response = client.delete("/api/captured-inputs?serviceId=${testServiceId.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
@@ -369,14 +345,14 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     private fun createTestBatchRequest(
-        serviceId: String = testServiceId,
+        serviceId: ServiceId = testServiceId,
         count: Int = 1,
     ): BatchCreateCapturedInputRequest =
         BatchCreateCapturedInputRequest(
             items =
                 (1..count).map { i ->
                     CreateCapturedInputRequest(
-                        serviceId = ServiceId(serviceId),
+                        serviceId = serviceId,
                         inputType = InputType.HTTP,
                         method = "GET",
                         url = "/api/orders/$i",
@@ -403,7 +379,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val result = lenientJson.decodeFromString<BatchCreateCapturedInputResponse>(response.bodyAsText())
             assertEquals(3, result.created)
 
-            val listResponse = client.get("/api/captured-inputs?serviceId=$testServiceId")
+            val listResponse = client.get("/api/captured-inputs?serviceId=${testServiceId.value}")
             assertEquals(HttpStatusCode.OK, listResponse.status)
             val page =
                 lenientJson.decodeFromString(
@@ -429,19 +405,19 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
-    fun `POST captured-inputs with invalid serviceId should return 400`() =
+    fun `POST captured-inputs with unknown serviceId should succeed`() =
         testApplication {
             application { module(initDatabase = false) }
             val jsonClient = createJsonClient()
 
-            val nonExistentServiceId = UUID.randomUUID().toString()
+            val unknownServiceId = ServiceId(UUID.randomUUID().toString())
             val response =
                 jsonClient.post("/api/captured-inputs") {
                     contentType(ContentType.Application.Json)
-                    setBody(createTestBatchRequest(serviceId = nonExistentServiceId))
+                    setBody(createTestBatchRequest(serviceId = unknownServiceId))
                 }
 
-            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertEquals(HttpStatusCode.Created, response.status)
         }
 
     @Test
@@ -467,7 +443,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
                 client.post("/api/captured-inputs") {
                     contentType(ContentType.Application.Json)
                     // missing method, url, responseStatus, capturedAt
-                    setBody("""{"items":[{"serviceId":"$testServiceId"}]}""")
+                    setBody("""{"items":[{"serviceId":"${testServiceId.value}"}]}""")
                 }
 
             assertEquals(HttpStatusCode.BadRequest, response.status)

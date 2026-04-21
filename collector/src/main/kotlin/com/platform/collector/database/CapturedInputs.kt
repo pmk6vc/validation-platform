@@ -9,8 +9,9 @@ import org.jetbrains.exposed.sql.json.jsonb
 object CapturedInputs : Table("captured_inputs") {
     val id = uuid("id")
 
-    // FK enforced in SQL migration, not in Exposed — Services table is owned by the app module.
-    // Using .references() here would require importing app's table definition, breaking module boundaries.
+    // No FK to services table — collector and app modules are fully decoupled at the DB level.
+    // Referential integrity is enforced at the application layer (agent registers services
+    // with the app, receives IDs, and uses those IDs when posting to the collector).
     val serviceId = uuid("service_id")
     val inputType = enumerationByName<InputType>("input_type", 50)
     val method = varchar("method", 20)

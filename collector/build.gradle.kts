@@ -34,8 +34,7 @@ dependencies {
     // Logging
     implementation(libs.logback)
 
-    // Testing — app dependency for fixture setup via POST API
-    testImplementation(project(":app"))
+    // Testing
     testImplementation(testFixtures(project(":shared")))
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.bundles.ktor.client)

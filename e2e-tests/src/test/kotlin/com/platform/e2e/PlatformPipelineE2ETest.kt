@@ -195,7 +195,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
 
     @Test
     @Order(30)
-    fun `collector batch ingest rejects invalid serviceId`() =
+    fun `collector batch ingest accepts unknown serviceId`() =
         runBlocking {
             val batch =
                 BatchCreateCapturedInputRequest(
@@ -219,9 +219,9 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                     setBody(batch)
                 }
             assertEquals(
-                HttpStatusCode.BadRequest,
+                HttpStatusCode.Created,
                 response.status,
-                "FK violation on non-existent serviceId should return 400",
+                "No FK constraint — unknown serviceId should be accepted",
             )
         }
 
