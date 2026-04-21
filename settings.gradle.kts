@@ -2,11 +2,11 @@ rootProject.name = "validation-platform"
 
 // Core modules
 include("shared")
-include("app")
+include("platform")
 include("collector")
 include("agent")
 
-// Cross-module integration tests (Envoy + app + collector)
+// Cross-module integration tests (Envoy + platform + collector)
 include("e2e-tests")
 
 // Test services - standalone microservices for k3s integration testing

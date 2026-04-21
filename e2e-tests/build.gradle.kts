@@ -34,7 +34,7 @@ dependencies {
     testImplementation(testFixtures(project(":shared")))
 
     // Platform modules (for request/response DTOs — compile-time type safety)
-    testImplementation(project(":app"))
+    testImplementation(project(":platform"))
     testImplementation(project(":collector"))
 
     // Testing
@@ -44,11 +44,11 @@ dependencies {
 }
 
 // Build Docker images before running e2e tests
-tasks.register<Exec>("buildAppImage") {
+tasks.register<Exec>("buildPlatformImage") {
     group = "docker"
-    description = "Build the app Docker image for e2e tests"
+    description = "Build the platform Docker image for e2e tests"
     workingDir = rootProject.projectDir
-    commandLine("docker", "build", "-t", "validation-app:test", "-f", "deploy/Dockerfile.app", ".")
+    commandLine("docker", "build", "-t", "validation-platform:test", "-f", "deploy/Dockerfile.platform", ".")
 }
 
 tasks.register<Exec>("buildCollectorImage") {
@@ -62,7 +62,7 @@ tasks.test {
     useJUnitPlatform()
     workingDir = rootProject.projectDir
 
-    dependsOn("buildAppImage", "buildCollectorImage")
+    dependsOn("buildPlatformImage", "buildCollectorImage")
 
     // Build test service images for k3s workload tests
     dependsOn(":test-services:api-gateway:jibDockerBuild")

@@ -16,11 +16,11 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
+  platform:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile.app
-    container_name: platform-app
+      dockerfile: deploy/Dockerfile.platform
+    container_name: platform-api
     depends_on:
       db:
         condition: service_healthy
@@ -65,7 +65,7 @@ services:
     image: envoyproxy/envoy:v1.31-latest
     container_name: platform-envoy
     depends_on:
-      app:
+      platform:
         condition: service_healthy
       collector:
         condition: service_healthy

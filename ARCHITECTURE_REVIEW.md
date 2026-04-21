@@ -10,25 +10,11 @@
 
 | Priority | Issue | Severity | Effort | Why Now |
 |----------|-------|----------|--------|---------|
-| 1 | [CRITICAL-1](#critical-1-api-key-hardcoded-in-kubernetes-manifest) | Critical | Small | Checked-in plaintext secret + no server-side auth validation. |
-| 2 | [ARCH-1](#arch-1-databasefactory-has-no-connection-pool) | Architectural | Medium | No connection pool, validation, or leak detection in production. |
-| 3 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
-| 4 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 5 | [ARCH-3](#arch-3-cross-module-fk-coupling-on-service_id) | Architectural | Small | Error message is generic; FK blocks future DB separation. |
-| 6 | [QUALITY-4](#quality-4-collectordatabasetestbase-incomplete-table-cleanup) | Quality | Trivial | Test isolation gap; fixtures accumulate across test methods. |
-| 7 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 8 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
-
----
-
-## Critical Issues
-
-### CRITICAL-1: API Key Hardcoded in Kubernetes Manifest
-
-- **Location**: `k8s/agent/agent.yaml`, line 56
-- **Issue**: `API_KEY: "test-api-key"` is a literal string in a checked-in manifest. No server-side auth middleware validates this token anyway.
-- **Impact**: Any client can write arbitrary captured traffic. Multi-tenant data integrity risk.
-- **Fix**: Use a Kubernetes `Secret` with `secretKeyRef`. Add bearer token validation middleware to collector routes.
+| 1 | [ARCH-1](#arch-1-databasefactory-has-no-connection-pool) | Architectural | Medium | No connection pool, validation, or leak detection in production. |
+| 2 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
+| 3 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
+| 4 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 5 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
@@ -48,13 +34,6 @@
 - **Impact**: Every route test requires TestContainers + Docker. Pattern should not spread to new modules.
 - **Fix**: Convert to classes, inject via Ktor `Application` extension function.
 
-### ARCH-3: Cross-Module FK Coupling on `service_id`
-
-- **Location**: `collector/.../api/Routes.kt`, lines 31–55; migration V0004
-- **Issue**: `captured_inputs.service_id` has an FK to `services.id` (app module's table). FK violations surface as generic `"Referenced resource not found"`. The coupling prevents separating module databases.
-- **Impact**: Error messages are unhelpful. Database-level coupling blocks future service separation.
-- **Fix**: Improve error message to name the invalid field. Document the FK as intentional coupling that must be removed before DB separation.
-
 ---
 
 ## Code Quality Issues
@@ -64,12 +43,6 @@
 - **Location**: `agent/.../AgentConfig.kt`; `agent/.../ConfigClient.kt`, line 40
 - **Issue**: No validation on deserialized `DynamicConfig`. `samplingRate = -0.5`, `batchSize = 0`, or `captureInterval = 0ms` cause severe issues (tight-spin CPU loop, divide-by-zero, etc.).
 - **Fix**: Add `validate()` method, return null on invalid config.
-
-### QUALITY-4: `CollectorDatabaseTestBase` Incomplete Table Cleanup
-
-- **Location**: `collector/.../CollectorDatabaseTestBase.kt`
-- **Issue**: `cleanTables()` only deletes `CapturedInputs`, but `AppApiTestHelper` inserts orgs and services in `@BeforeEach`. Fixtures accumulate.
-- **Fix**: Clean `CapturedInputs`, then `Services`, then `Organizations` (FK order).
 
 ### QUALITY-6: `ignoreUnknownKeys` on Server-Side JSON
 
@@ -108,7 +81,7 @@
 
 10. **`CapturePipelineIntegrationTest` tests real transport, not just mocks.** Real TCP WebSocket to an embedded Ktor server, mock HTTP for the collector. Good balance of real-transport and mock coverage.
 
-11. **`CapturedInputs` table correctly avoids cross-module FK in Exposed while preserving it in SQL.** The comment explains why `.references()` is omitted (module boundary). SQL-level FK preserved in migration for data integrity. Principled, documented tradeoff.
+11. **`CapturedInputs` table has no cross-module FK coupling.** The FK from `captured_inputs.service_id` to `services.id` was removed (V0006 migration), fully decoupling collector from app at the database level. Modules communicate via REST APIs only.
 
 12. **JaCoCo aggregated coverage at root project level.** Spans all modules, wired to run after each module's own report. Right level for cross-cutting coverage tracking.
 
