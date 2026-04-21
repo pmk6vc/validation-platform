@@ -1,0 +1,8 @@
+# Validation namespace.
+# Idempotent — agent.yaml also creates this namespace. Applying both is safe.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: validation
+  labels:
+    app: validation

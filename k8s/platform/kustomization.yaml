@@ -1,0 +1,33 @@
+# Kustomize configuration for the validation platform.
+#
+# Apply with:
+#   kubectl apply -k k8s/platform/
+#
+# Resources are listed in dependency order:
+#   1. namespace   — must exist before anything else
+#   2. secret      — credentials read by platform, collector, and postgres
+#   3. postgres    — database; platform runs Flyway migrations on startup
+#   4. platform    — API server; runs migrations, serves JWKS for Envoy
+#   5. collector   — traffic ingest server; depends on same postgres instance
+#   6. envoy       — reverse proxy; fetches JWKS from platform on first request
+#
+# Prerequisites:
+#   Create the secret before applying (see secret.yaml for required keys):
+#     JWT_KEY=$(grep JWT_PRIVATE_KEY .env | cut -d'=' -f2- | tr '|' '\n')
+#     kubectl create namespace validation
+#     kubectl create secret generic platform-api-key -n validation \
+#       --from-literal=jwt-private-key="$JWT_KEY" \
+#       --from-literal=jwt-token="change-me-in-production" \
+#       --from-literal=db-password="postgres"
+#
+#   Then apply:
+#     kubectl apply -k k8s/platform/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - platform.yaml
+  - collector.yaml
+  - envoy.yaml

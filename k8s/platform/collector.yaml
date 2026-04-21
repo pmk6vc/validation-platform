@@ -1,0 +1,79 @@
+# Collector server deployment.
+#
+# Owns: CapturedInputs table and repository; batch ingest endpoint for the agent.
+# The agent pushes captured HTTP traffic to this server via Envoy (port 8082).
+#
+# imagePullPolicy: Never — assumes the image was loaded into the local cluster
+# (e.g. `minikube image load validation-collector:latest`).
+# For registry-backed clusters, remove imagePullPolicy and set the full image reference.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector
+  namespace: validation
+  labels:
+    app: collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+      containers:
+        - name: collector
+          image: validation-collector:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          env:
+            - name: DATABASE_URL
+              value: "jdbc:postgresql://postgres:5432/platform"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-db-config
+                  key: POSTGRES_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-key
+                  key: db-password
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collector
+  namespace: validation
+  labels:
+    app: collector
+spec:
+  selector:
+    app: collector
+  ports:
+    - port: 8081
+      targetPort: 8081
