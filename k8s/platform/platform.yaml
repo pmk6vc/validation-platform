@@ -1,0 +1,85 @@
+# Platform server deployment.
+#
+# Owns: Organizations, Services, JWKS endpoint, JWT token generation.
+# Runs Flyway migrations on startup — postgres must be ready first.
+# Envoy fetches the RSA public key from this server's /.well-known/jwks.json.
+#
+# imagePullPolicy: Never — assumes the image was loaded into the local cluster
+# (e.g. `minikube image load validation-platform:latest`).
+# For registry-backed clusters, remove imagePullPolicy and set the full image reference.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform
+  namespace: validation
+  labels:
+    app: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform
+  template:
+    metadata:
+      labels:
+        app: platform
+    spec:
+      containers:
+        - name: platform
+          image: validation-platform:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              value: "jdbc:postgresql://postgres:5432/platform"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-db-config
+                  key: POSTGRES_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-key
+                  key: db-password
+            - name: JWT_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-key
+                  key: jwt-private-key
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform
+  namespace: validation
+  labels:
+    app: platform
+spec:
+  selector:
+    app: platform
+  ports:
+    - port: 8080
+      targetPort: 8080
