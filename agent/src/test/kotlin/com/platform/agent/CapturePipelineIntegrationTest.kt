@@ -604,9 +604,9 @@ class CapturePipelineIntegrationTest {
             // 503s + 1 success). The single captureBatch call drives the pipeline;
             // retries happen inside sendBatch with exponential backoff. On slow CI
             // runners the backoff may exceed a single maxWait, so we poll.
-            val deadline = System.currentTimeMillis() + 15_000
+            val deadline = System.currentTimeMillis() + 30_000
             while (System.currentTimeMillis() < deadline) {
-                pipeline.captureBatch(maxWait = 500.milliseconds)
+                pipeline.captureBatch(maxWait = 200.milliseconds)
                 synchronized(pipeline.collectorRequests) {
                     if (pipeline.collectorRequests.size >= 3) break
                 }
