@@ -1,0 +1,5 @@
+# Terraform working directories and provider cache
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
