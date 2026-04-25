@@ -1,5 +1,8 @@
 package com.platform.api
 
+import com.auth0.jwt.JWT
+import com.auth0.jwt.algorithms.Algorithm
+import com.platform.auth.installJwtAuth
 import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
@@ -8,19 +11,36 @@ import com.platform.models.OrganizationId
 import com.platform.models.Service
 import com.platform.models.ServiceId
 import com.platform.module
+import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
-import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPrivateKey
+import java.security.interfaces.RSAPublicKey
 import java.time.Instant
+import java.util.Base64
+import java.util.Date
 import kotlin.test.assertEquals
 
 class AgentConfigRoutesTest : AppDatabaseTestBase() {
     private val json = Json { ignoreUnknownKeys = true }
+
+    private val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+    private val privateKey = keyPair.private as RSAPrivateKey
+    private val publicKey = keyPair.public as RSAPublicKey
+
+    /** PEM-formatted private key, used by [installJwtAuth] inside the test application. */
+    private val privateKeyPem: String by lazy {
+        val encoded = Base64.getEncoder().encodeToString(privateKey.encoded)
+        "-----BEGIN PRIVATE KEY-----\n" +
+            encoded.chunked(64).joinToString("\n") +
+            "\n-----END PRIVATE KEY-----"
+    }
 
     private lateinit var org: Organization
 
@@ -37,6 +57,19 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
                 )
         }
     }
+
+    private fun generateJwt(
+        organizationId: String = org.id.value,
+        cluster: String = "prod",
+        expiresAt: Date = Date.from(Instant.now().plusSeconds(3600)),
+    ): String =
+        JWT
+            .create()
+            .withClaim("organizationId", organizationId)
+            .withClaim("cluster", cluster)
+            .withIssuedAt(Date())
+            .withExpiresAt(expiresAt)
+            .sign(Algorithm.RSA256(publicKey, privateKey))
 
     private suspend fun createService(
         name: String,
@@ -59,9 +92,9 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
     }
 
     @Test
-    fun `GET agent config returns 401 without identity headers`() =
+    fun `GET agent config returns 401 without authorization header`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = privateKeyPem) }
 
             val response = client.get("/api/agent/config")
 
@@ -69,31 +102,29 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config returns 401 with invalid UUID in org header`() =
+    fun `GET agent config returns 401 with invalid token`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = privateKeyPem) }
 
             val response =
                 client.get("/api/agent/config") {
-                    header("X-Organization-Id", "not-a-uuid")
-                    header("X-Cluster", "prod")
+                    bearerAuth("not-a-valid-jwt")
                 }
 
             assertEquals(HttpStatusCode.Unauthorized, response.status)
         }
 
     @Test
-    fun `GET agent config returns scoped services with identity headers`() =
+    fun `GET agent config returns scoped services with valid JWT`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = privateKeyPem) }
 
             val svc1 = createService("order-service")
             val svc2 = createService("api-gateway")
 
             val response =
                 client.get("/api/agent/config") {
-                    header("X-Organization-Id", org.id.value)
-                    header("X-Cluster", "prod")
+                    bearerAuth(generateJwt())
                 }
 
             assertEquals(HttpStatusCode.OK, response.status)
@@ -104,9 +135,9 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config filters by organizationId from identity`() =
+    fun `GET agent config filters by organizationId from JWT`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = privateKeyPem) }
 
             val otherOrg =
                 OrganizationRepository.create(
@@ -121,8 +152,7 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
 
             val response =
                 client.get("/api/agent/config") {
-                    header("X-Organization-Id", org.id.value)
-                    header("X-Cluster", "prod")
+                    bearerAuth(generateJwt())
                 }
 
             assertEquals(HttpStatusCode.OK, response.status)
@@ -132,17 +162,16 @@ class AgentConfigRoutesTest : AppDatabaseTestBase() {
         }
 
     @Test
-    fun `GET agent config filters by cluster from identity`() =
+    fun `GET agent config filters by cluster from JWT`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = privateKeyPem) }
 
             createService("prod-service", cluster = "prod")
             createService("staging-service", cluster = "staging")
 
             val response =
                 client.get("/api/agent/config") {
-                    header("X-Organization-Id", org.id.value)
-                    header("X-Cluster", "prod")
+                    bearerAuth(generateJwt(cluster = "prod"))
                 }
 
             assertEquals(HttpStatusCode.OK, response.status)

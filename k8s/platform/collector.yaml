@@ -1,7 +1,7 @@
 # Collector server deployment.
 #
 # Owns: CapturedInputs table and repository; batch ingest endpoint for the agent.
-# The agent pushes captured HTTP traffic to this server via Envoy (port 8082).
+# The agent pushes captured HTTP traffic directly to this server (port 8081).
 #
 # imagePullPolicy: Never — assumes the image was loaded into the local cluster
 # (e.g. `minikube image load validation-collector:latest`).
@@ -42,6 +42,11 @@ spec:
                 secretKeyRef:
                   name: platform-api-key
                   key: db-password
+            - name: JWT_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-key
+                  key: jwt-private-key
           readinessProbe:
             httpGet:
               path: /health

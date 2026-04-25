@@ -28,11 +28,10 @@ import kotlin.test.assertTrue
 import com.platform.collector.models.ServiceId as CollectorServiceId
 
 /**
- * E2E tests for the full agent → Envoy → platform pipeline.
+ * E2E tests for the full agent → platform pipeline.
  *
- * Tests the data path that real agents use: POST captured traffic through
- * Envoy to the collector, poll config through Envoy from the app, and
- * verify cross-org data isolation.
+ * Tests the data path that real agents use: POST captured traffic to the collector,
+ * poll config from the platform, and verify cross-org data isolation.
  *
  * JWTs are generated with real org UUIDs after creating orgs, matching
  * how production works (platform issues JWT with real org ID).
@@ -57,7 +56,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     fun `setup - create org-a with services`() =
         runBlocking {
             val orgResponse =
-                httpClient.post("$envoyUrl/api/organizations") {
+                httpClient.post("$platformUrl/api/organizations") {
                     bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Organization A"))
@@ -68,7 +67,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
             orgAToken = generateJwt(organizationId = org.id.value, cluster = "prod-a")
 
             val svcResponse =
-                httpClient.post("$envoyUrl/api/services") {
+                httpClient.post("$platformUrl/api/services") {
                     bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(
@@ -88,7 +87,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     fun `setup - create org-b with services`() =
         runBlocking {
             val orgResponse =
-                httpClient.post("$envoyUrl/api/organizations") {
+                httpClient.post("$platformUrl/api/organizations") {
                     bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Organization B"))
@@ -99,7 +98,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
             orgBToken = generateJwt(organizationId = org.id.value, cluster = "prod-b")
 
             val svcResponse =
-                httpClient.post("$envoyUrl/api/services") {
+                httpClient.post("$platformUrl/api/services") {
                     bearerAuth(adminToken)
                     contentType(ContentType.Application.Json)
                     setBody(
@@ -114,14 +113,14 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
             assertEquals(HttpStatusCode.Created, svcResponse.status)
         }
 
-    // --- Agent → Envoy → Collector pipeline ---
+    // --- Agent → Collector pipeline ---
 
     @Test
     @Order(10)
-    fun `agent can POST captured traffic through Envoy to collector`() =
+    fun `agent can POST captured traffic to collector`() =
         runBlocking {
             val configResponse =
-                httpClient.get("$envoyUrl/api/agent/config") {
+                httpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, configResponse.status)
@@ -155,7 +154,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 )
 
             val batchResponse =
-                httpClient.post("$envoyUrl/api/captured-inputs") {
+                httpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(batch)
@@ -163,7 +162,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
             assertEquals(HttpStatusCode.Created, batchResponse.status)
 
             val listResponse =
-                httpClient.get("$envoyUrl/api/captured-inputs?serviceId=$serviceId") {
+                httpClient.get("$collectorUrl/api/captured-inputs?serviceId=$serviceId") {
                     bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, listResponse.status)
@@ -179,7 +178,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     fun `agent config is scoped by JWT claims - only sees own org and cluster`() =
         runBlocking {
             val response =
-                httpClient.get("$envoyUrl/api/agent/config") {
+                httpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -213,7 +212,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 )
 
             val response =
-                httpClient.post("$envoyUrl/api/captured-inputs") {
+                httpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(batch)
@@ -227,10 +226,10 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
 
     @Test
     @Order(31)
-    fun `large batch ingest succeeds through Envoy`() =
+    fun `large batch ingest succeeds`() =
         runBlocking {
             val configResponse =
-                httpClient.get("$envoyUrl/api/agent/config") {
+                httpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             val config = json.decodeFromString<AgentConfigResponse>(configResponse.bodyAsText())
@@ -252,7 +251,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 )
 
             val response =
-                httpClient.post("$envoyUrl/api/captured-inputs") {
+                httpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(batch)

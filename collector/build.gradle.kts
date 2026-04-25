@@ -26,6 +26,8 @@ dependencies {
 
     // Ktor server
     implementation(libs.bundles.ktor.server)
+    implementation(libs.ktor.server.auth)
+    implementation(libs.ktor.server.auth.jwt)
 
     // Database (Exposed + PostgreSQL) - needed for collector-owned tables and repositories
     implementation(libs.bundles.exposed)
@@ -36,6 +38,7 @@ dependencies {
 
     // Testing
     testImplementation(testFixtures(project(":shared")))
+    testImplementation(libs.java.jwt)
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.bundles.ktor.client)
     testImplementation(libs.kotlin.test.junit5)

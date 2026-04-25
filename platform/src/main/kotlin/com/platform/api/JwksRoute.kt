@@ -1,16 +1,13 @@
 package com.platform.api
 
+import com.platform.auth.derivePublicKey
 import io.ktor.http.ContentType
 import io.ktor.server.application.Application
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import org.slf4j.LoggerFactory
-import java.security.KeyFactory
-import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.RSAPublicKeySpec
 import java.util.Base64
 
 private val logger = LoggerFactory.getLogger("JwksRoute")
@@ -43,28 +40,6 @@ fun Application.configureJwks(privateKeyPem: String? = System.getenv("JWT_PRIVAT
             call.respondText(jwksJson, ContentType.Application.Json)
         }
     }
-}
-
-private fun derivePublicKey(privateKeyPem: String): RSAPublicKey {
-    val keyContent =
-        privateKeyPem
-            .replace("-----BEGIN PRIVATE KEY-----", "")
-            .replace("-----END PRIVATE KEY-----", "")
-            .replace("\\s".toRegex(), "")
-
-    val keyBytes = Base64.getDecoder().decode(keyContent)
-    val keySpec = PKCS8EncodedKeySpec(keyBytes)
-    val keyFactory = KeyFactory.getInstance("RSA")
-    val privateKey = keyFactory.generatePrivate(keySpec)
-
-    // Derive public key from private key
-    val rsaPrivateKey = privateKey as RSAPrivateCrtKey
-    val publicKeySpec =
-        RSAPublicKeySpec(
-            rsaPrivateKey.modulus,
-            rsaPrivateKey.publicExponent,
-        )
-    return keyFactory.generatePublic(publicKeySpec) as RSAPublicKey
 }
 
 private fun buildJwksJson(publicKey: RSAPublicKey): String {

@@ -2,7 +2,7 @@ package com.platform
 
 import com.platform.api.configureJwks
 import com.platform.api.configureRouting
-import com.platform.api.installAuth
+import com.platform.auth.installJwtAuth
 import com.platform.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -19,7 +19,10 @@ fun main(args: Array<String>) {
         .main(args)
 }
 
-fun Application.module(initDatabase: Boolean = true) {
+fun Application.module(
+    initDatabase: Boolean = true,
+    privateKeyPem: String? = null,
+) {
     if (initDatabase) {
         DatabaseFactory.initFromEnvironment()
     }
@@ -45,7 +48,11 @@ fun Application.module(initDatabase: Boolean = true) {
         )
     }
 
-    installAuth()
-    configureJwks()
+    val resolvedKey =
+        privateKeyPem
+            ?: System.getenv("JWT_PRIVATE_KEY")
+            ?: error("JWT_PRIVATE_KEY environment variable is required")
+    installJwtAuth(resolvedKey)
+    configureJwks(resolvedKey)
     configureRouting()
 }

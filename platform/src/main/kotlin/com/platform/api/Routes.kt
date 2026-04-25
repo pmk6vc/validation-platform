@@ -80,8 +80,8 @@ fun Application.configureRouting() {
                 }
             }
 
-            // Agent config requires identity (org + cluster from Envoy-forwarded JWT claims)
-            authenticate(ENVOY_IDENTITY_AUTH) {
+            // Agent config requires JWT identity (org + cluster from JWT claims)
+            authenticate(JWT_AUTH) {
                 route("/agent") {
                     get("/config") {
                         val identity = call.principal<AgentIdentity>()!!

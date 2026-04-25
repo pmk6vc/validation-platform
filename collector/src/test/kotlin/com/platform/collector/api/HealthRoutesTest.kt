@@ -13,7 +13,7 @@ class HealthRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET health should return OK`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/health")
 

@@ -15,6 +15,12 @@ dependencies {
     // Serialization
     implementation(libs.kotlinx.serialization.json)
 
+    // JWT auth (shared across platform and collector)
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.auth)
+    implementation(libs.ktor.server.auth.jwt)
+    implementation(libs.java.jwt)
+
     // Database (Exposed + PostgreSQL)
     implementation(libs.bundles.exposed)
     implementation(libs.postgresql)
