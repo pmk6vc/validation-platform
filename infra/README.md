@@ -148,6 +148,51 @@ terraform apply \
   -var="collector_image=us-central1-docker.pkg.dev/zugzwang-381922/validation/collector:latest"
 ```
 
+## CI/CD
+
+Two GitHub Actions workflows automate Terraform validation and image deployment.
+
+### `.github/workflows/pr_main.yml` — PR checks
+
+Runs on every pull request targeting `main`. In addition to the existing lint,
+unit-test, and e2e-test jobs, a `terraform` job:
+
+1. Checks that all `.tf` files are formatted (`terraform fmt -check -recursive infra/`).
+2. Validates both stacks without touching remote state (`terraform init -backend=false && terraform validate`).
+
+This catches provider-schema errors and formatting drift before merging.
+
+### `.github/workflows/push_main.yml` — Build, push, and deploy
+
+Runs on every merge to `main`. One job:
+
+1. Authenticates to GCP via **Workload Identity Federation** (no JSON key — see below).
+2. Builds `platform` and `collector` container images from `deploy/Dockerfile.*`.
+3. Pushes both images to Artifact Registry tagged with `:latest` and `:<git-sha>`.
+4. Runs `terraform -chdir=infra/platform apply -auto-approve` with the SHA-tagged images,
+   updating the Cloud Run revisions.
+
+### One-time GitHub setup (after first `terraform apply`)
+
+After applying the platform stack, two **repo variables** (not secrets) must be
+added at `Settings → Secrets and variables → Actions → Variables`:
+
+| Variable | Value |
+|----------|-------|
+| `WIF_PROVIDER` | Output `cicd_workload_identity_provider` from `terraform output` |
+| `CICD_SA` | Output `cicd_service_account_email` from `terraform output` |
+
+To retrieve the values:
+
+```bash
+cd infra/platform
+terraform output cicd_workload_identity_provider
+terraform output cicd_service_account_email
+```
+
+No JSON key file is ever created or stored. GitHub Actions exchanges its OIDC
+token directly for a short-lived GCP access token via Workload Identity Federation.
+
 ## Directory Layout
 
 ```
@@ -164,6 +209,7 @@ infra/
     registry.tf               # Artifact Registry "validation" repo
     secrets.tf                # Secret Manager resources (no values)
     iam.tf                    # validation-platform-sa, validation-sandbox-sa
+    wif.tf                    # Workload Identity Federation pool, provider, cicd SA + IAM
     cloudrun.tf               # Cloud Run: validation-platform, validation-collector
   sandbox/
     main.tf                   # Terraform + provider config

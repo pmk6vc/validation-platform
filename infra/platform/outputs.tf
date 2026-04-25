@@ -27,3 +27,13 @@ output "sandbox_service_account_email" {
   description = "Email of the validation-sandbox-sa service account (used by GKE Workload Identity)"
   value       = google_service_account.sandbox.email
 }
+
+output "cicd_workload_identity_provider" {
+  description = "Full WIF provider name — set as GitHub repo variable WIF_PROVIDER"
+  value       = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "cicd_service_account_email" {
+  description = "Email of the validation-cicd-sa service account — set as GitHub repo variable CICD_SA"
+  value       = google_service_account.cicd.email
+}

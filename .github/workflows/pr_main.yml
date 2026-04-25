@@ -82,3 +82,27 @@ jobs:
           comment_mode: off
           check_name: E2E Test Results
           files: e2e-tests/build/test-results/test/TEST-*.xml
+
+  terraform:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive infra/
+
+      - name: Terraform validate (platform)
+        run: |
+          terraform -chdir=infra/platform init -backend=false
+          terraform -chdir=infra/platform validate
+
+      - name: Terraform validate (sandbox)
+        run: |
+          terraform -chdir=infra/sandbox init -backend=false
+          terraform -chdir=infra/sandbox validate
