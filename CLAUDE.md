@@ -44,22 +44,22 @@ This is a **validation and release platform** that helps engineering teams valid
 ### What's Working Now
 
 - **Two Ktor servers**: `platform` on port 8080 (organizations, services) and `collector` on port 8081 (captured inputs)
-- **Envoy reverse proxy** on port 8082: JWT (RS256) validation via JWKS, routes `/api/captured-inputs/*` to collector, all other `/api/*` to platform; extracts `organizationId`, `cluster`, `role` claims into forwarded headers
+- **RS256 JWT auth in-app**: both `platform` and `collector` validate JWT tokens directly via the shared `installJwtAuth()` extension; no reverse proxy in the request path
 - **PostgreSQL database** with Flyway migrations (V0001–V0006), all migrations in `shared/`
-- **Multi-tenant data model** with Organizations and Services (owned by `platform`); `OrganizationId` and `ServiceId` value classes for type safety
+- **Multi-tenant data model** with Organizations and Services (owned by `platform`); `OrganizationId` and `ServiceId` value classes for type safety (both defined in `shared/`)
 - **CapturedInput model** (owned by `collector`) — HTTP-first, non-nullable method/url/responseStatus; no DB-level FK to services (decoupled at DB layer since V0006)
 - **Collector batch ingest** — `POST /api/captured-inputs` accepts `BatchCreateCapturedInputRequest` from the agent
-- **JWT auth**: platform generates tokens via `JwtTokenGenerator` (`./gradlew :platform:generateToken`); platform serves public key at `/.well-known/jwks.json`; Envoy validates on all `/api/*` routes
+- **JWT auth**: platform generates tokens via `JwtTokenGenerator` (`./gradlew :platform:generateToken`); platform serves public key at `/.well-known/jwks.json`; both servers validate RS256 JWT from the `Authorization: Bearer` header on all `/api/*` routes
 - **Pagination and filtering** on all list endpoints (cursor-based); limit clamping tested (0, -1 → 1; >100 → 100)
-- **Docker deployment** — platform, collector, envoy, and db all start by default; health checks on all services
+- **Docker deployment** — platform, collector, and db start by default; health checks on all services
 - **Test infrastructure** with TestContainers (PostgreSQL + k3s Kubernetes)
 - **Code quality** with ktlint
 - **Adapter pattern** with ServiceAdapter interface
 - **Service discovery** via ManualSeedAdapter and KubernetesAdapter (implements `Closeable`)
 - **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES)
 - **Modular monolith** with enforced module boundaries: cross-module data access goes through REST APIs, not shared repositories; no DB-level FK between modules
-- **Validation agent** — three-loop Kotlin process deployed to customer cluster; streams traffic from Kubeshark WebSocket with server-side KFL filtering, samples, and pushes to platform via Envoy; file-based liveness probe; non-root container; API key stored in Kubernetes Secret
-- **E2E tests** — `e2e-tests/` module tests the full platform stack (Envoy + platform + collector) using TestContainers
+- **Validation agent** — three-loop Kotlin process deployed to customer cluster; streams traffic from Kubeshark WebSocket with server-side KFL filtering, samples, and pushes directly to platform (8080) and collector (8081) with a JWT bearer token; file-based liveness probe; non-root container; API key stored in Kubernetes Secret
+- **E2E tests** — `e2e-tests/` module tests the full platform stack (platform + collector) using TestContainers
 
 ### Module Ownership
 
@@ -67,46 +67,48 @@ Each module owns its tables, models, and repositories. Cross-module communicatio
 
 | Module | Owns | Port |
 |--------|------|------|
-| `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer) | — |
+| `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer), `AgentIdentity`, `installJwtAuth()`, `OrganizationId`/`ServiceId` value classes | — |
 | `platform/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server; JWKS endpoint; JWT token generator | 8080 |
 | `collector/` | CapturedInputs table; CapturedInputRepository; Ktor server | 8081 |
-| `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding to platform via Envoy | — (standalone process) |
-| `e2e-tests/` | End-to-end tests for the full platform stack (Envoy + platform + collector) | — |
+| `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding directly to platform (8080) and collector (8081) | — (standalone process) |
+| `e2e-tests/` | End-to-end tests for the full platform stack (platform + collector) | — |
 | `test-services/` | Standalone Kotlin microservices for k3s integration testing | — |
 
-### Platform Module API Endpoints (port 8080, behind Envoy at 8082)
+### Platform Module API Endpoints (port 8080)
 
 ```
 GET    /health                             # Health check (no auth)
-GET    /.well-known/jwks.json              # RSA public key for Envoy JWT validation (no auth)
-GET    /api/organizations                  # List organizations (paginated)
-POST   /api/organizations                  # Create organization
-GET    /api/organizations/{id}             # Get organization by ID
-GET    /api/services                       # List services (paginated, filterable by organizationId/cluster/namespace)
-POST   /api/services                       # Create service
-GET    /api/services/{id}                  # Get service by ID
+GET    /.well-known/jwks.json              # RSA public key (no auth)
+GET    /api/organizations                  # List organizations (paginated) — requires JWT
+POST   /api/organizations                  # Create organization — requires JWT
+GET    /api/organizations/{id}             # Get organization by ID — requires JWT
+GET    /api/services                       # List services (paginated, filterable) — requires JWT
+POST   /api/services                       # Create service — requires JWT
+GET    /api/services/{id}                  # Get service by ID — requires JWT
 ```
 
-### Collector Module API Endpoints (port 8081, behind Envoy at 8082)
+### Collector Module API Endpoints (port 8081)
 
 ```
 GET    /health                                    # Health check (no auth)
-POST   /api/captured-inputs                       # Ingest a batch of captured inputs (agent pushes here)
-GET    /api/captured-inputs                       # List captured inputs (paginated, filterable by serviceId/inputType)
-GET    /api/captured-inputs/{id}                  # Get captured input by ID
-DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs for a service
+POST   /api/captured-inputs                       # Ingest a batch of captured inputs — requires JWT
+GET    /api/captured-inputs                       # List captured inputs (paginated) — requires JWT
+GET    /api/captured-inputs/{id}                  # Get captured input by ID — requires JWT
+DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs for a service — requires JWT
 ```
 
-### Envoy Reverse Proxy (port 8082)
+### JWT Authentication
 
-`deploy/envoy/envoy.yaml` — the public entry point for all API traffic. Responsibilities:
-- JWT validation (RS256) via `remote_jwks` fetched from `app:8080/.well-known/jwks.json` (cached 5 min)
-- Extracts `organizationId`, `cluster`, `role` JWT claims → forwards as `X-Organization-Id`, `X-Cluster`, `X-Role` headers
-- Routes `/api/captured-inputs/*` → collector; all other `/api/*` → platform
-- `/health` and `/.well-known/*` bypass auth
-- No secrets in the config file; the platform reads `JWT_PRIVATE_KEY` from its own environment
+Both servers validate RS256 JWT tokens directly using `shared/src/main/kotlin/com/platform/auth/JwtAuth.kt`.
 
-**Auth on the platform side**: `platform/src/main/kotlin/com/platform/api/Auth.kt` defines `EnvoyIdentityProvider`, which reads `X-Organization-Id` and `X-Cluster` headers forwarded by Envoy and resolves them into an `AgentIdentity` principal. Routes that need the caller's identity use `call.principal<AgentIdentity>()`.
+- `installJwtAuth(privateKeyPem)` — shared Ktor extension; installs the JWT plugin, derives the RSA public key from the provided PEM, validates `organizationId` (UUID) and `cluster` claims, and populates `call.principal<AgentIdentity>()`
+- `AgentIdentity(organizationId, cluster, role?)` — the resolved principal; defined in `shared/`, available in both servers
+- Required claims: `organizationId` (UUID string), `cluster` (string)
+- Optional claims: `role` (string)
+- Both servers read `JWT_PRIVATE_KEY` from the environment (PEM-encoded RSA private key, `|` used in place of newlines in env vars)
+- `/health` and `/.well-known/*` are unauthenticated; all `/api/*` routes require a valid bearer token
+
+The platform still serves `/.well-known/jwks.json` (RSA public key in JWK format) for any external clients that need it.
 
 ### Current Data Models
 
@@ -209,7 +211,7 @@ data class BatchCreateCapturedInputResponse(val created: Int)
 # build.gradle.kts auto-detects Colima's socket.
 brew install colima docker && colima start
 
-# Start all services (platform + collector + envoy + db)
+# Start all services (platform + collector + db)
 ./gradlew dockerUp
 
 # Run application servers individually
@@ -227,11 +229,11 @@ brew install colima docker && colima start
 ```
 
 **Module structure:**
-- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
+- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer, `OrganizationId`, `ServiceId`), JWT auth library (`AgentIdentity`, `installJwtAuth()`, `derivePublicKey()`); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
 - `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; JWKS endpoint; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
-- `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to platform via Envoy; no dependency on `shared/`, `platform/`, or `collector/` (API contract only)
-- `e2e-tests/` — Integration tests for the full stack (Envoy + platform + collector + DB) using TestContainers
+- `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to platform (config) and collector (traffic) directly via JWT; no dependency on `shared/`, `platform/`, or `collector/` (API contract only)
+- `e2e-tests/` — Integration tests for the full stack (platform + collector + DB) using TestContainers
 - `test-services/` — Standalone Kotlin microservices for k3s integration testing
 
 **Note on collector config:** The collector uses `application.yaml` (not HOCON `.conf`). This is required by Ktor 3's YAML config parser.
@@ -261,17 +263,18 @@ CUSTOMER'S PRODUCTION CLUSTER
 │  notification-svc          namespace filters)   │
 │                         3. Poll Kubeshark →     │
 │                            filter + sample →    │
-│                            POST to Envoy (8082) │
-└───────────────────────────┬─────────────────────┘
-                            │ HTTPS (push, JWT auth)
-                            ▼
+│                            POST to collector    │
+└──────────────┬────────────────┬─────────────────┘
+               │ JWT (config)   │ JWT (captured inputs)
+               ▼                ▼
 PLATFORM
 ┌────────────────────────────────────────────────────────────────────┐
-│  Envoy (8082)              Platform (8080)   Collector (8081)      │
-│  JWT validation            Organizations     CapturedInputs        │
-│  Routes /api/captured-     Services          POST (agent ingest)   │
-│  inputs/* → collector      JWKS endpoint     GET/DELETE            │
-│  Other /api/* → platform   Agent config                            │
+│  Platform (8080)             Collector (8081)                      │
+│  RS256 JWT in-app            RS256 JWT in-app                      │
+│  Organizations               CapturedInputs                        │
+│  Services                    POST (agent ingest)                   │
+│  JWKS endpoint               GET/DELETE                            │
+│  Agent config                                                       │
 │                                                                    │
 │  Replay Engine (planned):                                          │
 │  1. Fetch captured inputs from collector                           │
@@ -295,7 +298,7 @@ CUSTOMER'S STAGING CLUSTER
 ```
 1. CAPTURE (production, continuous, push model)
    Kubeshark eBPF captures HTTP request/response pairs at L7
-   Validation agent polls Kubeshark, filters by registered services, samples, and pushes to collector via Envoy
+   Validation agent polls Kubeshark, filters by registered services, samples, and pushes directly to collector (8081)
 
 2. BASELINE RUN (staging, current version)
    Replay captured read traffic against current version in staging
@@ -344,7 +347,8 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 **Concurrency model:** Config is stored in a `MutableStateFlow<DynamicConfig>`. `KubesharkClient` and `TrafficTransformer` observe this flow directly. No locks, no coordination.
 
 **Static config (env vars, set at deploy time):**
-- `PLATFORM_URL` — platform Envoy endpoint (e.g., `http://envoy.validation.svc.cluster.local:8082`)
+- `PLATFORM_URL` — platform server URL (e.g., `http://platform.validation.svc.cluster.local:8080`)
+- `COLLECTOR_URL` — collector server URL (e.g., `http://collector.validation.svc.cluster.local:8081`); falls back to `PLATFORM_URL` if unset
 - `API_KEY` — JWT bearer token (stored in Kubernetes Secret `platform-api-key`, key `jwt-token`)
 - `KUBESHARK_URL` — in-cluster Kubeshark front URL (default: `http://kubeshark-front.default:80`)
 
@@ -443,8 +447,7 @@ Kafka (consume: order-events) → notification-service → webhook-stub (externa
 - **Language**: Kotlin — coroutines, data classes, strong typing
 - **Framework**: Ktor — Kotlin-native, coroutines-first, lightweight
 - **Database**: PostgreSQL with Exposed ORM + Flyway migrations
-- **Auth**: RS256 JWT — platform generates tokens, serves JWKS; Envoy validates
-- **Proxy**: Envoy — JWT validation, claim extraction, routing
+- **Auth**: RS256 JWT — platform generates tokens, serves JWKS; both app servers validate directly via shared `installJwtAuth()` library
 - **Key Libraries**: Ktor, Exposed + PostgreSQL, Fabric8 Kubernetes Client, TestContainers
 - See `build.gradle.kts` for the complete dependency list
 
@@ -524,11 +527,11 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 - [x] Collector API: POST/GET/DELETE `/api/captured-inputs` (port 8081)
 - [x] Platform module (renamed from `app`): POST/GET `/api/organizations`, `/api/services`
 - [x] `OrganizationId` and `ServiceId` value classes (UUID-validated inline value classes)
-- [x] Envoy reverse proxy (`deploy/envoy/envoy.yaml`): JWT RS256 validation via JWKS, claim forwarding, routing (port 8082)
-- [x] `AgentIdentity` auth: `EnvoyIdentityProvider` reads `X-Organization-Id` + `X-Cluster` headers from Envoy
+- [x] RS256 JWT validated in-app via shared `installJwtAuth()` library; no Envoy in the path
+- [x] `AgentIdentity` principal in `shared/`; populated directly from JWT claims (`organizationId`, `cluster`, `role`)
 - [x] JWKS endpoint (`/.well-known/jwks.json`): platform derives RSA public key from `JWT_PRIVATE_KEY` env var
 - [x] `JwtTokenGenerator`: CLI tool to generate signed JWTs (`./gradlew :platform:generateToken`)
-- [x] Agent: `KubesharkClient` (WebSocket), `CollectorClient`, `ConfigClient`, `TrafficTransformer`, `AgentConfig`, `AgentApplication`; uses `PLATFORM_URL` env var pointing at Envoy
+- [x] Agent: `KubesharkClient` (WebSocket), `CollectorClient`, `ConfigClient`, `TrafficTransformer`, `AgentConfig`, `AgentApplication`; uses `PLATFORM_URL` for config and `COLLECTOR_URL` for traffic ingestion
 - [x] Agent deployment: `API_KEY` sourced from Kubernetes Secret (`secretKeyRef: platform-api-key/jwt-token`)
 - [x] Agent 79+ unit/integration tests; e2e-tests module with Envoy + platform + collector stack tests
 - [x] KubernetesAdapter implements `Closeable`
@@ -585,7 +588,7 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 |----------|--------|-----------|
 | Validation approach | Staging-based | TLS blocks PCAP-based dependency mocking for production DBs. Staging avoids protocol-specific proxies entirely. |
 | Traffic capture | Kubeshark (eBPF) for HTTP at L7 | Zero instrumentation in production. HTTP req/res pairs with bodies. |
-| Auth model | RS256 JWT via Envoy reverse proxy | Envoy validates JWT and forwards claims as headers. Platform reads headers via `EnvoyIdentityProvider`. No JWT validation logic in app servers. |
+| Auth model | RS256 JWT validated in-app via shared library | Both `platform` and `collector` call `installJwtAuth()` from `shared/`. No reverse proxy in the request path. `AgentIdentity` principal populated directly from JWT claims. |
 | Module DB boundaries | No FK across modules (V0006 drops `captured_inputs → services` FK) | Modules are fully decoupled at DB level. Referential integrity enforced at application layer: agent registers services, receives IDs, uses those IDs when posting to collector. |
 | Module boundaries | Cross-module access via HTTP API, not shared repositories | Enforces clean ownership. Replay engine will fetch captured inputs via `GET /api/captured-inputs`, not by importing `CapturedInputRepository`. |
 | Value classes | `OrganizationId`, `ServiceId` as `@JvmInline value class` | UUID validated at construction, type-safe at compile time, zero runtime overhead. |
