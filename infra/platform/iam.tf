@@ -35,25 +35,8 @@ resource "google_service_account_iam_member" "platform_workload_identity_self" {
   member             = "serviceAccount:${google_service_account.platform.email}"
 }
 
-# ---------------------------------------------------------------------------
-# validation-sandbox-sa
-# Used by GKE workloads via Workload Identity (future: agent running in sandbox).
-# No project roles yet — placeholder for future agent deployment.
-# ---------------------------------------------------------------------------
-
-resource "google_service_account" "sandbox" {
-  account_id   = "validation-sandbox-sa"
-  display_name = "Validation Sandbox (GKE Workload Identity)"
-  project      = var.project
-
-  depends_on = [google_project_service.apis]
-}
-
-# Allow Kubernetes service accounts in the sandbox cluster to impersonate
-# this GCP SA via Workload Identity.
-# Namespace and KSA name placeholders — update when the agent is deployed.
-resource "google_service_account_iam_member" "sandbox_workload_identity" {
-  service_account_id = google_service_account.sandbox.name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project}.svc.id.goog[validation/validation-agent]"
-}
+# validation-sandbox-sa was removed: the WIF binding referenced
+# <project>.svc.id.goog, which only exists once a GKE cluster has been
+# created with that workload pool — chicken-and-egg with the sandbox stack.
+# We'll re-add this (in infra/sandbox/iam.tf) when the agent actually goes
+# into the sandbox cluster as part of the customer-onboarding work.

@@ -33,10 +33,8 @@ resource "google_cloud_run_v2_service" "platform" {
         container_port = 8080
       }
 
-      env {
-        name  = "PORT"
-        value = "8080"
-      }
+      # PORT is set automatically by Cloud Run from ports.container_port —
+      # it's a reserved env name, can't be overridden manually.
 
       env {
         name = "DATABASE_PASSWORD"
@@ -116,10 +114,7 @@ resource "google_cloud_run_v2_service" "collector" {
         container_port = 8081
       }
 
-      env {
-        name  = "PORT"
-        value = "8081"
-      }
+      # PORT is set automatically by Cloud Run from ports.container_port.
 
       env {
         name = "DATABASE_PASSWORD"

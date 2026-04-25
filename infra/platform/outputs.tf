@@ -22,8 +22,3 @@ output "platform_service_account_email" {
   description = "Email of the validation-platform-sa service account (used by Cloud Run services)"
   value       = google_service_account.platform.email
 }
-
-output "sandbox_service_account_email" {
-  description = "Email of the validation-sandbox-sa service account (used by GKE Workload Identity)"
-  value       = google_service_account.sandbox.email
-}
