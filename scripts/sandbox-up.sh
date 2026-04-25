@@ -1,120 +1,64 @@
 #!/usr/bin/env bash
+# sandbox-up.sh — Bring the sandbox GKE cluster up via Terraform.
+#
+# The sandbox stack costs ~$80/mo when running. Only apply when you need it.
+# Destroy it when not in use with sandbox-down.sh.
+#
+# Usage:
+#   ./scripts/sandbox-up.sh
+#
+# Environment overrides:
+#   PROJECT    — GCP project ID (default: zugzwang-381922)
+#   REGION     — GCP region     (default: us-central1)
+#   NODE_COUNT — number of nodes in the sandbox node pool (default: Terraform variable default)
+
 set -euo pipefail
 
-# Configuration — override via environment variables
-CLUSTER_NAME="${CLUSTER_NAME:-validation-sandbox}"
-ZONE="${ZONE:-us-central1-a}"
-PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-4}"
-NODE_COUNT="${NODE_COUNT:-1}"
-DISK_SIZE="${DISK_SIZE:-50}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/common.sh
+source "${SCRIPT_DIR}/common.sh"
 
-if [[ -z "$PROJECT" ]]; then
-  echo "Error: No GCP project set. Run: gcloud config set project YOUR_PROJECT"
-  exit 1
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+
+require_cmd terraform
+check_gcloud
+
+# ---------------------------------------------------------------------------
+# Optional: node count override
+# ---------------------------------------------------------------------------
+
+EXTRA_VARS=()
+if [[ -n "${NODE_COUNT:-}" ]]; then
+  EXTRA_VARS+=(-var="node_count=${NODE_COUNT}")
+  info "Using NODE_COUNT override: ${NODE_COUNT}"
 fi
 
-echo "Project:  $PROJECT"
-echo "Cluster:  $CLUSTER_NAME"
-echo "Zone:     $ZONE"
-echo "Machine:  $MACHINE_TYPE"
-echo "Nodes:    $NODE_COUNT"
-echo ""
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+info "Applying sandbox stack (~\$80/mo while running)..."
+terraform -chdir="${REPO_ROOT}/infra/sandbox" apply \
+  -auto-approve \
+  "${EXTRA_VARS[@]}"
 
-# --- Cluster ---
+# ---------------------------------------------------------------------------
+# Print kubeconfig fetch command and next steps
+# ---------------------------------------------------------------------------
 
-if gcloud container clusters describe "$CLUSTER_NAME" --zone "$ZONE" --project "$PROJECT" &>/dev/null; then
-  echo "Cluster exists. Checking node pool size..."
-
-  CURRENT_SIZE=$(gcloud container clusters describe "$CLUSTER_NAME" \
-    --zone "$ZONE" --project "$PROJECT" \
-    --format="value(currentNodeCount)" 2>/dev/null || echo "0")
-
-  if [[ "$CURRENT_SIZE" == "0" || -z "$CURRENT_SIZE" ]]; then
-    echo "Scaling node pool from 0 to $NODE_COUNT..."
-    gcloud container clusters resize "$CLUSTER_NAME" \
-      --node-pool default-pool \
-      --num-nodes "$NODE_COUNT" \
-      --zone "$ZONE" \
-      --project "$PROJECT" \
-      --quiet
-    echo "Node pool scaled up."
-  else
-    echo "Node pool already has $CURRENT_SIZE node(s)."
-  fi
-else
-  echo "Creating cluster..."
-  gcloud container clusters create "$CLUSTER_NAME" \
-    --zone "$ZONE" \
-    --project "$PROJECT" \
-    --machine-type "$MACHINE_TYPE" \
-    --num-nodes "$NODE_COUNT" \
-    --disk-size "$DISK_SIZE" \
-    --spot \
-    --no-enable-autoupgrade \
-    --no-enable-autorepair
-  echo "Cluster created."
-fi
-
-# Get credentials
-gcloud container clusters get-credentials "$CLUSTER_NAME" \
-  --zone "$ZONE" --project "$PROJECT"
-
-# --- Images ---
-
-echo "Building test service images (amd64 for GKE)..."
-cd "$PROJECT_ROOT"
-./gradlew testServicesBuild -Djib.arch=amd64
-
-echo "Building agent image (amd64 for GKE)..."
-./gradlew :agent:jibDockerBuild -Djib.arch=amd64
-
-IMAGES=("test-api-gateway" "test-order-service" "test-notification-service" "test-webhook-stub" "test-traffic-generator" "validation-agent")
-REGISTRY="gcr.io/$PROJECT"
-
-echo "Pushing images to $REGISTRY..."
-for img in "${IMAGES[@]}"; do
-  docker tag "$img:latest" "$REGISTRY/$img:latest"
-  docker push "$REGISTRY/$img:latest"
-done
-
-# --- Deploy ---
-
-echo "Deploying test services via kustomize..."
-kubectl kustomize "$PROJECT_ROOT/k8s/test-services/overlays/gke" \
-  | sed "s/GCP_PROJECT/$PROJECT/g" \
-  | kubectl apply -f -
-
-echo "Waiting for deployments..."
-kubectl wait --for=condition=available deployment --all -n infrastructure --timeout=180s 2>/dev/null || true
-kubectl wait --for=condition=available deployment --all -n external --timeout=60s 2>/dev/null || true
-kubectl wait --for=condition=available deployment --all -n production --timeout=180s 2>/dev/null || true
-
-# Deploy the validation agent.
-# k8s/agent/agent.yaml is minikube-oriented (imagePullPolicy: Never, unqualified image).
-# Rewrite the image reference to the GCR-pushed image and drop the Never pull policy.
-echo "Deploying validation agent..."
-sed -e "s|image: validation-agent:latest|image: $REGISTRY/validation-agent:latest|" \
-    -e "/imagePullPolicy: Never/d" \
-    "$PROJECT_ROOT/k8s/agent/agent.yaml" \
-  | kubectl apply -f -
-
-kubectl wait --for=condition=available deployment --all -n validation --timeout=120s 2>/dev/null || true
+CLUSTER_NAME="$(terraform -chdir="${REPO_ROOT}/infra/sandbox" output -raw cluster_name)"
+CLUSTER_LOCATION="$(terraform -chdir="${REPO_ROOT}/infra/sandbox" output -raw cluster_location)"
 
 echo ""
-echo "=== Sandbox is ready ==="
-kubectl get pods -A --no-headers | grep -v kube-system
+success "Sandbox cluster is up."
 echo ""
-echo "To access the API Gateway:"
-echo "  kubectl port-forward -n production svc/api-gateway 8080:8080"
-echo "  curl http://localhost:8080/api/health"
+echo "Fetch kubeconfig:"
+echo "  gcloud container clusters get-credentials ${CLUSTER_NAME} \\"
+echo "    --region=${CLUSTER_LOCATION} \\"
+echo "    --project=${PROJECT}"
 echo ""
-echo "The validation-agent is deployed but requires Kubeshark to be running"
-echo "in the same cluster. Start it in a separate terminal with:"
-echo "  kubeshark tap"
-echo "(The agent expects kubeshark-front in the 'default' namespace.)"
+echo "To destroy the sandbox and stop all charges:"
+echo "  ./scripts/sandbox-down.sh"
 echo ""
-echo "To shut down (stop paying): ./scripts/sandbox-down.sh"
