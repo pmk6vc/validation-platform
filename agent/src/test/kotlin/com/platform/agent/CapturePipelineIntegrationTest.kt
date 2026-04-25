@@ -143,11 +143,17 @@ class CapturePipelineIntegrationTest {
 
         /**
          * Wait until every URL suffix in [expectedUrlSuffixes] has appeared in
-         * at least one collector batch. Returns the events accumulated up to
-         * (and including) the one that completed the set.
+         * a **successful** collector batch (2xx response). Returns ALL events
+         * accumulated up to (and including) the one that completed the set —
+         * including any earlier failures, so retry-behaviour assertions can
+         * inspect the full attempt history.
          *
          * Use this when the test cares about *what was delivered* but not
          * about how it was batched. Robust to batch-composition variability.
+         * Counting only successful events is what makes this robust to retries:
+         * the same items may appear in multiple failed attempts before being
+         * accepted, and we only consider the delivery complete when the
+         * collector ACKs.
          */
         suspend fun awaitEntriesDelivered(
             expectedUrlSuffixes: Set<String>,
@@ -159,10 +165,12 @@ class CapturePipelineIntegrationTest {
                 collectorEvents
                     .takeWhile { event ->
                         accumulated.add(event)
-                        event.batch.items.forEach { item ->
-                            expectedUrlSuffixes
-                                .firstOrNull { suffix -> item.url.endsWith(suffix) }
-                                ?.let(seen::add)
+                        if (event.responseStatus.isSuccess()) {
+                            event.batch.items.forEach { item ->
+                                expectedUrlSuffixes
+                                    .firstOrNull { suffix -> item.url.endsWith(suffix) }
+                                    ?.let(seen::add)
+                            }
                         }
                         seen != expectedUrlSuffixes
                     }.toList()
