@@ -11,6 +11,39 @@ Terraform code for deploying the validation platform on GCP.
 
 The stacks are intentionally independent — sandbox can be destroyed and recreated without touching the platform stack.
 
+## Quick Start (Recommended)
+
+The `scripts/` directory at the repository root contains lifecycle scripts that
+automate the procedures described below.
+
+| Script | What it does |
+|--------|-------------|
+| `scripts/bootstrap.sh` | First-time setup: enable APIs, create state buckets, `terraform init` |
+| `scripts/platform-up.sh` | Apply platform stack (Cloud SQL active + Cloud Run) |
+| `scripts/platform-down.sh` | Pause Cloud SQL for cost savings (~$2.50/mo vs ~$13/mo) |
+| `scripts/sandbox-up.sh` | Apply sandbox GKE cluster |
+| `scripts/sandbox-down.sh` | Destroy sandbox cluster (stops all charges) |
+| `scripts/platform-delete.sh` | **NUCLEAR** — destroy platform stack and all data |
+
+Typical first-run workflow:
+```bash
+./scripts/bootstrap.sh      # one-time setup
+./scripts/platform-up.sh    # bring platform up
+# populate Secret Manager values (see Step 4 below)
+./scripts/sandbox-up.sh     # optional: bring GKE sandbox up
+```
+
+End-of-day cost savings:
+```bash
+./scripts/platform-down.sh  # pause Cloud SQL (~$2.50/mo)
+./scripts/sandbox-down.sh   # destroy sandbox ($0/mo)
+```
+
+The manual `terraform` commands below are still valid and useful for one-off
+operations or CI pipelines that call Terraform directly.
+
+---
+
 ## Prerequisites
 
 - `gcloud` CLI authenticated: `gcloud auth application-default login`

@@ -1,28 +1,44 @@
 #!/usr/bin/env bash
+# sandbox-down.sh — Destroy the sandbox GKE cluster via Terraform.
+#
+# The sandbox cluster has no persistent data — destroying it is the correct
+# way to stop charges. Recreate it at any time with sandbox-up.sh.
+#
+# Usage:
+#   ./scripts/sandbox-down.sh
+#
+# Environment overrides:
+#   PROJECT   — GCP project ID (default: zugzwang-381922)
+#   REGION    — GCP region     (default: us-central1)
+
 set -euo pipefail
 
-# Scale the node pool to 0 — stops compute charges while keeping the cluster.
-# The free-tier zonal control plane stays up at no cost.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/common.sh
+source "${SCRIPT_DIR}/common.sh"
 
-CLUSTER_NAME="${CLUSTER_NAME:-validation-sandbox}"
-ZONE="${ZONE:-us-central1-a}"
-PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
 
-if [[ -z "$PROJECT" ]]; then
-  echo "Error: No GCP project set. Run: gcloud config set project YOUR_PROJECT"
-  exit 1
-fi
+require_cmd terraform
+check_gcloud
 
-echo "Scaling $CLUSTER_NAME node pool to 0..."
-gcloud container clusters resize "$CLUSTER_NAME" \
-  --node-pool default-pool \
-  --num-nodes 0 \
-  --zone "$ZONE" \
-  --project "$PROJECT" \
-  --quiet
+# ---------------------------------------------------------------------------
+# Destroy
+# ---------------------------------------------------------------------------
+
+info "Destroying sandbox stack (GKE cluster + node pool)..."
+terraform -chdir="${REPO_ROOT}/infra/sandbox" destroy \
+  -auto-approve
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
 
 echo ""
-echo "Sandbox paused. Compute charges stopped."
-echo "Residual cost: ~\$2/month for persistent disks."
+success "Sandbox cluster destroyed. All compute charges stopped."
 echo ""
-echo "To resume: ./scripts/sandbox-up.sh"
+echo "To recreate the cluster:"
+echo "  ./scripts/sandbox-up.sh"
+echo ""
