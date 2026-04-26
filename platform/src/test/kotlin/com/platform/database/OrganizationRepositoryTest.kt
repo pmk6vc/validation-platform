@@ -11,7 +11,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class OrganizationRepositoryTest : AppDatabaseTestBase() {
+class OrganizationRepositoryTest : PlatformDatabaseTestBase() {
     private fun createTestOrganization(
         id: OrganizationId = OrganizationId.generate(),
         name: String = "Test Organization",

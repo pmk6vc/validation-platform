@@ -12,6 +12,7 @@ import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
 import com.platform.collector.module
 import com.platform.shared.models.Page
+import com.platform.shared.testing.TestJwtKeys
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth
@@ -38,7 +39,7 @@ import kotlin.test.assertTrue
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private val lenientJson = Json { ignoreUnknownKeys = true }
     private val testServiceId: ServiceId = ServiceId(UUID.randomUUID().toString())
-    private val token = generateTestJwt()
+    private val token = TestJwtKeys.generateTestJwt()
 
     private fun ApplicationTestBuilder.createJsonClient(): HttpClient =
         createClient {
@@ -69,7 +70,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs should return empty page when no inputs`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.get("/api/captured-inputs") {
@@ -89,7 +90,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs should return all inputs`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val input1 = createTestInput(url = "/api/orders/1")
             val input2 = createTestInput(url = "/api/orders/2")
@@ -114,7 +115,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with serviceId filter should return filtered inputs`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val otherServiceId = ServiceId(UUID.randomUUID().toString())
 
@@ -141,7 +142,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with inputType filter should return filtered inputs`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val httpInput = createTestInput(inputType = InputType.HTTP, url = "/api/http")
             CapturedInputRepository.create(httpInput)
@@ -165,7 +166,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with invalid serviceId UUID returns 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.get("/api/captured-inputs?serviceId=not-a-uuid") {
@@ -179,7 +180,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by invalid UUID id returns 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.get("/api/captured-inputs/not-a-uuid") {
@@ -193,7 +194,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs with invalid serviceId UUID returns 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.delete("/api/captured-inputs?serviceId=not-a-uuid") {
@@ -207,7 +208,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with invalid inputType should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.get("/api/captured-inputs?inputType=INVALID") {
@@ -220,7 +221,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with limit should return paginated response`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             repeat(5) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
@@ -244,7 +245,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with cursor should return next page`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             repeat(5) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
@@ -283,7 +284,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with malformed cursor should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val malformedCursors =
                 listOf(
@@ -305,7 +306,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by id should return input when exists`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val input =
                 createTestInput(
@@ -332,7 +333,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by id should return 404 when not exists`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.get("/api/captured-inputs/${UUID.randomUUID()}") {
@@ -345,7 +346,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-input by id should return 400 for malformed UUID`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.get("/api/captured-inputs/not-a-uuid") {
@@ -358,7 +359,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs with serviceId should delete and return count`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             repeat(3) { CapturedInputRepository.create(createTestInput()) }
 
@@ -375,7 +376,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs without serviceId should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.delete("/api/captured-inputs") {
@@ -388,7 +389,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `DELETE captured-inputs with no matching inputs should return zero`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.delete("/api/captured-inputs?serviceId=${UUID.randomUUID()}") {
@@ -422,7 +423,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `POST captured-inputs with valid batch should return 201 with count`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -452,7 +453,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `POST captured-inputs with empty batch should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -468,7 +469,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `POST captured-inputs with unknown serviceId should succeed`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
             val jsonClient = createJsonClient()
 
             val unknownServiceId = ServiceId(UUID.randomUUID().toString())
@@ -485,7 +486,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `POST captured-inputs with malformed JSON should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.post("/api/captured-inputs") {
@@ -500,7 +501,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `POST captured-inputs with missing required fields should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response =
                 client.post("/api/captured-inputs") {
@@ -516,7 +517,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `POST captured-inputs exceeding max batch size should return 400`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -533,7 +534,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with limit=0 is clamped to 1 and returns results`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             repeat(3) { i -> CapturedInputRepository.create(createTestInput(url = "/api/orders/$i")) }
 
@@ -556,7 +557,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with limit=-1 is clamped to 1 and returns results`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             repeat(3) { i -> CapturedInputRepository.create(createTestInput(url = "/api/orders/$i")) }
 
@@ -578,7 +579,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     @Test
     fun `GET captured-inputs with limit over maximum is clamped to max page size`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val count = CapturedInputRepository.DEFAULT_PAGE_SIZE + 5
             repeat(count) { i ->

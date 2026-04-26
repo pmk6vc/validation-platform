@@ -1,7 +1,7 @@
 package com.platform.api
 
-import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
+import com.platform.database.PlatformDatabaseTestBase
 import com.platform.models.Organization
 import com.platform.shared.models.OrganizationId
 import com.platform.shared.models.Page
@@ -20,10 +20,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-class OrganizationRoutesTest : AppDatabaseTestBase() {
+class OrganizationRoutesTest : PlatformDatabaseTestBase() {
     @Test
     fun `GET organizations should return empty page when no organizations`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get(
                     "/api/organizations",
@@ -41,7 +41,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations should return all organizations`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val org1 = Organization(OrganizationId.generate(), "Org 1", Instant.now())
             val org2 = Organization(OrganizationId.generate(), "Org 2", Instant.now())
             OrganizationRepository.create(org1)
@@ -64,7 +64,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organization by id should return organization when exists`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val org = Organization(OrganizationId.generate(), "Test Org", Instant.now())
             OrganizationRepository.create(org)
 
@@ -80,7 +80,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organization by id should return 404 when not exists`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get("/api/organizations/${UUID.randomUUID()}") {
                 }
@@ -90,7 +90,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organization by id should return 400 for malformed UUID`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get("/api/organizations/not-a-uuid")
 
@@ -99,7 +99,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with malformed cursor should return 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val malformedCursors =
                 listOf(
                     "garbage",
@@ -117,7 +117,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST organizations should create and return organization with 201`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val response =
                 client.post("/api/organizations") {
@@ -134,7 +134,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST organizations should persist organization retrievable by GET`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val createResponse =
                 client.post("/api/organizations") {
@@ -154,7 +154,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST organizations with missing name returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.post("/api/organizations") {
                     contentType(ContentType.Application.Json)
@@ -166,7 +166,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations by invalid UUID id returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get("/api/organizations/not-a-uuid")
 
@@ -175,7 +175,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST organizations with blank name returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val response =
                 client.post("/api/organizations") {
@@ -188,7 +188,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with limit=0 is clamped to 1 and returns results`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             repeat(3) { i ->
                 OrganizationRepository.create(
                     Organization(OrganizationId.generate(), "Org $i", Instant.now()),
@@ -211,7 +211,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with limit=-1 is clamped to 1 and returns results`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             repeat(3) { i ->
                 OrganizationRepository.create(
                     Organization(OrganizationId.generate(), "Org $i", Instant.now()),
@@ -233,7 +233,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with limit over maximum is clamped to max page size`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             // Insert more than DEFAULT_PAGE_SIZE but fewer than MAX_PAGE_SIZE items so
             // we can tell whether the limit was actually capped
             val count = OrganizationRepository.DEFAULT_PAGE_SIZE + 5

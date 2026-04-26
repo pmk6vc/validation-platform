@@ -15,7 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class ServiceRepositoryTest : AppDatabaseTestBase() {
+class ServiceRepositoryTest : PlatformDatabaseTestBase() {
     private lateinit var testOrg: Organization
     private lateinit var testOrg2: Organization
 
