@@ -5,6 +5,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.compression.ContentEncoding
+import io.ktor.client.plugins.compression.ContentEncodingConfig
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.serialization.kotlinx.json.json
@@ -52,6 +54,22 @@ fun buildAgentCollectorHttpClient(engine: HttpClientEngine): HttpClient = HttpCl
 private fun HttpClientConfig<*>.configureCollector() {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
+    }
+    // Compress outbound request bodies with gzip. The collector installs
+    // Ktor's Compression plugin to decompress incoming Content-Encoding: gzip
+    // requests. Scoped to this factory: only the agent → collector path
+    // gets gzip; platform and Kubeshark clients are unaffected.
+    // NOTE: HTTP/2 (transport-layer multiplexing + framing) is a separate
+    // concern requiring non-trivial engine config; gzip alone delivers
+    // most of the wire-size benefit for these workloads.
+    install(ContentEncoding) {
+        // Default mode is DecompressResponse only; flip to CompressRequest so
+        // the AfterRenderHook actually compresses bodies. Each call site still
+        // has to opt in via request.compress("gzip"); CollectorClient does
+        // that on every POST (collector responses are tiny JSON ack bodies
+        // that don't benefit from response decompression).
+        mode = ContentEncodingConfig.Mode.CompressRequest
+        gzip()
     }
 }
 

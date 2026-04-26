@@ -9,7 +9,6 @@ import com.platform.agent.models.KubesharkResponse
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
-import io.ktor.client.engine.mock.toByteArray
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -169,9 +168,7 @@ class LoopLogicTest {
                 MockEngine { request ->
                     when {
                         request.url.encodedPath.contains("/api/captured-inputs") -> {
-                            onCollectorRequest?.invoke(
-                                String(request.body.toByteArray(), Charsets.UTF_8),
-                            )
+                            onCollectorRequest?.invoke(request.bodyAsDecodedString())
                             respond(
                                 content = "{}",
                                 status = collectorStatus,

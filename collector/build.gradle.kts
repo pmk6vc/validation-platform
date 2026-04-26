@@ -28,6 +28,7 @@ dependencies {
     implementation(libs.bundles.ktor.server)
     implementation(libs.ktor.server.auth)
     implementation(libs.ktor.server.auth.jwt)
+    implementation(libs.ktor.server.compression)
 
     // Database (Exposed + PostgreSQL) - needed for collector-owned tables and repositories
     implementation(libs.bundles.exposed)

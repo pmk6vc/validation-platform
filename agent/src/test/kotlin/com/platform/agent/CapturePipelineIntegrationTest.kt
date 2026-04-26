@@ -12,7 +12,6 @@ import com.platform.agent.models.KubesharkResponse
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
-import io.ktor.client.engine.mock.toByteArray
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -283,7 +282,7 @@ class CapturePipelineIntegrationTest {
             MockEngine { request ->
                 when {
                     request.url.encodedPath.contains("/api/captured-inputs") -> {
-                        val bodyString = String(request.body.toByteArray(), Charsets.UTF_8)
+                        val bodyString = request.bodyAsDecodedString()
                         val batch = json.decodeFromString<BatchCapturedInputRequest>(bodyString)
                         val index = collectorRequestCounter.incrementAndGet()
                         val status = collectorResponder(index)
