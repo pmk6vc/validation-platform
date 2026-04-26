@@ -69,6 +69,29 @@ jobs:
           docker push ${{ env.REGISTRY }}/collector:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/collector:latest
 
+      # --- Build and push test-service images via Jib ---
+      # Test services don't have hand-written Dockerfiles; they ship as Jib
+      # builds. They land in the sandbox cluster (deployed by sandbox-up.sh,
+      # which pulls :latest from Artifact Registry).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build and push test-service images
+        run: |
+          for svc in api-gateway order-service notification-service traffic-generator webhook-stub; do
+            module="test-services:${svc}"
+            image="${{ env.REGISTRY }}/test-${svc}"
+            ./gradlew ":${module}:jib" \
+              -Djib.to.image="${image}" \
+              -Djib.to.tags="latest,${{ github.sha }}" \
+              -Djib.to.auth.username=oauth2accesstoken \
+              -Djib.to.auth.password="$(gcloud auth print-access-token)" \
+              -Djib.arch=amd64
+          done
+
       # --- Roll out new Cloud Run revisions ---
       # Using the SHA-tagged images (not :latest) so each revision is pinned
       # to a specific build and rollbacks are deterministic.
