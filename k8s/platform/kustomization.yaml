@@ -7,9 +7,8 @@
 #   1. namespace   — must exist before anything else
 #   2. secret      — credentials read by platform, collector, and postgres
 #   3. postgres    — database; platform runs Flyway migrations on startup
-#   4. platform    — API server; runs migrations, serves JWKS for Envoy
-#   5. collector   — traffic ingest server; depends on same postgres instance
-#   6. envoy       — reverse proxy; fetches JWKS from platform on first request
+#   4. platform    — API server; runs migrations, serves JWKS; validates JWT directly
+#   5. collector   — traffic ingest server; validates JWT directly
 #
 # Prerequisites:
 #   Create the secret before applying (see secret.yaml for required keys):
@@ -30,4 +29,3 @@ resources:
   - postgres.yaml
   - platform.yaml
   - collector.yaml
-  - envoy.yaml

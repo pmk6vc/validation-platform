@@ -32,58 +32,59 @@ fun Application.configureRouting() {
             call.respondText("OK")
         }
 
-        route("/api") {
-            route("/organizations") {
-                get {
-                    val limit =
-                        call.request.queryParameters["limit"]?.toIntOrNull()
-                            ?: OrganizationRepository.DEFAULT_PAGE_SIZE
-                    val cursor = call.request.queryParameters["cursor"]
+        // All /api/* routes require a valid JWT. Previously enforced by Envoy;
+        // now in-app via the shared installJwtAuth() plugin.
+        authenticate(JWT_AUTH) {
+            route("/api") {
+                route("/organizations") {
+                    get {
+                        val limit =
+                            call.request.queryParameters["limit"]?.toIntOrNull()
+                                ?: OrganizationRepository.DEFAULT_PAGE_SIZE
+                        val cursor = call.request.queryParameters["cursor"]
 
-                    val page = OrganizationRepository.find(limit = limit, cursor = cursor)
-                    call.respond(page)
-                }
-
-                post {
-                    val request = call.receive<CreateOrganizationRequest>()
-                    if (request.name.isBlank()) {
-                        return@post call.respond(HttpStatusCode.BadRequest, "Organization name must not be blank")
+                        val page = OrganizationRepository.find(limit = limit, cursor = cursor)
+                        call.respond(page)
                     }
-                    val organization =
-                        Organization(
-                            id = OrganizationId.generate(),
-                            name = request.name,
-                            createdAt = Instant.now(),
-                        )
-                    val created = OrganizationRepository.create(organization)
-                    call.respond(HttpStatusCode.Created, created)
-                }
 
-                get("/{id}") {
-                    val rawId =
-                        call.parameters["id"]
-                            ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
-                    val id =
-                        try {
-                            OrganizationId(rawId)
-                        } catch (_: IllegalArgumentException) {
-                            return@get call.respond(
-                                HttpStatusCode.BadRequest,
-                                "Invalid organization ID (must be UUID): $rawId",
-                            )
+                    post {
+                        val request = call.receive<CreateOrganizationRequest>()
+                        if (request.name.isBlank()) {
+                            return@post call.respond(HttpStatusCode.BadRequest, "Organization name must not be blank")
                         }
+                        val organization =
+                            Organization(
+                                id = OrganizationId.generate(),
+                                name = request.name,
+                                createdAt = Instant.now(),
+                            )
+                        val created = OrganizationRepository.create(organization)
+                        call.respond(HttpStatusCode.Created, created)
+                    }
 
-                    val organization = OrganizationRepository.findById(id)
-                    if (organization != null) {
-                        call.respond(organization)
-                    } else {
-                        call.respond(HttpStatusCode.NotFound, "Organization not found")
+                    get("/{id}") {
+                        val rawId =
+                            call.parameters["id"]
+                                ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                        val id =
+                            try {
+                                OrganizationId(rawId)
+                            } catch (_: IllegalArgumentException) {
+                                return@get call.respond(
+                                    HttpStatusCode.BadRequest,
+                                    "Invalid organization ID (must be UUID): $rawId",
+                                )
+                            }
+
+                        val organization = OrganizationRepository.findById(id)
+                        if (organization != null) {
+                            call.respond(organization)
+                        } else {
+                            call.respond(HttpStatusCode.NotFound, "Organization not found")
+                        }
                     }
                 }
-            }
 
-            // Agent config requires JWT identity (org + cluster from JWT claims)
-            authenticate(JWT_AUTH) {
                 route("/agent") {
                     get("/config") {
                         val identity = call.principal<AgentIdentity>()!!
@@ -98,80 +99,80 @@ fun Application.configureRouting() {
                         call.respond(AgentConfigResponse(targetServices = targetServices))
                     }
                 }
-            }
 
-            route("/services") {
-                get {
-                    val limit =
-                        call.request.queryParameters["limit"]?.toIntOrNull()
-                            ?: ServiceRepository.DEFAULT_PAGE_SIZE
-                    val cursor = call.request.queryParameters["cursor"]
+                route("/services") {
+                    get {
+                        val limit =
+                            call.request.queryParameters["limit"]?.toIntOrNull()
+                                ?: ServiceRepository.DEFAULT_PAGE_SIZE
+                        val cursor = call.request.queryParameters["cursor"]
 
-                    val rawOrgId = call.request.queryParameters["organizationId"]
-                    val organizationId =
-                        rawOrgId?.let {
+                        val rawOrgId = call.request.queryParameters["organizationId"]
+                        val organizationId =
+                            rawOrgId?.let {
+                                try {
+                                    OrganizationId(it)
+                                } catch (_: IllegalArgumentException) {
+                                    return@get call.respond(
+                                        HttpStatusCode.BadRequest,
+                                        "Invalid organizationId (must be UUID): $it",
+                                    )
+                                }
+                            }
+
+                        val page =
+                            ServiceRepository.find(
+                                organizationId = organizationId,
+                                cluster = call.request.queryParameters["cluster"],
+                                namespace = call.request.queryParameters["namespace"],
+                                limit = limit,
+                                cursor = cursor,
+                            )
+                        call.respond(page)
+                    }
+
+                    post {
+                        val request = call.receive<CreateServiceRequest>()
+                        if (request.name.isBlank()) {
+                            return@post call.respond(HttpStatusCode.BadRequest, "Service name must not be blank")
+                        }
+                        val now = Instant.now()
+                        val service =
+                            Service(
+                                id = ServiceId.generate(),
+                                organizationId = request.organizationId,
+                                cluster = request.cluster,
+                                namespace = request.namespace,
+                                name = request.name,
+                                provider = request.provider,
+                                discoveredAt = now,
+                                lastSeenAt = now,
+                                metadata = request.metadata,
+                            )
+                        val created = ServiceRepository.create(service)
+                        call.respond(HttpStatusCode.Created, created)
+                    }
+
+                    get("/{id}") {
+                        val rawId =
+                            call.parameters["id"]
+                                ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
+                        val id =
                             try {
-                                OrganizationId(it)
+                                ServiceId(rawId)
                             } catch (_: IllegalArgumentException) {
                                 return@get call.respond(
                                     HttpStatusCode.BadRequest,
-                                    "Invalid organizationId (must be UUID): $it",
+                                    "Invalid service ID (must be UUID): $rawId",
                                 )
                             }
+
+                        val service = ServiceRepository.findById(id)
+                        if (service != null) {
+                            call.respond(service)
+                        } else {
+                            call.respond(HttpStatusCode.NotFound, "Service not found")
                         }
-
-                    val page =
-                        ServiceRepository.find(
-                            organizationId = organizationId,
-                            cluster = call.request.queryParameters["cluster"],
-                            namespace = call.request.queryParameters["namespace"],
-                            limit = limit,
-                            cursor = cursor,
-                        )
-                    call.respond(page)
-                }
-
-                post {
-                    val request = call.receive<CreateServiceRequest>()
-                    if (request.name.isBlank()) {
-                        return@post call.respond(HttpStatusCode.BadRequest, "Service name must not be blank")
-                    }
-                    val now = Instant.now()
-                    val service =
-                        Service(
-                            id = ServiceId.generate(),
-                            organizationId = request.organizationId,
-                            cluster = request.cluster,
-                            namespace = request.namespace,
-                            name = request.name,
-                            provider = request.provider,
-                            discoveredAt = now,
-                            lastSeenAt = now,
-                            metadata = request.metadata,
-                        )
-                    val created = ServiceRepository.create(service)
-                    call.respond(HttpStatusCode.Created, created)
-                }
-
-                get("/{id}") {
-                    val rawId =
-                        call.parameters["id"]
-                            ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
-                    val id =
-                        try {
-                            ServiceId(rawId)
-                        } catch (_: IllegalArgumentException) {
-                            return@get call.respond(
-                                HttpStatusCode.BadRequest,
-                                "Invalid service ID (must be UUID): $rawId",
-                            )
-                        }
-
-                    val service = ServiceRepository.findById(id)
-                    if (service != null) {
-                        call.respond(service)
-                    } else {
-                        call.respond(HttpStatusCode.NotFound, "Service not found")
                     }
                 }
             }
