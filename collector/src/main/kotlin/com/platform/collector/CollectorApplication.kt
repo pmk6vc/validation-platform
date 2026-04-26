@@ -1,5 +1,6 @@
 package com.platform.collector
 
+import com.platform.auth.installJwtAuth
 import com.platform.collector.api.configureRouting
 import com.platform.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
@@ -17,7 +18,10 @@ fun main(args: Array<String>) {
         .main(args)
 }
 
-fun Application.module(initDatabase: Boolean = true) {
+fun Application.module(
+    initDatabase: Boolean = true,
+    privateKeyPem: String? = null,
+) {
     if (initDatabase) {
         DatabaseFactory.initFromEnvironment()
     }
@@ -42,5 +46,10 @@ fun Application.module(initDatabase: Boolean = true) {
         )
     }
 
+    val resolvedKey =
+        privateKeyPem
+            ?: System.getenv("JWT_PRIVATE_KEY")
+            ?: error("JWT_PRIVATE_KEY environment variable is required")
+    installJwtAuth(resolvedKey)
     configureRouting()
 }

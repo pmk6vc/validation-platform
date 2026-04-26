@@ -102,6 +102,7 @@ abstract class PlatformStackTestBase {
                     .withEnv("DATABASE_URL", jdbcUrl)
                     .withEnv("DATABASE_USER", "test")
                     .withEnv("DATABASE_PASSWORD", "test")
+                    .withEnv("JWT_PRIVATE_KEY", privateKeyPem)
                     .waitingFor(Wait.forHttp("/health").forPort(8081).forStatusCode(200))
             collector.start()
 
