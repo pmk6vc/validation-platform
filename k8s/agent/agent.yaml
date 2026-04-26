@@ -51,7 +51,9 @@ spec:
             - name: KUBESHARK_URL
               value: "http://kubeshark-front.default.svc.cluster.local:80"
             - name: PLATFORM_URL
-              value: "http://envoy.validation.svc.cluster.local:8082"
+              value: "http://platform.validation.svc.cluster.local:8080"
+            - name: COLLECTOR_URL
+              value: "http://collector.validation.svc.cluster.local:8081"
             - name: API_KEY
               valueFrom:
                 secretKeyRef:
