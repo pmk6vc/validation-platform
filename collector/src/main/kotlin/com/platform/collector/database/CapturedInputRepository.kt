@@ -4,6 +4,7 @@ import com.platform.collector.models.CapturedInput
 import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
+import com.platform.shared.models.OrganizationId
 import com.platform.shared.models.Page
 import com.platform.shared.models.decodeCursor
 import com.platform.shared.models.encodeCursor
@@ -30,6 +31,7 @@ object CapturedInputRepository {
             CapturedInputs.insert {
                 it[id] = UUID.fromString(input.id.value)
                 it[serviceId] = UUID.fromString(input.serviceId.value)
+                it[organizationId] = UUID.fromString(input.organizationId.value)
                 it[inputType] = input.inputType
                 it[method] = input.method
                 it[url] = input.url
@@ -51,6 +53,7 @@ object CapturedInputRepository {
             CapturedInputs.batchInsert(inputs) { input ->
                 this[CapturedInputs.id] = UUID.fromString(input.id.value)
                 this[CapturedInputs.serviceId] = UUID.fromString(input.serviceId.value)
+                this[CapturedInputs.organizationId] = UUID.fromString(input.organizationId.value)
                 this[CapturedInputs.inputType] = input.inputType
                 this[CapturedInputs.method] = input.method
                 this[CapturedInputs.url] = input.url
@@ -67,16 +70,27 @@ object CapturedInputRepository {
             inputs
         }
 
-    suspend fun findById(id: CapturedInputId): CapturedInput? =
+    /**
+     * Find a captured input by ID, scoped to the given organization.
+     * Returns null if the input doesn't exist OR belongs to a different org.
+     * Callers should respond with 404 in both cases — don't leak existence.
+     */
+    suspend fun findById(
+        id: CapturedInputId,
+        organizationId: OrganizationId,
+    ): CapturedInput? =
         newSuspendedTransaction {
             CapturedInputs
                 .selectAll()
-                .where { CapturedInputs.id eq UUID.fromString(id.value) }
-                .map { it.toCapturedInput() }
+                .where {
+                    (CapturedInputs.id eq UUID.fromString(id.value)) and
+                        (CapturedInputs.organizationId eq UUID.fromString(organizationId.value))
+                }.map { it.toCapturedInput() }
                 .singleOrNull()
         }
 
     suspend fun find(
+        organizationId: OrganizationId,
         serviceId: ServiceId? = null,
         inputType: InputType? = null,
         limit: Int = DEFAULT_PAGE_SIZE,
@@ -85,6 +99,9 @@ object CapturedInputRepository {
         newSuspendedTransaction {
             val pageLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
             val conditions = mutableListOf<Op<Boolean>>()
+
+            // Always scope to the caller's organization — this is the primary tenant filter.
+            conditions.add(CapturedInputs.organizationId eq UUID.fromString(organizationId.value))
 
             serviceId?.let {
                 conditions.add(CapturedInputs.serviceId eq UUID.fromString(it.value))
@@ -101,12 +118,7 @@ object CapturedInputRepository {
                 )
             }
 
-            val query =
-                if (conditions.isEmpty()) {
-                    CapturedInputs.selectAll()
-                } else {
-                    CapturedInputs.selectAll().where { conditions.reduce { acc, op -> acc and op } }
-                }
+            val query = CapturedInputs.selectAll().where { conditions.reduce { acc, op -> acc and op } }
 
             val results =
                 query
@@ -134,17 +146,27 @@ object CapturedInputRepository {
                 .count()
         }
 
-    suspend fun deleteByService(serviceId: ServiceId): Long =
+    /**
+     * Delete captured inputs for a service, scoped to the given organization.
+     * Only deletes rows that belong to the caller's org — cross-tenant deletes are silently ignored.
+     */
+    suspend fun deleteByService(
+        serviceId: ServiceId,
+        organizationId: OrganizationId,
+    ): Long =
         newSuspendedTransaction {
             CapturedInputs
-                .deleteWhere { CapturedInputs.serviceId eq UUID.fromString(serviceId.value) }
-                .toLong()
+                .deleteWhere {
+                    (CapturedInputs.serviceId eq UUID.fromString(serviceId.value)) and
+                        (CapturedInputs.organizationId eq UUID.fromString(organizationId.value))
+                }.toLong()
         }
 
     private fun ResultRow.toCapturedInput(): CapturedInput =
         CapturedInput(
             id = CapturedInputId(this[CapturedInputs.id].toString()),
             serviceId = ServiceId(this[CapturedInputs.serviceId].toString()),
+            organizationId = OrganizationId(this[CapturedInputs.organizationId].toString()),
             inputType = this[CapturedInputs.inputType],
             method = this[CapturedInputs.method],
             url = this[CapturedInputs.url],

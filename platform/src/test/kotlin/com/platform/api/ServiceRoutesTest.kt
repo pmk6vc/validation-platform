@@ -9,6 +9,7 @@ import com.platform.models.Service
 import com.platform.shared.models.OrganizationId
 import com.platform.shared.models.Page
 import com.platform.shared.models.ServiceId
+import com.platform.shared.testing.TestJwtKeys
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -28,12 +29,16 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ServiceRoutesTest : PlatformDatabaseTestBase() {
+    // The JWT that platformTestApplication mints uses DEFAULT_ORG_ID as the organizationId claim.
+    // All services created for a "happy path" test must belong to this org to be visible.
+    private val callerOrgId = OrganizationId(TestJwtKeys.DEFAULT_ORG_ID)
     private lateinit var testOrg: Organization
 
     @BeforeEach
     fun setupOrg() {
         runBlocking {
-            testOrg = Organization(OrganizationId.generate(), "Test Org", Instant.now())
+            testOrg =
+                Organization(callerOrgId, "Test Org", Instant.now())
             OrganizationRepository.create(testOrg)
         }
     }
@@ -44,9 +49,10 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         namespace: String = "default",
         provider: Provider = Provider.KUBERNETES,
         metadata: Map<String, String>? = null,
+        organizationId: OrganizationId = callerOrgId,
     ) = Service(
         id = ServiceId.generate(),
-        organizationId = testOrg.id,
+        organizationId = organizationId,
         cluster = cluster,
         namespace = namespace,
         name = name,
@@ -59,10 +65,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
     @Test
     fun `GET services should return empty page when no services`() =
         platformTestApplication { client ->
-            val response =
-                client.get(
-                    "/api/services",
-                )
+            val response = client.get("/api/services")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -75,17 +78,14 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
-    fun `GET services should return all services`() =
+    fun `GET services should return services for caller org`() =
         platformTestApplication { client ->
             val svc1 = createService(name = "order-service")
             val svc2 = createService(name = "payment-service")
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
 
-            val response =
-                client.get(
-                    "/api/services",
-                )
+            val response = client.get("/api/services")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -98,30 +98,41 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
-    fun `GET services with organizationId filter should return filtered services`() =
+    fun `GET services should not return services from other orgs`() =
         platformTestApplication { client ->
             val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
             OrganizationRepository.create(otherOrg)
 
-            val svc1 = createService(name = "my-service")
-            val svc2 =
-                Service(
-                    id = ServiceId.generate(),
-                    organizationId = otherOrg.id,
-                    cluster = "prod",
-                    namespace = "default",
-                    name = "other-service",
-                    provider = Provider.KUBERNETES,
-                    discoveredAt = Instant.now(),
-                    lastSeenAt = Instant.now(),
-                    metadata = null,
-                )
-            ServiceRepository.create(svc1)
-            ServiceRepository.create(svc2)
+            val myService = createService(name = "my-service", organizationId = callerOrgId)
+            val theirService = createService(name = "their-service", organizationId = otherOrg.id)
+            ServiceRepository.create(myService)
+            ServiceRepository.create(theirService)
 
-            val response =
-                client.get("/api/services?organizationId=${testOrg.id.value}") {
-                }
+            val response = client.get("/api/services")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                Json.decodeFromString(
+                    Page.serializer(Service.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("my-service", page.items[0].name)
+        }
+
+    @Test
+    fun `GET services ignores organizationId query param and always uses JWT org`() =
+        platformTestApplication { client ->
+            val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
+            OrganizationRepository.create(otherOrg)
+
+            val myService = createService(name = "my-service", organizationId = callerOrgId)
+            val theirService = createService(name = "their-service", organizationId = otherOrg.id)
+            ServiceRepository.create(myService)
+            ServiceRepository.create(theirService)
+
+            // Pass the other org's ID as a query param — it must be ignored
+            val response = client.get("/api/services?organizationId=${otherOrg.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -141,9 +152,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
 
-            val response =
-                client.get("/api/services?organizationId=${testOrg.id.value}&cluster=prod-us-east") {
-                }
+            val response = client.get("/api/services?cluster=prod-us-east")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -163,10 +172,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
 
-            val response =
-                client.get(
-                    "/api/services?organizationId=${testOrg.id.value}&cluster=prod&namespace=payments",
-                )
+            val response = client.get("/api/services?namespace=payments")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -179,17 +185,28 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
-    fun `GET services with only namespace filter should return filtered services`() =
+    fun `GET services with only namespace filter should return filtered services scoped to caller org`() =
         platformTestApplication { client ->
+            val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
+            OrganizationRepository.create(otherOrg)
+
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "payments-worker", cluster = "staging", namespace = "payments")
-            val svc3 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
+            // Same namespace, different org — should NOT be visible
+            val svc3 =
+                createService(
+                    name = "their-payments",
+                    cluster = "prod",
+                    namespace = "payments",
+                    organizationId = otherOrg.id,
+                )
+            val svc4 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
             ServiceRepository.create(svc1)
             ServiceRepository.create(svc2)
             ServiceRepository.create(svc3)
+            ServiceRepository.create(svc4)
 
-            val response =
-                client.get("/api/services?namespace=payments")
+            val response = client.get("/api/services?namespace=payments")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -202,7 +219,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
-    fun `GET services with only cluster filter should return filtered services`() =
+    fun `GET services with only cluster filter should return filtered services scoped to caller org`() =
         platformTestApplication { client ->
             val svc1 = createService(name = "prod-service-1", cluster = "prod")
             val svc2 = createService(name = "prod-service-2", cluster = "prod", namespace = "other")
@@ -211,8 +228,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             ServiceRepository.create(svc2)
             ServiceRepository.create(svc3)
 
-            val response =
-                client.get("/api/services?cluster=prod")
+            val response = client.get("/api/services?cluster=prod")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -236,21 +252,18 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
                     "not-a-number.0|${UUID.randomUUID()}",
                 )
             for (cursor in malformedCursors) {
-                val response =
-                    client.get("/api/services?cursor=$cursor")
+                val response = client.get("/api/services?cursor=$cursor")
                 assertEquals(HttpStatusCode.BadRequest, response.status, "Expected 400 for cursor: '$cursor'")
             }
         }
 
     @Test
-    fun `GET service by id should return service when exists`() =
+    fun `GET service by id should return service when belongs to caller org`() =
         platformTestApplication { client ->
             val svc = createService(name = "my-service", metadata = mapOf("version" to "1.0"))
             ServiceRepository.create(svc)
 
-            val response =
-                client.get("/api/services/${svc.id.value}") {
-                }
+            val response = client.get("/api/services/${svc.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = Json.decodeFromString<Service>(response.bodyAsText())
@@ -260,11 +273,23 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
+    fun `GET service by id should return 404 when service belongs to different org`() =
+        platformTestApplication { client ->
+            val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
+            OrganizationRepository.create(otherOrg)
+            val svc = createService(name = "their-service", organizationId = otherOrg.id)
+            ServiceRepository.create(svc)
+
+            // Caller's JWT is for callerOrgId — 404, not 403, to avoid info leak
+            val response = client.get("/api/services/${svc.id.value}")
+
+            assertEquals(HttpStatusCode.NotFound, response.status)
+        }
+
+    @Test
     fun `GET service by id should return 404 when not exists`() =
         platformTestApplication { client ->
-            val response =
-                client.get("/api/services/${UUID.randomUUID()}") {
-                }
+            val response = client.get("/api/services/${UUID.randomUUID()}")
 
             assertEquals(HttpStatusCode.NotFound, response.status)
         }
@@ -272,22 +297,45 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
     @Test
     fun `GET service by id should return 400 for malformed UUID`() =
         platformTestApplication { client ->
-            val response =
-                client.get("/api/services/not-a-uuid")
+            val response = client.get("/api/services/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
-    fun `POST services should create and return service with 201`() =
+    fun `POST services should auto-set organizationId from JWT`() =
         platformTestApplication { client ->
-
             val response =
                 client.post("/api/services") {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = testOrg.id,
+                            // Provide a different org ID in the body — it should be ignored
+                            organizationId = OrganizationId.generate(),
+                            cluster = "prod",
+                            namespace = "default",
+                            name = "new-service",
+                            provider = Provider.KUBERNETES,
+                        ),
+                    )
+                }
+
+            assertEquals(HttpStatusCode.Created, response.status)
+            val svc = Json.decodeFromString<Service>(response.bodyAsText())
+            assertEquals("new-service", svc.name)
+            // organizationId is always from the JWT, regardless of what was in the body
+            assertEquals(callerOrgId, svc.organizationId)
+        }
+
+    @Test
+    fun `POST services should create and return service with 201`() =
+        platformTestApplication { client ->
+            val response =
+                client.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            organizationId = callerOrgId,
                             cluster = "prod",
                             namespace = "default",
                             name = "new-service",
@@ -301,19 +349,18 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             assertEquals("new-service", svc.name)
             assertNotNull(svc.id)
             assertEquals(Provider.KUBERNETES, svc.provider)
-            assertEquals(testOrg.id, svc.organizationId)
+            assertEquals(callerOrgId, svc.organizationId)
         }
 
     @Test
     fun `POST services should persist service retrievable by GET`() =
         platformTestApplication { client ->
-
             val createResponse =
                 client.post("/api/services") {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = testOrg.id,
+                            organizationId = callerOrgId,
                             cluster = "staging",
                             namespace = "backend",
                             name = "persist-service",
@@ -348,10 +395,9 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
     @Test
     fun `POST services with duplicate identity returns 409`() =
         platformTestApplication { client ->
-
             val request =
                 CreateServiceRequest(
-                    organizationId = testOrg.id,
+                    organizationId = callerOrgId,
                     cluster = "prod",
                     namespace = "default",
                     name = "duplicate-service",
@@ -373,35 +419,14 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
-    fun `POST services with invalid organizationId returns 400`() =
-        platformTestApplication { client ->
-
-            val response =
-                client.post("/api/services") {
-                    contentType(ContentType.Application.Json)
-                    setBody(
-                        CreateServiceRequest(
-                            organizationId = OrganizationId.generate(),
-                            cluster = "prod",
-                            namespace = "default",
-                            name = "orphan-service",
-                        ),
-                    )
-                }
-
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-        }
-
-    @Test
     fun `POST services with blank name returns 400`() =
         platformTestApplication { client ->
-
             val response =
                 client.post("/api/services") {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = testOrg.id,
+                            organizationId = callerOrgId,
                             cluster = "prod",
                             namespace = "default",
                             name = "   ",
@@ -425,9 +450,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
                 )
             ServiceRepository.create(svc)
 
-            val response =
-                client.get("/api/services/${svc.id.value}") {
-                }
+            val response = client.get("/api/services/${svc.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = Json.decodeFromString<Service>(response.bodyAsText())
@@ -436,14 +459,13 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             assertEquals("backend", result.namespace)
             assertEquals(Provider.KUBERNETES, result.provider)
             assertEquals(mapOf("team" to "platform", "tier" to "critical"), result.metadata)
-            assertEquals(testOrg.id, result.organizationId)
+            assertEquals(callerOrgId, result.organizationId)
         }
 
     @Test
     fun `GET service by invalid UUID id returns 400`() =
         platformTestApplication { client ->
-            val response =
-                client.get("/api/services/not-a-uuid")
+            val response = client.get("/api/services/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
@@ -455,8 +477,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
                 ServiceRepository.create(createService(name = "service-$i"))
             }
 
-            val response =
-                client.get("/api/services?limit=3")
+            val response = client.get("/api/services?limit=3")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -476,8 +497,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             }
 
             // Get first page
-            val firstResponse =
-                client.get("/api/services?limit=2")
+            val firstResponse = client.get("/api/services?limit=2")
             assertEquals(HttpStatusCode.OK, firstResponse.status)
             val firstPage =
                 Json.decodeFromString(
@@ -488,9 +508,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             assertNotNull(firstPage.nextCursor)
 
             // Get second page using cursor
-            val secondResponse =
-                client.get("/api/services?limit=2&cursor=${firstPage.nextCursor}") {
-                }
+            val secondResponse = client.get("/api/services?limit=2&cursor=${firstPage.nextCursor}")
             assertEquals(HttpStatusCode.OK, secondResponse.status)
             val secondPage =
                 Json.decodeFromString(
@@ -506,9 +524,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
 
             // Get third page
-            val thirdResponse =
-                client.get("/api/services?limit=2&cursor=${secondPage.nextCursor}") {
-                }
+            val thirdResponse = client.get("/api/services?limit=2&cursor=${secondPage.nextCursor}")
             assertEquals(HttpStatusCode.OK, thirdResponse.status)
             val thirdPage =
                 Json.decodeFromString(
@@ -525,8 +541,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             repeat(3) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 
             // limit=0 is parsed as 0 by toIntOrNull; the repository clamps it to 1
-            val response =
-                client.get("/api/services?limit=0")
+            val response = client.get("/api/services?limit=0")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -543,8 +558,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         platformTestApplication { client ->
             repeat(3) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 
-            val response =
-                client.get("/api/services?limit=-1")
+            val response = client.get("/api/services?limit=-1")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -564,8 +578,7 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
 
             // limit=200 exceeds MAX_PAGE_SIZE (100); the repository clamps it to 100.
             // We have fewer than 100 rows so all items fit in one page with no next cursor.
-            val response =
-                client.get("/api/services?limit=200")
+            val response = client.get("/api/services?limit=200")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =

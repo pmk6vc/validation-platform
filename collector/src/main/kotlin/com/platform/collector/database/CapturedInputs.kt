@@ -13,6 +13,10 @@ object CapturedInputs : Table("captured_inputs") {
     // Referential integrity is enforced at the application layer (agent registers services
     // with the app, receives IDs, and uses those IDs when posting to the collector).
     val serviceId = uuid("service_id")
+
+    // organizationId is sourced from the JWT on every write and used to scope all reads.
+    // This lets the collector enforce per-tenant isolation without a cross-module HTTP call.
+    val organizationId = uuid("organization_id")
     val inputType = enumerationByName<InputType>("input_type", 50)
     val method = varchar("method", 20)
     val url = text("url")

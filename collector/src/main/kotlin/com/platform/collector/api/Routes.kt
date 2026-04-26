@@ -8,11 +8,13 @@ import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
+import com.platform.shared.auth.AgentIdentity
 import com.platform.shared.auth.JWT_AUTH
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.principal
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
@@ -34,6 +36,10 @@ fun Application.configureRouting() {
             route("/api") {
                 route("/captured-inputs") {
                     post {
+                        // organizationId is always taken from the JWT — the request body has no
+                        // organizationId field, so there's nothing to reject or auto-fill over.
+                        val principal = call.principal<AgentIdentity>()!!
+
                         val request = call.receive<BatchCreateCapturedInputRequest>()
                         if (request.items.isEmpty()) {
                             return@post call.respond(HttpStatusCode.BadRequest, "Batch must not be empty")
@@ -49,6 +55,8 @@ fun Application.configureRouting() {
                                 CapturedInput(
                                     id = CapturedInputId.generate(),
                                     serviceId = item.serviceId,
+                                    // Stamp organizationId from JWT — not from caller-supplied data.
+                                    organizationId = principal.organizationId,
                                     inputType = item.inputType,
                                     method = item.method,
                                     url = item.url,
@@ -68,6 +76,8 @@ fun Application.configureRouting() {
                     }
 
                     get {
+                        val principal = call.principal<AgentIdentity>()!!
+
                         val limit =
                             call.request.queryParameters["limit"]?.toIntOrNull()
                                 ?: CapturedInputRepository.DEFAULT_PAGE_SIZE
@@ -93,8 +103,11 @@ fun Application.configureRouting() {
                                 }
                             }
 
+                        // organizationId is always from the JWT — any organizationId query param
+                        // is ignored so callers cannot read another tenant's data.
                         val page =
                             CapturedInputRepository.find(
+                                organizationId = principal.organizationId,
                                 serviceId = serviceId,
                                 inputType = inputType,
                                 limit = limit,
@@ -104,6 +117,8 @@ fun Application.configureRouting() {
                     }
 
                     get("/{id}") {
+                        val principal = call.principal<AgentIdentity>()!!
+
                         val rawId =
                             call.parameters["id"]
                                 ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
@@ -114,7 +129,10 @@ fun Application.configureRouting() {
                                 return@get call.respond(HttpStatusCode.BadRequest, "Invalid id (must be UUID): $rawId")
                             }
 
-                        val input = CapturedInputRepository.findById(id)
+                        // findById scopes to organizationId from JWT — returns null for both
+                        // "not found" and "exists but belongs to a different org" so callers
+                        // cannot distinguish the two (404 in both cases, no info leak).
+                        val input = CapturedInputRepository.findById(id = id, organizationId = principal.organizationId)
                         if (input != null) {
                             call.respond(input)
                         } else {
@@ -123,6 +141,8 @@ fun Application.configureRouting() {
                     }
 
                     delete {
+                        val principal = call.principal<AgentIdentity>()!!
+
                         val rawServiceId = call.request.queryParameters["serviceId"]
                         if (rawServiceId == null) {
                             call.respond(HttpStatusCode.BadRequest, "Missing required query parameter: serviceId")
@@ -139,7 +159,12 @@ fun Application.configureRouting() {
                                 )
                             }
 
-                        val deleted = CapturedInputRepository.deleteByService(serviceId)
+                        // Scoped to the caller's org — silently ignores rows that belong to other orgs.
+                        val deleted =
+                            CapturedInputRepository.deleteByService(
+                                serviceId = serviceId,
+                                organizationId = principal.organizationId,
+                            )
                         call.respond(DeleteResponse(deleted = deleted))
                     }
                 }

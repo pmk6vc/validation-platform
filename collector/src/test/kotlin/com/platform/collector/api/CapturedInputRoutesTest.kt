@@ -11,6 +11,7 @@ import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
 import com.platform.collector.module
+import com.platform.shared.models.OrganizationId
 import com.platform.shared.models.Page
 import com.platform.shared.testing.TestJwtKeys
 import io.ktor.client.HttpClient
@@ -38,6 +39,10 @@ import kotlin.test.assertTrue
 
 class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private val lenientJson = Json { ignoreUnknownKeys = true }
+
+    // The default token's organizationId — inputs must be stamped with this org
+    // to be visible through routes that scope to the JWT's org.
+    private val testOrgId: OrganizationId = OrganizationId(TestJwtKeys.DEFAULT_ORG_ID)
     private val testServiceId: ServiceId = ServiceId(UUID.randomUUID().toString())
     private val token = TestJwtKeys.generateTestJwt()
 
@@ -51,6 +56,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     private fun createTestInput(
         id: String = UUID.randomUUID().toString(),
         serviceId: ServiceId = testServiceId,
+        organizationId: OrganizationId = testOrgId,
         inputType: InputType = InputType.HTTP,
         method: String = "GET",
         url: String = "/api/orders",
@@ -59,6 +65,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
     ) = CapturedInput(
         id = CapturedInputId(id),
         serviceId = serviceId,
+        organizationId = organizationId,
         inputType = inputType,
         method = method,
         url = url,
@@ -69,13 +76,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs should return empty page when no inputs`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.get("/api/captured-inputs") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.get("/api/captured-inputs")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -88,19 +90,14 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
-    fun `GET captured-inputs should return all inputs`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+    fun `GET captured-inputs should return inputs scoped to caller org`() =
+        collectorTestApplication { client ->
             val input1 = createTestInput(url = "/api/orders/1")
             val input2 = createTestInput(url = "/api/orders/2")
             CapturedInputRepository.create(input1)
             CapturedInputRepository.create(input2)
 
-            val response =
-                client.get("/api/captured-inputs") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -113,10 +110,29 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
-    fun `GET captured-inputs with serviceId filter should return filtered inputs`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
+    fun `GET captured-inputs should not return inputs from other orgs`() =
+        collectorTestApplication { client ->
+            val otherOrgId = OrganizationId(UUID.randomUUID().toString())
+            val myInput = createTestInput(url = "/api/mine", organizationId = testOrgId)
+            val theirInput = createTestInput(url = "/api/theirs", organizationId = otherOrgId)
+            CapturedInputRepository.create(myInput)
+            CapturedInputRepository.create(theirInput)
 
+            val response = client.get("/api/captured-inputs")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    response.bodyAsText(),
+                )
+            assertEquals(1, page.items.size)
+            assertEquals("/api/mine", page.items[0].url)
+        }
+
+    @Test
+    fun `GET captured-inputs with serviceId filter should return filtered inputs scoped to caller org`() =
+        collectorTestApplication { client ->
             val otherServiceId = ServiceId(UUID.randomUUID().toString())
 
             val input1 = createTestInput(serviceId = testServiceId, url = "/api/mine")
@@ -124,10 +140,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             CapturedInputRepository.create(input1)
             CapturedInputRepository.create(input2)
 
-            val response =
-                client.get("/api/captured-inputs?serviceId=${testServiceId.value}") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs?serviceId=${testServiceId.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -141,16 +154,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with inputType filter should return filtered inputs`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             val httpInput = createTestInput(inputType = InputType.HTTP, url = "/api/http")
             CapturedInputRepository.create(httpInput)
 
-            val response =
-                client.get("/api/captured-inputs?inputType=HTTP") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs?inputType=HTTP")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -165,13 +173,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with invalid serviceId UUID returns 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.get("/api/captured-inputs?serviceId=not-a-uuid") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.get("/api/captured-inputs?serviceId=not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertTrue(response.bodyAsText().contains("Invalid serviceId"))
@@ -179,13 +182,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-input by invalid UUID id returns 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.get("/api/captured-inputs/not-a-uuid") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.get("/api/captured-inputs/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertTrue(response.bodyAsText().contains("Invalid id"))
@@ -193,13 +191,8 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `DELETE captured-inputs with invalid serviceId UUID returns 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.delete("/api/captured-inputs?serviceId=not-a-uuid") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.delete("/api/captured-inputs?serviceId=not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertTrue(response.bodyAsText().contains("Invalid serviceId"))
@@ -207,30 +200,20 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with invalid inputType should return 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.get("/api/captured-inputs?inputType=INVALID") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.get("/api/captured-inputs?inputType=INVALID")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
     fun `GET captured-inputs with limit should return paginated response`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             repeat(5) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
             }
 
-            val response =
-                client.get("/api/captured-inputs?limit=3") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs?limit=3")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -244,17 +227,12 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with cursor should return next page`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             repeat(5) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
             }
 
-            val firstResponse =
-                client.get("/api/captured-inputs?limit=2") {
-                    bearerAuth(token)
-                }
+            val firstResponse = client.get("/api/captured-inputs?limit=2")
             assertEquals(HttpStatusCode.OK, firstResponse.status)
             val firstPage =
                 lenientJson.decodeFromString(
@@ -264,10 +242,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             assertEquals(2, firstPage.items.size)
             assertNotNull(firstPage.nextCursor)
 
-            val secondResponse =
-                client.get("/api/captured-inputs?limit=2&cursor=${firstPage.nextCursor}") {
-                    bearerAuth(token)
-                }
+            val secondResponse = client.get("/api/captured-inputs?limit=2&cursor=${firstPage.nextCursor}")
             assertEquals(HttpStatusCode.OK, secondResponse.status)
             val secondPage =
                 lenientJson.decodeFromString(
@@ -283,9 +258,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with malformed cursor should return 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             val malformedCursors =
                 listOf(
                     "garbage",
@@ -295,19 +268,14 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
                     "not-a-number.0|${UUID.randomUUID()}",
                 )
             for (cursor in malformedCursors) {
-                val response =
-                    client.get("/api/captured-inputs?cursor=$cursor") {
-                        bearerAuth(token)
-                    }
+                val response = client.get("/api/captured-inputs?cursor=$cursor")
                 assertEquals(HttpStatusCode.BadRequest, response.status, "Expected 400 for cursor: '$cursor'")
             }
         }
 
     @Test
-    fun `GET captured-input by id should return input when exists`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+    fun `GET captured-input by id should return input when exists and belongs to caller org`() =
+        collectorTestApplication { client ->
             val input =
                 createTestInput(
                     method = "POST",
@@ -317,10 +285,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
                 )
             CapturedInputRepository.create(input)
 
-            val response =
-                client.get("/api/captured-inputs/${input.id.value}") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs/${input.id.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = lenientJson.decodeFromString<CapturedInput>(response.bodyAsText())
@@ -332,41 +297,39 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-input by id should return 404 when not exists`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
+        collectorTestApplication { client ->
+            val response = client.get("/api/captured-inputs/${UUID.randomUUID()}")
 
-            val response =
-                client.get("/api/captured-inputs/${UUID.randomUUID()}") {
-                    bearerAuth(token)
-                }
+            assertEquals(HttpStatusCode.NotFound, response.status)
+        }
+
+    @Test
+    fun `GET captured-input by id should return 404 when belongs to different org`() =
+        collectorTestApplication { client ->
+            val otherOrgId = OrganizationId(UUID.randomUUID().toString())
+            val input = createTestInput(organizationId = otherOrgId)
+            CapturedInputRepository.create(input)
+
+            // Caller's JWT is for testOrgId; this input belongs to otherOrgId — should be 404
+            val response = client.get("/api/captured-inputs/${input.id.value}")
 
             assertEquals(HttpStatusCode.NotFound, response.status)
         }
 
     @Test
     fun `GET captured-input by id should return 400 for malformed UUID`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.get("/api/captured-inputs/not-a-uuid") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.get("/api/captured-inputs/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
-    fun `DELETE captured-inputs with serviceId should delete and return count`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+    fun `DELETE captured-inputs with serviceId should delete and return count scoped to caller org`() =
+        collectorTestApplication { client ->
             repeat(3) { CapturedInputRepository.create(createTestInput()) }
 
-            val response =
-                client.delete("/api/captured-inputs?serviceId=${testServiceId.value}") {
-                    bearerAuth(token)
-                }
+            val response = client.delete("/api/captured-inputs?serviceId=${testServiceId.value}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
@@ -374,27 +337,34 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         }
 
     @Test
-    fun `DELETE captured-inputs without serviceId should return 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
+    fun `DELETE captured-inputs should not delete inputs from other orgs`() =
+        collectorTestApplication { client ->
+            val otherOrgId = OrganizationId(UUID.randomUUID().toString())
+            repeat(3) { CapturedInputRepository.create(createTestInput(organizationId = testOrgId)) }
+            // Same serviceId but different org — must not be deleted
+            repeat(2) { CapturedInputRepository.create(createTestInput(organizationId = otherOrgId)) }
 
-            val response =
-                client.delete("/api/captured-inputs") {
-                    bearerAuth(token)
-                }
+            val response = client.delete("/api/captured-inputs?serviceId=${testServiceId.value}")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
+            assertEquals(3, result.deleted)
+            // The other org's rows remain
+            assertEquals(2L, CapturedInputRepository.countByService(testServiceId))
+        }
+
+    @Test
+    fun `DELETE captured-inputs without serviceId should return 400`() =
+        collectorTestApplication { client ->
+            val response = client.delete("/api/captured-inputs")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
     fun `DELETE captured-inputs with no matching inputs should return zero`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
-            val response =
-                client.delete("/api/captured-inputs?serviceId=${UUID.randomUUID()}") {
-                    bearerAuth(token)
-                }
+        collectorTestApplication { client ->
+            val response = client.delete("/api/captured-inputs?serviceId=${UUID.randomUUID()}")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = lenientJson.decodeFromString<DeleteResponse>(response.bodyAsText())
@@ -421,10 +391,41 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
         )
 
     @Test
+    fun `POST captured-inputs stamps organizationId from JWT on all created inputs`() =
+        collectorTestApplication { client ->
+            val jsonClient =
+                createClient {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+
+            val response =
+                jsonClient.post("/api/captured-inputs") {
+                    bearerAuth(token)
+                    contentType(ContentType.Application.Json)
+                    setBody(createTestBatchRequest(count = 2))
+                }
+
+            assertEquals(HttpStatusCode.Created, response.status)
+
+            // Verify inputs are retrievable (proving organizationId was correctly stamped)
+            val listResponse = client.get("/api/captured-inputs?serviceId=${testServiceId.value}")
+            assertEquals(HttpStatusCode.OK, listResponse.status)
+            val page =
+                lenientJson.decodeFromString(
+                    Page.serializer(CapturedInput.serializer()),
+                    listResponse.bodyAsText(),
+                )
+            assertEquals(2, page.items.size)
+            assertTrue(page.items.all { it.organizationId == testOrgId })
+        }
+
+    @Test
     fun `POST captured-inputs with valid batch should return 201 with count`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-            val jsonClient = createJsonClient()
+        collectorTestApplication { client ->
+            val jsonClient =
+                createClient {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
 
             val response =
                 jsonClient.post("/api/captured-inputs") {
@@ -437,10 +438,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
             val result = lenientJson.decodeFromString<BatchCreateCapturedInputResponse>(response.bodyAsText())
             assertEquals(3, result.created)
 
-            val listResponse =
-                client.get("/api/captured-inputs?serviceId=${testServiceId.value}") {
-                    bearerAuth(token)
-                }
+            val listResponse = client.get("/api/captured-inputs?serviceId=${testServiceId.value}")
             assertEquals(HttpStatusCode.OK, listResponse.status)
             val page =
                 lenientJson.decodeFromString(
@@ -452,9 +450,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `POST captured-inputs with empty batch should return 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-            val jsonClient = createJsonClient()
+        collectorTestApplication { client ->
+            val jsonClient =
+                createClient {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
 
             val response =
                 jsonClient.post("/api/captured-inputs") {
@@ -468,9 +468,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `POST captured-inputs with unknown serviceId should succeed`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-            val jsonClient = createJsonClient()
+        collectorTestApplication { client ->
+            val jsonClient =
+                createClient {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
 
             val unknownServiceId = ServiceId(UUID.randomUUID().toString())
             val response =
@@ -516,9 +518,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `POST captured-inputs exceeding max batch size should return 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-            val jsonClient = createJsonClient()
+        collectorTestApplication { client ->
+            val jsonClient =
+                createClient {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
 
             val response =
                 jsonClient.post("/api/captured-inputs") {
@@ -533,16 +537,11 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with limit=0 is clamped to 1 and returns results`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             repeat(3) { i -> CapturedInputRepository.create(createTestInput(url = "/api/orders/$i")) }
 
             // limit=0 is parsed as 0 by toIntOrNull; the repository clamps it to 1
-            val response =
-                client.get("/api/captured-inputs?limit=0") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs?limit=0")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -556,15 +555,10 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with limit=-1 is clamped to 1 and returns results`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             repeat(3) { i -> CapturedInputRepository.create(createTestInput(url = "/api/orders/$i")) }
 
-            val response =
-                client.get("/api/captured-inputs?limit=-1") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs?limit=-1")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -578,9 +572,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
     @Test
     fun `GET captured-inputs with limit over maximum is clamped to max page size`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
-
+        collectorTestApplication { client ->
             val count = CapturedInputRepository.DEFAULT_PAGE_SIZE + 5
             repeat(count) { i ->
                 CapturedInputRepository.create(createTestInput(url = "/api/orders/$i"))
@@ -588,10 +580,7 @@ class CapturedInputRoutesTest : CollectorDatabaseTestBase() {
 
             // limit=200 exceeds MAX_PAGE_SIZE (100); the repository clamps it to 100.
             // We have fewer than 100 rows so all items fit in one page with no next cursor.
-            val response =
-                client.get("/api/captured-inputs?limit=200") {
-                    bearerAuth(token)
-                }
+            val response = client.get("/api/captured-inputs?limit=200")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =

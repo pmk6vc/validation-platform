@@ -38,16 +38,30 @@ fun Application.configureRouting() {
             route("/api") {
                 route("/organizations") {
                     get {
+                        val principal = call.principal<AgentIdentity>()!!
                         val limit =
                             call.request.queryParameters["limit"]?.toIntOrNull()
                                 ?: OrganizationRepository.DEFAULT_PAGE_SIZE
                         val cursor = call.request.queryParameters["cursor"]
 
-                        val page = OrganizationRepository.find(limit = limit, cursor = cursor)
+                        // Always scope to the caller's organization. A JWT identifies exactly one
+                        // org, so this list returns 0 or 1 items. The paginated wrapper is kept
+                        // for API consistency with future multi-org admin tokens.
+                        val page =
+                            OrganizationRepository.find(
+                                organizationId = principal.organizationId,
+                                limit = limit,
+                                cursor = cursor,
+                            )
                         call.respond(page)
                     }
 
                     post {
+                        // TODO: Organization creation is an admin-only operation that doesn't fit
+                        // the agent JWT model (an agent JWT is always scoped to an existing org).
+                        // Deferring per-tenant enforcement here until an admin auth scheme is
+                        // introduced. For now, org creation is open to any valid JWT bearer and
+                        // the caller's organizationId claim is not enforced on this endpoint.
                         val request = call.receive<CreateOrganizationRequest>()
                         if (request.name.isBlank()) {
                             return@post call.respond(HttpStatusCode.BadRequest, "Organization name must not be blank")
@@ -63,6 +77,7 @@ fun Application.configureRouting() {
                     }
 
                     get("/{id}") {
+                        val principal = call.principal<AgentIdentity>()!!
                         val rawId =
                             call.parameters["id"]
                                 ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
@@ -77,7 +92,9 @@ fun Application.configureRouting() {
                             }
 
                         val organization = OrganizationRepository.findById(id)
-                        if (organization != null) {
+                        // Return 404 whether the org doesn't exist OR belongs to a different tenant
+                        // so callers cannot probe for other orgs' existence.
+                        if (organization != null && organization.id == principal.organizationId) {
                             call.respond(organization)
                         } else {
                             call.respond(HttpStatusCode.NotFound, "Organization not found")
@@ -102,27 +119,17 @@ fun Application.configureRouting() {
 
                 route("/services") {
                     get {
+                        val principal = call.principal<AgentIdentity>()!!
                         val limit =
                             call.request.queryParameters["limit"]?.toIntOrNull()
                                 ?: ServiceRepository.DEFAULT_PAGE_SIZE
                         val cursor = call.request.queryParameters["cursor"]
 
-                        val rawOrgId = call.request.queryParameters["organizationId"]
-                        val organizationId =
-                            rawOrgId?.let {
-                                try {
-                                    OrganizationId(it)
-                                } catch (_: IllegalArgumentException) {
-                                    return@get call.respond(
-                                        HttpStatusCode.BadRequest,
-                                        "Invalid organizationId (must be UUID): $it",
-                                    )
-                                }
-                            }
-
+                        // organizationId is always from the JWT — any organizationId query param
+                        // is ignored so callers cannot read another tenant's services.
                         val page =
                             ServiceRepository.find(
-                                organizationId = organizationId,
+                                organizationId = principal.organizationId,
                                 cluster = call.request.queryParameters["cluster"],
                                 namespace = call.request.queryParameters["namespace"],
                                 limit = limit,
@@ -132,6 +139,7 @@ fun Application.configureRouting() {
                     }
 
                     post {
+                        val principal = call.principal<AgentIdentity>()!!
                         val request = call.receive<CreateServiceRequest>()
                         if (request.name.isBlank()) {
                             return@post call.respond(HttpStatusCode.BadRequest, "Service name must not be blank")
@@ -140,7 +148,11 @@ fun Application.configureRouting() {
                         val service =
                             Service(
                                 id = ServiceId.generate(),
-                                organizationId = request.organizationId,
+                                // Auto-set organizationId from JWT — body's organizationId field is
+                                // ignored. This prevents callers from inserting services into other
+                                // orgs and avoids a 400/403 ambiguity for honest callers who simply
+                                // omit it or match it to their own org.
+                                organizationId = principal.organizationId,
                                 cluster = request.cluster,
                                 namespace = request.namespace,
                                 name = request.name,
@@ -154,6 +166,7 @@ fun Application.configureRouting() {
                     }
 
                     get("/{id}") {
+                        val principal = call.principal<AgentIdentity>()!!
                         val rawId =
                             call.parameters["id"]
                                 ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing id")
@@ -168,7 +181,9 @@ fun Application.configureRouting() {
                             }
 
                         val service = ServiceRepository.findById(id)
-                        if (service != null) {
+                        // Return 404 whether the service doesn't exist OR belongs to a different tenant
+                        // so callers cannot probe for other orgs' services.
+                        if (service != null && service.organizationId == principal.organizationId) {
                             call.respond(service)
                         } else {
                             call.respond(HttpStatusCode.NotFound, "Service not found")

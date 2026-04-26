@@ -4,6 +4,7 @@ import com.platform.collector.models.CapturedInput
 import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
+import com.platform.shared.models.OrganizationId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -14,12 +15,15 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
+    private val testOrgId: OrganizationId = OrganizationId(UUID.randomUUID().toString())
+    private val otherOrgId: OrganizationId = OrganizationId(UUID.randomUUID().toString())
     private val testServiceId: ServiceId = ServiceId(UUID.randomUUID().toString())
     private val otherServiceId: ServiceId = ServiceId(UUID.randomUUID().toString())
 
     private fun createTestInput(
         id: String = UUID.randomUUID().toString(),
         serviceId: ServiceId = testServiceId,
+        organizationId: OrganizationId = testOrgId,
         inputType: InputType = InputType.HTTP,
         method: String = "GET",
         url: String = "/api/orders",
@@ -35,6 +39,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     ) = CapturedInput(
         id = CapturedInputId(id),
         serviceId = serviceId,
+        organizationId = organizationId,
         inputType = inputType,
         method = method,
         url = url,
@@ -58,11 +63,12 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
 
             assertEquals(input.id, created.id)
             assertEquals(testServiceId, created.serviceId)
+            assertEquals(testOrgId, created.organizationId)
             assertEquals(InputType.HTTP, created.inputType)
         }
 
     @Test
-    fun `findById should return captured input when exists`() =
+    fun `findById should return captured input when exists and org matches`() =
         runBlocking {
             val input =
                 createTestInput(
@@ -74,7 +80,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                 )
             CapturedInputRepository.create(input)
 
-            val found = CapturedInputRepository.findById(input.id)
+            val found = CapturedInputRepository.findById(id = input.id, organizationId = testOrgId)
 
             assertNotNull(found)
             assertEquals(input.id, found.id)
@@ -88,7 +94,23 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
     @Test
     fun `findById should return null when not exists`() =
         runBlocking {
-            val found = CapturedInputRepository.findById(CapturedInputId(UUID.randomUUID().toString()))
+            val found =
+                CapturedInputRepository.findById(
+                    id = CapturedInputId(UUID.randomUUID().toString()),
+                    organizationId = testOrgId,
+                )
+
+            assertNull(found)
+        }
+
+    @Test
+    fun `findById should return null when org does not match`() =
+        runBlocking {
+            val input = createTestInput(organizationId = testOrgId)
+            CapturedInputRepository.create(input)
+
+            // Looking up with a different org returns null — no info leak
+            val found = CapturedInputRepository.findById(id = input.id, organizationId = otherOrgId)
 
             assertNull(found)
         }
@@ -107,7 +129,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                 )
             CapturedInputRepository.create(input)
 
-            val found = CapturedInputRepository.findById(input.id)
+            val found = CapturedInputRepository.findById(id = input.id, organizationId = testOrgId)
 
             assertNotNull(found)
             assertEquals(requestHeaders, found.requestHeaders)
@@ -131,7 +153,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
                 )
             CapturedInputRepository.create(input)
 
-            val found = CapturedInputRepository.findById(input.id)
+            val found = CapturedInputRepository.findById(id = input.id, organizationId = testOrgId)
 
             assertNotNull(found)
             assertNull(found.requestHeaders)
@@ -153,7 +175,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
 
             CapturedInputRepository.createBatch(inputs)
 
-            val page = CapturedInputRepository.find(serviceId = testServiceId)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, serviceId = testServiceId)
             assertEquals(5, page.items.size)
         }
 
@@ -177,10 +199,24 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
             CapturedInputRepository.create(input2)
             CapturedInputRepository.create(input3)
 
-            val page = CapturedInputRepository.find(serviceId = testServiceId)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, serviceId = testServiceId)
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.serviceId == testServiceId })
+        }
+
+    @Test
+    fun `find scoped to org should not return inputs from other orgs`() =
+        runBlocking {
+            val input1 = createTestInput(organizationId = testOrgId)
+            val input2 = createTestInput(organizationId = otherOrgId)
+            CapturedInputRepository.create(input1)
+            CapturedInputRepository.create(input2)
+
+            val page = CapturedInputRepository.find(organizationId = testOrgId)
+
+            assertEquals(1, page.items.size)
+            assertEquals(testOrgId, page.items[0].organizationId)
         }
 
     @Test
@@ -191,7 +227,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
             CapturedInputRepository.create(httpInput1)
             CapturedInputRepository.create(httpInput2)
 
-            val page = CapturedInputRepository.find(inputType = InputType.HTTP)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, inputType = InputType.HTTP)
 
             assertEquals(2, page.items.size)
             assertTrue(page.items.all { it.inputType == InputType.HTTP })
@@ -215,6 +251,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
 
             val page =
                 CapturedInputRepository.find(
+                    organizationId = testOrgId,
                     serviceId = testServiceId,
                     inputType = InputType.HTTP,
                 )
@@ -228,7 +265,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             repeat(5) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = CapturedInputRepository.find(limit = 3)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, limit = 3)
 
             assertEquals(3, page.items.size)
         }
@@ -238,7 +275,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             repeat(5) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = CapturedInputRepository.find(limit = 3)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, limit = 3)
 
             assertEquals(3, page.items.size)
             assertNotNull(page.nextCursor)
@@ -249,7 +286,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             repeat(3) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = CapturedInputRepository.find(limit = 5)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, limit = 5)
 
             assertEquals(3, page.items.size)
             assertNull(page.nextCursor)
@@ -260,11 +297,12 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             repeat(5) { CapturedInputRepository.create(createTestInput()) }
 
-            val firstPage = CapturedInputRepository.find(limit = 2)
+            val firstPage = CapturedInputRepository.find(organizationId = testOrgId, limit = 2)
             assertEquals(2, firstPage.items.size)
             assertNotNull(firstPage.nextCursor)
 
-            val secondPage = CapturedInputRepository.find(limit = 2, cursor = firstPage.nextCursor)
+            val secondPage =
+                CapturedInputRepository.find(organizationId = testOrgId, limit = 2, cursor = firstPage.nextCursor)
             assertEquals(2, secondPage.items.size)
             assertNotNull(secondPage.nextCursor)
 
@@ -272,7 +310,8 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
             val secondPageIds = secondPage.items.map { it.id }.toSet()
             assertTrue(firstPageIds.intersect(secondPageIds).isEmpty())
 
-            val thirdPage = CapturedInputRepository.find(limit = 2, cursor = secondPage.nextCursor)
+            val thirdPage =
+                CapturedInputRepository.find(organizationId = testOrgId, limit = 2, cursor = secondPage.nextCursor)
             assertEquals(1, thirdPage.items.size)
             assertNull(thirdPage.nextCursor)
         }
@@ -282,7 +321,7 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         runBlocking {
             repeat(150) { CapturedInputRepository.create(createTestInput()) }
 
-            val page = CapturedInputRepository.find(limit = 200)
+            val page = CapturedInputRepository.find(organizationId = testOrgId, limit = 200)
 
             assertEquals(CapturedInputRepository.MAX_PAGE_SIZE, page.items.size)
         }
@@ -307,12 +346,20 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         }
 
     @Test
-    fun `deleteByService should remove all inputs for that service`() =
+    fun `deleteByService should remove all inputs for that service scoped to org`() =
         runBlocking {
-            repeat(3) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId)) }
-            repeat(2) { CapturedInputRepository.create(createTestInput(serviceId = otherServiceId)) }
+            repeat(
+                3,
+            ) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId, organizationId = testOrgId)) }
+            repeat(
+                2,
+            ) {
+                CapturedInputRepository.create(
+                    createTestInput(serviceId = otherServiceId, organizationId = testOrgId),
+                )
+            }
 
-            val deleted = CapturedInputRepository.deleteByService(testServiceId)
+            val deleted = CapturedInputRepository.deleteByService(serviceId = testServiceId, organizationId = testOrgId)
 
             assertEquals(3L, deleted)
             assertEquals(0L, CapturedInputRepository.countByService(testServiceId))
@@ -320,9 +367,31 @@ class CapturedInputRepositoryTest : CollectorDatabaseTestBase() {
         }
 
     @Test
+    fun `deleteByService should not delete inputs belonging to a different org`() =
+        runBlocking {
+            repeat(
+                3,
+            ) { CapturedInputRepository.create(createTestInput(serviceId = testServiceId, organizationId = testOrgId)) }
+            // Same serviceId but a different org — should NOT be deleted
+            repeat(
+                2,
+            ) {
+                CapturedInputRepository.create(
+                    createTestInput(serviceId = testServiceId, organizationId = otherOrgId),
+                )
+            }
+
+            val deleted = CapturedInputRepository.deleteByService(serviceId = testServiceId, organizationId = testOrgId)
+
+            assertEquals(3L, deleted)
+            // The other org's rows are still there
+            assertEquals(2L, CapturedInputRepository.countByService(testServiceId))
+        }
+
+    @Test
     fun `deleteByService should return zero when no inputs exist`() =
         runBlocking {
-            val deleted = CapturedInputRepository.deleteByService(testServiceId)
+            val deleted = CapturedInputRepository.deleteByService(serviceId = testServiceId, organizationId = testOrgId)
 
             assertEquals(0L, deleted)
         }

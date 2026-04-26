@@ -1,6 +1,7 @@
 package com.platform.collector.models
 
 import com.platform.shared.models.InstantSerializer
+import com.platform.shared.models.OrganizationId
 import kotlinx.serialization.Serializable
 import java.time.Instant
 
@@ -8,6 +9,7 @@ import java.time.Instant
 data class CapturedInput(
     val id: CapturedInputId,
     val serviceId: ServiceId,
+    val organizationId: OrganizationId,
     val inputType: InputType,
     val method: String,
     val url: String,

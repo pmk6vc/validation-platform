@@ -79,12 +79,12 @@ Each module owns its tables, models, and repositories. Cross-module communicatio
 ```
 GET    /health                             # Health check (no auth)
 GET    /.well-known/jwks.json              # RSA public key (no auth)
-GET    /api/organizations                  # List organizations (paginated) — requires JWT
-POST   /api/organizations                  # Create organization — requires JWT
-GET    /api/organizations/{id}             # Get organization by ID — requires JWT
-GET    /api/services                       # List services (paginated, filterable) — requires JWT
-POST   /api/services                       # Create service — requires JWT
-GET    /api/services/{id}                  # Get service by ID — requires JWT
+GET    /api/organizations                  # List organizations — scoped to caller's org (0 or 1 result)
+POST   /api/organizations                  # Create organization — requires JWT (admin-only; role not enforced yet, see TODO in Routes.kt)
+GET    /api/organizations/{id}             # Get organization — 404 if id != JWT organizationId
+GET    /api/services                       # List services — scoped to caller's org
+POST   /api/services                       # Create service — organizationId + cluster taken from JWT (not in body)
+GET    /api/services/{id}                  # Get service — 404 if service.organizationId != JWT organizationId
 GET    /api/agent/config                   # Agent dynamic config (target services for the JWT's org+cluster) — requires JWT
 ```
 
@@ -92,10 +92,10 @@ GET    /api/agent/config                   # Agent dynamic config (target servic
 
 ```
 GET    /health                                    # Health check (no auth)
-POST   /api/captured-inputs                       # Ingest a batch of captured inputs — requires JWT
-GET    /api/captured-inputs                       # List captured inputs (paginated) — requires JWT
-GET    /api/captured-inputs/{id}                  # Get captured input by ID — requires JWT
-DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs for a service — requires JWT
+POST   /api/captured-inputs                       # Ingest batch — organizationId auto-stamped from JWT; scoped to caller's org
+GET    /api/captured-inputs                       # List captured inputs — scoped to caller's org
+GET    /api/captured-inputs/{id}                  # Get captured input — 404 if input.organizationId != JWT organizationId
+DELETE /api/captured-inputs?serviceId={id}        # Delete captured inputs for service — scoped to caller's org only
 ```
 
 ### JWT Authentication

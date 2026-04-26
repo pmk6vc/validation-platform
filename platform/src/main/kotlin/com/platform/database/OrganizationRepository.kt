@@ -47,27 +47,37 @@ object OrganizationRepository {
     /**
      * Find organizations with cursor-based pagination.
      *
+     * @param organizationId Filter to a single org; pass the JWT principal's org to enforce tenant scoping.
      * @param limit Maximum number of items to return (default 20, max 100)
      * @param cursor Cursor from previous page's nextCursor, null for first page
      * @return Page containing organizations and nextCursor for pagination
      */
     suspend fun find(
+        organizationId: OrganizationId? = null,
         limit: Int = DEFAULT_PAGE_SIZE,
         cursor: String? = null,
     ): Page<Organization> =
         newSuspendedTransaction {
             val pageLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
+            val conditions = mutableListOf<Op<Boolean>>()
+
+            organizationId?.let {
+                conditions.add(Organizations.id eq UUID.fromString(it.value))
+            }
+            cursor?.let {
+                val (cursorTimestamp, cursorId) =
+                    decodeCursor(it) ?: throw IllegalArgumentException("Invalid cursor")
+                conditions.add(
+                    (Organizations.createdAt greater cursorTimestamp) or
+                        ((Organizations.createdAt eq cursorTimestamp) and (Organizations.id greater cursorId)),
+                )
+            }
 
             val query =
-                if (cursor != null) {
-                    val (cursorTimestamp, cursorId) =
-                        decodeCursor(cursor) ?: throw IllegalArgumentException("Invalid cursor")
-                    val cursorCondition: Op<Boolean> =
-                        (Organizations.createdAt greater cursorTimestamp) or
-                            ((Organizations.createdAt eq cursorTimestamp) and (Organizations.id greater cursorId))
-                    Organizations.selectAll().where { cursorCondition }
-                } else {
+                if (conditions.isEmpty()) {
                     Organizations.selectAll()
+                } else {
+                    Organizations.selectAll().where { conditions.reduce { acc, op -> acc and op } }
                 }
 
             val results =
