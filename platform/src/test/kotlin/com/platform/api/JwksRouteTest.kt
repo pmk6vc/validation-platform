@@ -42,8 +42,7 @@ class JwksRouteTest {
             val (privateKey, pem) = generateKeyPair()
 
             application {
-                configureJwks(privateKeyPem = pem)
-                module(initDatabase = false)
+                module(initDatabase = false, privateKeyPem = pem)
             }
 
             // Fetch the JWKS
@@ -75,7 +74,7 @@ class JwksRouteTest {
                     .withClaim("cluster", "prod")
                     .sign(Algorithm.RSA256(publicKey, privateKey))
 
-            // Verify with the public key from JWKS — this is what Envoy does
+            // Verify with the public key from JWKS
             val verifier = JWT.require(Algorithm.RSA256(publicKey, null)).build()
             val decoded = verifier.verify(token)
 
@@ -89,8 +88,7 @@ class JwksRouteTest {
             val (_, pem) = generateKeyPair()
 
             application {
-                configureJwks(privateKeyPem = pem)
-                module(initDatabase = false)
+                module(initDatabase = false, privateKeyPem = pem)
             }
 
             val response1 = client.get("/.well-known/jwks.json").bodyAsText()

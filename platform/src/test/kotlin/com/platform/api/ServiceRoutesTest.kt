@@ -71,7 +71,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services should return empty page when no services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/services")
 
@@ -88,7 +88,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services should return all services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc1 = createService(name = "order-service")
             val svc2 = createService(name = "payment-service")
@@ -110,7 +110,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with organizationId filter should return filtered services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
             OrganizationRepository.create(otherOrg)
@@ -146,7 +146,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with cluster filter should return filtered services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc1 = createService(name = "prod-service", cluster = "prod-us-east")
             val svc2 = createService(name = "staging-service", cluster = "staging")
@@ -168,7 +168,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with namespace filter should return filtered services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
@@ -193,7 +193,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with only namespace filter should return filtered services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "payments-worker", cluster = "staging", namespace = "payments")
@@ -217,7 +217,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with only cluster filter should return filtered services`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc1 = createService(name = "prod-service-1", cluster = "prod")
             val svc2 = createService(name = "prod-service-2", cluster = "prod", namespace = "other")
@@ -241,7 +241,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with malformed cursor should return 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val malformedCursors =
                 listOf(
@@ -260,7 +260,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by id should return service when exists`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc = createService(name = "my-service", metadata = mapOf("version" to "1.0"))
             ServiceRepository.create(svc)
@@ -277,7 +277,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by id should return 404 when not exists`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/services/${UUID.randomUUID()}")
 
@@ -287,7 +287,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by id should return 400 for malformed UUID`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/services/not-a-uuid")
 
@@ -297,7 +297,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services should create and return service with 201`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -325,7 +325,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services should persist service retrievable by GET`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val createResponse =
@@ -356,7 +356,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with missing required fields returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response =
                 client.post("/api/services") {
@@ -370,7 +370,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with duplicate identity returns 409`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val request =
@@ -399,7 +399,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with invalid organizationId returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -421,7 +421,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST services with blank name returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -443,7 +443,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service should include all fields in response`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val svc =
                 createService(
@@ -470,7 +470,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET service by invalid UUID id returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/services/not-a-uuid")
 
@@ -480,7 +480,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with limit should return paginated response`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             repeat(5) { i ->
                 ServiceRepository.create(createService(name = "service-$i"))
@@ -501,7 +501,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with cursor should return next page`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             repeat(5) { i ->
                 ServiceRepository.create(createService(name = "service-$i"))
@@ -549,7 +549,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with limit=0 is clamped to 1 and returns results`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             repeat(3) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 
@@ -569,7 +569,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with limit=-1 is clamped to 1 and returns results`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             repeat(3) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 
@@ -588,7 +588,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET services with limit over maximum is clamped to max page size`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val count = ServiceRepository.DEFAULT_PAGE_SIZE + 5
             repeat(count) { i -> ServiceRepository.create(createService(name = "service-$i")) }
