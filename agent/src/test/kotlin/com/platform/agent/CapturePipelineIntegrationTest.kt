@@ -787,17 +787,18 @@ class CapturePipelineIntegrationTest {
                     .map { it.url }
                     .toSet()
 
-            // Snapshot how many events we've seen so we can detect
-            // "everything that arrives AFTER this point" (no retry of dropped).
-            val eventCountAfterFailure = collectorEvents.replayCache.size
-
-            // Settle window: prove that the dropped batch is NOT re-posted.
-            // If retry were happening, we'd see another POST with the same
-            // content within the backoff window (5-50ms). 500ms is generous.
-            assertNoMoreEventsFor(window = 500.milliseconds, since = eventCountAfterFailure)
+            // Settle window: give any potential retry a chance to fire
+            // (CollectorClient backoff is 5-50ms; 500ms is generous). We
+            // can't use assertNoMoreEventsFor here because bad1 and bad2
+            // might arrive in separate batches — the second batch with the
+            // remaining item will also be POSTed (and succeed). That's not
+            // a retry; it's a different batch. Only items whose URLs match
+            // the dropped batch count as a retry.
+            delay(500.milliseconds)
 
             // Strict invariant: items from the dropped batch must never
-            // appear in any subsequent collector POST.
+            // appear in any subsequent collector POST. Batch-agnostic —
+            // works whether [bad1, bad2] arrived together or split.
             val droppedItemReoccurrences =
                 collectorEvents.replayCache
                     .filter { it.requestIndex > failedEvent.requestIndex }
