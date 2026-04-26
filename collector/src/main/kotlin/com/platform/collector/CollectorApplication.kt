@@ -1,8 +1,8 @@
 package com.platform.collector
 
-import com.platform.auth.installJwtAuth
 import com.platform.collector.api.configureRouting
-import com.platform.database.DatabaseFactory
+import com.platform.shared.auth.installJwtAuth
+import com.platform.shared.database.DatabaseFactory
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application

@@ -11,7 +11,7 @@ import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
 import com.platform.collector.module
-import com.platform.models.Page
+import com.platform.shared.models.Page
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth

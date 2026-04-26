@@ -1,7 +1,7 @@
 package com.platform.database
 
 import com.platform.models.Organization
-import com.platform.models.OrganizationId
+import com.platform.shared.models.OrganizationId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows

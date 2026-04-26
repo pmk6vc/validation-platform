@@ -1,8 +1,8 @@
-package com.platform.auth
+package com.platform.shared.auth
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
-import com.platform.models.OrganizationId
+import com.platform.shared.models.OrganizationId
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.install

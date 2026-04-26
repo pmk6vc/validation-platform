@@ -1,7 +1,7 @@
 package com.platform.adapters
 
-import com.platform.models.OrganizationId
 import com.platform.models.Service
+import com.platform.shared.models.OrganizationId
 
 /**
  * Contract for adapters that discover and import services from various sources.

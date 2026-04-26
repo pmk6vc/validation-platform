@@ -4,9 +4,9 @@ import com.platform.collector.models.CapturedInput
 import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
-import com.platform.models.Page
-import com.platform.models.decodeCursor
-import com.platform.models.encodeCursor
+import com.platform.shared.models.Page
+import com.platform.shared.models.decodeCursor
+import com.platform.shared.models.encodeCursor
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder

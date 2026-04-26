@@ -1,4 +1,4 @@
-package com.platform.database
+package com.platform.shared.database
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource

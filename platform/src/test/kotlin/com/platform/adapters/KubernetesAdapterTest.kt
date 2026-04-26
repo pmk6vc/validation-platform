@@ -1,7 +1,7 @@
 package com.platform.adapters
 
-import com.platform.models.OrganizationId
 import com.platform.models.Provider
+import com.platform.shared.models.OrganizationId
 import io.fabric8.kubernetes.api.model.ObjectMeta
 import io.fabric8.kubernetes.api.model.Service
 import io.fabric8.kubernetes.api.model.ServiceList

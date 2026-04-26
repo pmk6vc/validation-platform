@@ -1,4 +1,4 @@
-package com.platform.models
+package com.platform.shared.models
 
 import kotlinx.serialization.Serializable
 import java.util.UUID

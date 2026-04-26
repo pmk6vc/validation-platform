@@ -1,13 +1,13 @@
 package com.platform.api
 
-import com.platform.auth.AgentIdentity
-import com.platform.auth.JWT_AUTH
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
-import com.platform.models.OrganizationId
 import com.platform.models.Service
-import com.platform.models.ServiceId
+import com.platform.shared.auth.AgentIdentity
+import com.platform.shared.auth.JWT_AUTH
+import com.platform.shared.models.OrganizationId
+import com.platform.shared.models.ServiceId
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call

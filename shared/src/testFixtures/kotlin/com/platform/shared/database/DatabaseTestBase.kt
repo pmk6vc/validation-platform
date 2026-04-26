@@ -1,4 +1,4 @@
-package com.platform.database
+package com.platform.shared.database
 
 import org.junit.jupiter.api.BeforeAll
 import org.testcontainers.postgresql.PostgreSQLContainer
