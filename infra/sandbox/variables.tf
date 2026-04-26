@@ -4,14 +4,14 @@ variable "project" {
   default     = "zugzwang-381922"
 }
 
-variable "region" {
-  description = "GCP region for the sandbox cluster"
+variable "zone" {
+  description = "GCP zone for the (zonal) sandbox cluster"
   type        = string
-  default     = "us-central1"
+  default     = "us-central1-a"
 }
 
 variable "node_count" {
-  description = "Number of nodes in the sandbox node pool"
+  description = "Number of nodes in the sandbox node pool (zonal cluster: this is the actual total)"
   type        = number
-  default     = 2
+  default     = 1
 }

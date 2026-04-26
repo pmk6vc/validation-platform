@@ -11,5 +11,5 @@ terraform {
 
 provider "google" {
   project = var.project
-  region  = var.region
+  # No default region/zone — every resource sets its own location explicitly.
 }

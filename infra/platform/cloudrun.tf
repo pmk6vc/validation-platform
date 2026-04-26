@@ -23,6 +23,10 @@ resource "google_cloud_run_v2_service" "platform" {
   location = var.region
   project  = var.project
 
+  # Cloud Run services are stateless — durability lives in Cloud SQL.
+  # Protecting them from deletion only adds friction in platform-delete.sh.
+  deletion_protection = false
+
   template {
     service_account = google_service_account.platform.email
 
@@ -103,6 +107,9 @@ resource "google_cloud_run_v2_service" "collector" {
   name     = "validation-collector"
   location = var.region
   project  = var.project
+
+  # See platform — stateless services don't need deletion protection.
+  deletion_protection = false
 
   template {
     service_account = google_service_account.platform.email

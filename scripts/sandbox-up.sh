@@ -42,7 +42,7 @@ fi
 info "Applying sandbox stack (~\$80/mo while running)..."
 terraform -chdir="${REPO_ROOT}/infra/sandbox" apply \
   -auto-approve \
-  "${EXTRA_VARS[@]}"
+  ${EXTRA_VARS[@]+"${EXTRA_VARS[@]}"}
 
 # ---------------------------------------------------------------------------
 # Print kubeconfig fetch command and next steps

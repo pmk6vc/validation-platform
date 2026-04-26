@@ -3,8 +3,12 @@
 # Workload Identity is enabled so pods can authenticate to GCP APIs without key files.
 
 resource "google_container_cluster" "sandbox" {
-  name     = "validation-sandbox"
-  location = var.region
+  name = "validation-sandbox"
+  # Zonal (single zone) instead of regional. The sandbox is dev-only — we
+  # don't need multi-zone HA. Zonal clusters provision faster (~3-5 min vs
+  # ~10 min) and the first zonal cluster per billing account is free
+  # (regional clusters always pay the $73/mo management fee).
+  location = var.zone
   project  = var.project
 
   # Remove the default node pool immediately; we manage our own.
@@ -25,7 +29,7 @@ resource "google_container_cluster" "sandbox" {
 resource "google_container_node_pool" "spot" {
   name     = "spot-pool"
   cluster  = google_container_cluster.sandbox.name
-  location = var.region
+  location = var.zone
   project  = var.project
 
   node_count = var.node_count

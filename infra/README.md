@@ -102,16 +102,18 @@ Subsequent applies (after CI builds real images) pass the real image tags — se
 Terraform creates the secret resources but does **not** set secret values. Populate them manually after `terraform apply`:
 
 ```bash
-# Database password
-echo -n "your-strong-db-password" | gcloud secrets versions add validation-db-password \
-  --project=zugzwang-381922 --data-file=-
+# Database password (random 32 bytes, base64-encoded)
+echo -n "$(openssl rand -base64 32)" | gcloud secrets versions add validation-db-password \
+  --data-file=- --project=zugzwang-381922
 
-# JWT private key (RSA PEM — generate with platform's JwtTokenGenerator or openssl)
-gcloud secrets versions add validation-jwt-private-key \
-  --project=zugzwang-381922 --data-file=path/to/private_key.pem
+# JWT private key (RSA 2048, PKCS8 PEM — what the platform expects)
+openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out jwt-key.pem && \
+  gcloud secrets versions add validation-jwt-private-key \
+    --data-file=jwt-key.pem --project=zugzwang-381922 && \
+  rm jwt-key.pem
 ```
 
-Secret values are never stored in Terraform state. Rotation is handled by adding a new secret version — Cloud Run picks up `latest` automatically on next deployment.
+Rotation is handled by adding a new secret version — Cloud Run picks up `latest` automatically on next deployment. Note: the DB password ends up in Terraform state (used by `google_sql_user` to set the initial Postgres user password); state lives in GCS, encrypted at rest, with restricted IAM.
 
 ### Step 5 — Apply the sandbox stack (optional)
 
