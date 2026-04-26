@@ -1,6 +1,5 @@
 package com.platform.collector.api
 
-import com.platform.auth.JWT_AUTH
 import com.platform.collector.database.CapturedInputRepository
 import com.platform.collector.models.BatchCreateCapturedInputRequest
 import com.platform.collector.models.BatchCreateCapturedInputResponse
@@ -9,6 +8,7 @@ import com.platform.collector.models.CapturedInputId
 import com.platform.collector.models.DeleteResponse
 import com.platform.collector.models.InputType
 import com.platform.collector.models.ServiceId
+import com.platform.shared.auth.JWT_AUTH
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call

@@ -1,6 +1,6 @@
-package com.platform.auth
+package com.platform.shared.auth
 
-import com.platform.models.OrganizationId
+import com.platform.shared.models.OrganizationId
 
 /**
  * Authenticated agent identity resolved from a validated JWT.

@@ -1,7 +1,7 @@
 package com.platform.adapters
 
-import com.platform.models.OrganizationId
 import com.platform.models.Provider
+import com.platform.shared.models.OrganizationId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals

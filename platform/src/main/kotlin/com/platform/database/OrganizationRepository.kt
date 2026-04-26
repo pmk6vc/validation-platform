@@ -1,10 +1,10 @@
 package com.platform.database
 
 import com.platform.models.Organization
-import com.platform.models.OrganizationId
-import com.platform.models.Page
-import com.platform.models.decodeCursor
-import com.platform.models.encodeCursor
+import com.platform.shared.models.OrganizationId
+import com.platform.shared.models.Page
+import com.platform.shared.models.decodeCursor
+import com.platform.shared.models.encodeCursor
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder

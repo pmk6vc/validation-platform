@@ -4,12 +4,12 @@ import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
-import com.platform.models.OrganizationId
-import com.platform.models.Page
 import com.platform.models.Provider
 import com.platform.models.Service
-import com.platform.models.ServiceId
 import com.platform.module
+import com.platform.shared.models.OrganizationId
+import com.platform.shared.models.Page
+import com.platform.shared.models.ServiceId
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody

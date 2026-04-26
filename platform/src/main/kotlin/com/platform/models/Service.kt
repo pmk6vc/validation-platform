@@ -1,5 +1,8 @@
 package com.platform.models
 
+import com.platform.shared.models.InstantSerializer
+import com.platform.shared.models.OrganizationId
+import com.platform.shared.models.ServiceId
 import kotlinx.serialization.Serializable
 import java.time.Instant
 

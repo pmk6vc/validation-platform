@@ -2,7 +2,7 @@ package com.platform.collector.database
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
-import com.platform.database.DatabaseTestBase
+import com.platform.shared.database.DatabaseTestBase
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction

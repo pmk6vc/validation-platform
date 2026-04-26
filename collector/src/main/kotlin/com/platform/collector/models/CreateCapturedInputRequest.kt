@@ -1,6 +1,6 @@
 package com.platform.collector.models
 
-import com.platform.models.InstantSerializer
+import com.platform.shared.models.InstantSerializer
 import kotlinx.serialization.Serializable
 import java.time.Instant
 

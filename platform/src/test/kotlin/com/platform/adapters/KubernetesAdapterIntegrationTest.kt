@@ -5,8 +5,8 @@ import com.platform.database.OrganizationRepository
 import com.platform.database.ServiceRepository
 import com.platform.kubernetes.KubernetesWorkloadTestBase
 import com.platform.models.Organization
-import com.platform.models.OrganizationId
 import com.platform.models.Provider
+import com.platform.shared.models.OrganizationId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test

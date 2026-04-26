@@ -1,6 +1,6 @@
 package com.platform.api
 
-import com.platform.auth.derivePublicKey
+import com.platform.shared.auth.derivePublicKey
 import io.ktor.http.ContentType
 import io.ktor.server.application.Application
 import io.ktor.server.response.respondText

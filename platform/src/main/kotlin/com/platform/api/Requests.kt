@@ -1,7 +1,7 @@
 package com.platform.api
 
-import com.platform.models.OrganizationId
 import com.platform.models.Provider
+import com.platform.shared.models.OrganizationId
 import kotlinx.serialization.Serializable
 
 @Serializable

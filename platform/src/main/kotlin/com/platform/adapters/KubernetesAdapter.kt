@@ -1,9 +1,9 @@
 package com.platform.adapters
 
-import com.platform.models.OrganizationId
 import com.platform.models.Provider
 import com.platform.models.Service
-import com.platform.models.ServiceId
+import com.platform.shared.models.OrganizationId
+import com.platform.shared.models.ServiceId
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientBuilder
 import kotlinx.coroutines.Dispatchers
