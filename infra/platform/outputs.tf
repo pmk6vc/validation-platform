@@ -22,3 +22,13 @@ output "platform_service_account_email" {
   description = "Email of the validation-platform-sa service account (used by Cloud Run services)"
   value       = google_service_account.platform.email
 }
+
+output "cicd_workload_identity_provider" {
+  description = "Full WIF provider name — set as GitHub repo variable WIF_PROVIDER"
+  value       = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "cicd_service_account_email" {
+  description = "Email of the validation-cicd-sa service account — set as GitHub repo variable CICD_SA"
+  value       = google_service_account.cicd.email
+}
