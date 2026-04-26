@@ -27,9 +27,10 @@ fun main() {
     val dynamicConfig = MutableStateFlow(DynamicConfig.default())
 
     logger.info(
-        "Starting validation agent: kubeshark={}, platform={}",
+        "Starting validation agent: kubeshark={}, platform={}, collector={}",
         staticConfig.kubesharkUrl,
         staticConfig.platformUrl,
+        staticConfig.collectorUrl,
     )
 
     val httpClient =
@@ -41,7 +42,7 @@ fun main() {
         }
 
     val collectorClient =
-        CollectorClient(httpClient, staticConfig.platformUrl, staticConfig.apiKey)
+        CollectorClient(httpClient, staticConfig.collectorUrl, staticConfig.apiKey)
     val configClient =
         ConfigClient(httpClient, staticConfig.platformUrl, staticConfig.apiKey)
     val transformer = TrafficTransformer(dynamicConfig)

@@ -18,6 +18,7 @@ import kotlin.time.Duration.Companion.seconds
 data class StaticConfig(
     val kubesharkUrl: String,
     val platformUrl: String,
+    val collectorUrl: String,
     val apiKey: String,
 ) {
     companion object {
@@ -27,6 +28,7 @@ data class StaticConfig(
                     env("KUBESHARK_URL")
                         ?: "http://kubeshark-front.default:80",
                 platformUrl = requireEnv("PLATFORM_URL", env),
+                collectorUrl = env("COLLECTOR_URL") ?: requireEnv("PLATFORM_URL", env),
                 apiKey = requireEnv("API_KEY", env),
             )
 

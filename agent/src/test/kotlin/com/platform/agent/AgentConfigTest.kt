@@ -30,7 +30,18 @@ class AgentConfigTest {
 
             assertEquals("http://kubeshark:9090", config.kubesharkUrl)
             assertEquals("https://platform.example.com", config.platformUrl)
+            // COLLECTOR_URL not set — defaults to PLATFORM_URL
+            assertEquals("https://platform.example.com", config.collectorUrl)
             assertEquals("vp_key_test123", config.apiKey)
+        }
+
+        @Test
+        fun `fromEnvironment uses COLLECTOR_URL when set`() {
+            val env = fullEnv + ("COLLECTOR_URL" to "https://collector.example.com")
+            val config = StaticConfig.fromEnvironment(env::get)
+
+            assertEquals("https://platform.example.com", config.platformUrl)
+            assertEquals("https://collector.example.com", config.collectorUrl)
         }
 
         @Test
