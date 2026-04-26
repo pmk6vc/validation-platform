@@ -96,6 +96,7 @@ info "Reconciling Cloud Run deletion_protection state before destroy..."
 terraform -chdir="${REPO_ROOT}/infra/platform" apply \
   -auto-approve \
   -var="cloudsql_active=true" \
+  -var="cloudsql_deletion_protection=false" \
   -var="platform_image=${PLACEHOLDER_IMAGE}" \
   -var="collector_image=${PLACEHOLDER_IMAGE}"
 
@@ -111,6 +112,7 @@ info "Running terraform destroy on the platform stack..."
 terraform -chdir="${REPO_ROOT}/infra/platform" destroy \
   -auto-approve \
   -var="cloudsql_active=true" \
+  -var="cloudsql_deletion_protection=false" \
   -var="platform_image=${PLACEHOLDER_IMAGE}" \
   -var="collector_image=${PLACEHOLDER_IMAGE}"
 

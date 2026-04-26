@@ -34,7 +34,9 @@ resource "google_sql_database_instance" "postgres" {
   }
 
   # Prevent accidental deletion of the database instance.
-  deletion_protection = true
+  # Controlled by var.cloudsql_deletion_protection so platform-delete.sh
+  # can flip it to false in the same terraform apply that runs before destroy.
+  deletion_protection = var.cloudsql_deletion_protection
 
   depends_on = [google_project_service.apis]
 }
