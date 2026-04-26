@@ -16,17 +16,20 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 /**
@@ -38,8 +41,21 @@ import io.ktor.server.websocket.WebSockets as ServerWebSockets
  * connects to it over a real WebSocket, so we're exercising the full transport
  * stack (Ktor CIO client → TCP → Ktor Netty server) without mocking.
  *
- * All tests use polling with deadlines instead of fixed delays to avoid
- * flakiness on slow CI runners.
+ * ## Synchronization approach
+ *
+ * All timing-sensitive synchronization is signal-based:
+ *
+ * - WS server handlers hold sessions open with [awaitCancellation] rather than
+ *   `delay(N)`. Sessions end when the test scope ends; handlers that
+ *   intentionally want to close the connection (to exercise reconnect) just
+ *   `return`.
+ * - The server reports KFL filter strings over a [Channel] so test bodies can
+ *   `await` specific connection events without polling.
+ * - [withTimeout] is a hang detector, not a wall-clock guess. A test that would
+ *   pass on a fast machine also passes on a slow CI runner.
+ * - [drainBatch]'s own suspension provides the signal for entry arrival — tests
+ *   call it directly with a generous [withTimeout] rather than spinning in a
+ *   poll loop.
  */
 class KubesharkClientTest {
     private fun wsEntry(
@@ -64,12 +80,22 @@ class KubesharkClientTest {
         "elapsedTime": 50
     }"""
 
+    /**
+     * Wires up a fake WS server and a [KubesharkClient] connected to it.
+     *
+     * @param serverBlock Called per WebSocket session after the KFL filter frame
+     *   is consumed. Hold the session open with [awaitCancellation]; returning
+     *   closes the connection (triggers reconnect).
+     * @param filterChannel Receives the KFL filter string for every new
+     *   connection. Tests `receive()` from this channel (with [withTimeout]) to
+     *   await connection events without polling.
+     */
     private fun withClient(
         serverBlock: suspend DefaultWebSocketServerSession.() -> Unit,
         testBlock: suspend CoroutineScope.(KubesharkClient, MutableStateFlow<DynamicConfig>) -> Unit,
         configFlow: MutableStateFlow<DynamicConfig> = MutableStateFlow(DynamicConfig.default()),
         reconnectDelay: Duration = 50.milliseconds,
-        receivedFilters: MutableList<String> = mutableListOf(),
+        filterChannel: Channel<String> = Channel(capacity = Channel.UNLIMITED),
     ) = runBlocking {
         val server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
             embeddedServer(Netty, port = 0) {
@@ -77,7 +103,7 @@ class KubesharkClientTest {
                 routing {
                     webSocket("/api/wsFull") {
                         val filter = (incoming.receive() as Frame.Text).readText()
-                        synchronized(receivedFilters) { receivedFilters.add(filter) }
+                        filterChannel.send(filter)
                         serverBlock()
                     }
                 }
@@ -112,33 +138,36 @@ class KubesharkClientTest {
         }
     }
 
-    /** Poll until [receivedFilters] has at least [count] entries, or time out. */
+    /**
+     * Await [count] KFL filter strings from [filterChannel], returning them as
+     * a list in arrival order. [withTimeout] is the hang detector.
+     */
     private suspend fun awaitFilters(
-        receivedFilters: MutableList<String>,
+        filterChannel: Channel<String>,
         count: Int,
-        timeoutMs: Long = 10_000,
-    ) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (synchronized(receivedFilters) { receivedFilters.size } < count &&
-            System.currentTimeMillis() < deadline
-        ) {
-            delay(10.milliseconds)
+        timeout: Duration = 30.seconds,
+    ): List<String> =
+        withTimeout(timeout) {
+            List(count) { filterChannel.receive() }
         }
-    }
 
-    /** Poll drainBatch until [count] entries accumulated, or time out. */
+    /**
+     * Drain exactly [count] entries by calling [drainBatch] in a loop, waiting
+     * for each batch with [withTimeout]. Returns when [count] entries have been
+     * collected. Signal-based: suspends until entries actually arrive.
+     */
     private suspend fun drainUntil(
         client: KubesharkClient,
         count: Int,
-        timeoutMs: Long = 10_000,
-    ): List<KubesharkEntry> {
-        val entries = mutableListOf<KubesharkEntry>()
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (entries.size < count && System.currentTimeMillis() < deadline) {
-            entries.addAll(client.drainBatch(limit = 100, maxWait = 200.milliseconds))
+        timeout: Duration = 30.seconds,
+    ): List<KubesharkEntry> =
+        withTimeout(timeout) {
+            val entries = mutableListOf<KubesharkEntry>()
+            while (entries.size < count) {
+                entries.addAll(client.drainBatch(limit = count - entries.size, maxWait = 5.seconds))
+            }
+            entries
         }
-        return entries
-    }
 
     // -----------------------------------------------------------------------
     // KFL filter transmission — assert what the server actually receives
@@ -146,101 +175,115 @@ class KubesharkClientTest {
 
     @Test
     fun `sends http-only KFL filter when no target services configured`() {
-        val receivedFilters = mutableListOf<String>()
+        val filterChannel = Channel<String>(capacity = Channel.UNLIMITED)
         withClient(
-            serverBlock = { delay(2_000.milliseconds) },
+            serverBlock = { awaitCancellation() },
             testBlock = { _, _ ->
-                awaitFilters(receivedFilters, 1)
+                val filters = awaitFilters(filterChannel, 1)
+                assertEquals(listOf("http"), filters)
             },
-            receivedFilters = receivedFilters,
+            filterChannel = filterChannel,
         )
-        assertEquals(listOf("http"), receivedFilters)
     }
 
     @Test
     fun `sends KFL query with target services on connect`() {
-        val receivedFilters = mutableListOf<String>()
+        val filterChannel = Channel<String>(capacity = Channel.UNLIMITED)
         val config =
             MutableStateFlow(
                 DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
             )
         withClient(
-            serverBlock = { delay(2_000.milliseconds) },
+            serverBlock = { awaitCancellation() },
             testBlock = { _, _ ->
-                awaitFilters(receivedFilters, 1)
+                val filters = awaitFilters(filterChannel, 1)
+                assertEquals(
+                    listOf("""http and dst.name == "order-service""""),
+                    filters,
+                )
             },
             configFlow = config,
-            receivedFilters = receivedFilters,
-        )
-        assertEquals(
-            listOf("""http and dst.name == "order-service""""),
-            receivedFilters,
+            filterChannel = filterChannel,
         )
     }
 
     @Test
     fun `same targetServices update does not trigger reconnect`() {
-        val receivedFilters = mutableListOf<String>()
+        val filterChannel = Channel<String>(capacity = Channel.UNLIMITED)
         val config =
             MutableStateFlow(
                 DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
             )
 
         withClient(
-            serverBlock = { delay(500.milliseconds) },
+            serverBlock = { awaitCancellation() },
             testBlock = { _, flow ->
-                awaitFilters(receivedFilters, 1)
+                // Wait for the initial connection to be established.
+                awaitFilters(filterChannel, 1)
 
-                // Update with same targetServices but different samplingRate
+                // Update with same targetServices but different samplingRate.
+                // configWatcherJob only reconnects when targetServices changes.
                 flow.value =
                     DynamicConfig(
                         targetServices = mapOf("order-service" to "svc-1"),
                         samplingRate = 0.5,
                     )
 
-                delay(200.milliseconds)
+                // No second connection should ever arrive — verify by attempting
+                // to receive one and expecting a timeout. withTimeoutOrNull
+                // returns null cleanly on timeout. (withTimeout would throw
+                // TimeoutCancellationException, which propagates past
+                // runCatching since it's a cancellation exception.) 500ms is
+                // generous enough to catch a spurious reconnect.
+                val secondFilter =
+                    withTimeoutOrNull(500.milliseconds) {
+                        filterChannel.receive()
+                    }
+                assertEquals(null, secondFilter, "same targetServices must not trigger reconnect")
             },
             configFlow = config,
-            receivedFilters = receivedFilters,
+            filterChannel = filterChannel,
         )
-
-        assertEquals(1, receivedFilters.size, "same targetServices must not trigger reconnect")
     }
 
     @Test
     fun `targetServices change forces immediate reconnect`() {
-        val receivedFilters = mutableListOf<String>()
+        val filterChannel = Channel<String>(capacity = Channel.UNLIMITED)
         val config =
             MutableStateFlow(
                 DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
             )
 
         withClient(
-            serverBlock = { delay(2_000.milliseconds) },
+            serverBlock = { awaitCancellation() },
             testBlock = { _, flow ->
-                awaitFilters(receivedFilters, 1)
+                // Wait for the initial connection.
+                awaitFilters(filterChannel, 1)
 
-                // Change targetServices via the StateFlow
+                // Change targetServices — this should trigger an immediate reconnect.
                 flow.value =
                     DynamicConfig(
                         targetServices = mapOf("api-gateway" to "svc-2"),
                     )
 
-                awaitFilters(receivedFilters, 2)
+                // Await the second connection's KFL filter.
+                val filters = awaitFilters(filterChannel, 1) // just the second one
+
+                // Drain accumulated: we received the first earlier, now check second
+                assertEquals("""http and dst.name == "api-gateway"""", filters[0])
             },
             configFlow = config,
-            receivedFilters = receivedFilters,
+            filterChannel = filterChannel,
         )
-
-        assertEquals(2, receivedFilters.size)
-        assertEquals("""http and dst.name == "order-service"""", receivedFilters[0])
-        assertEquals("""http and dst.name == "api-gateway"""", receivedFilters[1])
     }
 
     @Test
     fun `config change takes effect on reconnect after server closes session`() {
-        val allowFirstSessionToClose = AtomicBoolean(false)
-        val receivedFilters = mutableListOf<String>()
+        val filterChannel = Channel<String>(capacity = Channel.UNLIMITED)
+
+        // Signal: test tells server handler it's OK to close the first session.
+        val closeSignal = Channel<Unit>(capacity = 1)
+
         val config =
             MutableStateFlow(
                 DynamicConfig(targetServices = mapOf("order-service" to "svc-1")),
@@ -248,35 +291,37 @@ class KubesharkClientTest {
 
         withClient(
             serverBlock = {
-                val sessionIndex = synchronized(receivedFilters) { receivedFilters.size }
-                when (sessionIndex) {
-                    1 -> {
-                        val deadline = System.currentTimeMillis() + 2_000
-                        while (!allowFirstSessionToClose.get() && System.currentTimeMillis() < deadline) {
-                            delay(10.milliseconds)
-                        }
-                    }
-                    else -> delay(500.milliseconds)
+                // Receive a close signal, then return to close the session.
+                // Subsequent sessions hold open until the test scope ends.
+                val isFirstSession = runCatching { closeSignal.tryReceive().isSuccess }.getOrDefault(false)
+                if (isFirstSession) {
+                    // Wait until the signal channel has an item (sent by the test).
+                    closeSignal.receive()
+                    // Returning closes the WebSocket, triggering a reconnect.
+                } else {
+                    awaitCancellation()
                 }
             },
             testBlock = { _, flow ->
-                awaitFilters(receivedFilters, 1)
+                // Wait for the first connection.
+                awaitFilters(filterChannel, 1)
 
+                // Update config so the reconnect picks up the new query.
                 flow.value =
                     DynamicConfig(
                         targetServices = mapOf("api-gateway" to "svc-2"),
                     )
-                allowFirstSessionToClose.set(true)
 
-                awaitFilters(receivedFilters, 2)
+                // Tell the server to close the first session.
+                closeSignal.send(Unit)
+
+                // The client reconnects; await the new session's filter.
+                val secondFilter = awaitFilters(filterChannel, 1)
+                assertEquals("""http and dst.name == "api-gateway"""", secondFilter[0])
             },
             configFlow = config,
-            receivedFilters = receivedFilters,
+            filterChannel = filterChannel,
         )
-
-        assertEquals(2, receivedFilters.size)
-        assertEquals("""http and dst.name == "order-service"""", receivedFilters[0])
-        assertEquals("""http and dst.name == "api-gateway"""", receivedFilters[1])
     }
 
     // -----------------------------------------------------------------------
@@ -344,7 +389,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text(wsEntry("e2", 2000L)))
                 send(Frame.Text(wsEntry("e3", 3000L)))
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
                 val entries = drainUntil(client, 3)
@@ -365,19 +410,20 @@ class KubesharkClientTest {
                 repeat(200) { i ->
                     send(Frame.Text(wsEntry("e$i", (i + 1) * 1000L)))
                 }
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
-                // Drain all 200 entries via drainUntil, which internally calls
-                // drainBatch(limit=100). Every batch must respect the limit.
+                // Drain all 200 entries via drainBatch(limit=3). Every batch
+                // must respect the limit.
                 val all = mutableListOf<KubesharkEntry>()
-                val deadline = System.currentTimeMillis() + 10_000
-                while (all.size < 200 && System.currentTimeMillis() < deadline) {
-                    val batch = client.drainBatch(limit = 3, maxWait = 200.milliseconds)
-                    if (batch.isNotEmpty()) {
-                        assertTrue(batch.size <= 3, "batch size ${batch.size} exceeded limit 3")
+                withTimeout(30.seconds) {
+                    while (all.size < 200) {
+                        val batch = client.drainBatch(limit = 3, maxWait = 5.seconds)
+                        if (batch.isNotEmpty()) {
+                            assertTrue(batch.size <= 3, "batch size ${batch.size} exceeded limit 3")
+                        }
+                        all.addAll(batch)
                     }
-                    all.addAll(batch)
                 }
                 assertEquals(200, all.size, "all entries should be drained")
             },
@@ -387,17 +433,20 @@ class KubesharkClientTest {
     fun `drainBatch returns empty on timeout but recovers when traffic arrives later`() =
         withClient(
             serverBlock = {
-                // Wait long enough that the first drainBatch (100ms maxWait) definitely times out
-                delay(1_000.milliseconds)
+                // The first drainBatch call below uses maxWait=100ms. We delay
+                // longer than that so the first call definitely times out, then
+                // send an entry for the second call to pick up.
+                kotlinx.coroutines.delay(300.milliseconds)
                 send(Frame.Text(wsEntry("delayed-1", 5000L)))
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
-                // First drain — server hasn't sent anything yet, times out
+                // First drain — server hasn't sent anything yet, should time out.
                 val empty = client.drainBatch(limit = 100, maxWait = 100.milliseconds)
                 assertTrue(empty.isEmpty(), "drainBatch should return empty when no entries arrive within maxWait")
 
-                // Second drain — server will eventually send an entry
+                // Second drain — server will eventually send an entry; suspension
+                // means we return as soon as it arrives.
                 val afterTimeout = drainUntil(client, 1)
                 assertEquals(1, afterTimeout.size)
                 assertEquals("delayed-1", afterTimeout[0].id)
@@ -410,13 +459,15 @@ class KubesharkClientTest {
             serverBlock = {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text(wsEntry("e2", 2000L)))
-                delay(500.milliseconds)
+                // Small delay so the first two entries may be drained before e3/e4
+                // arrive, exercising the "multiple batches from one session" path.
+                kotlinx.coroutines.delay(50.milliseconds)
                 send(Frame.Text(wsEntry("e3", 3000L)))
                 send(Frame.Text(wsEntry("e4", 4000L)))
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
-                // Drain all 4 entries across multiple batches
+                // Drain all 4 entries across however many batches the session produces.
                 val allEntries = drainUntil(client, 4)
 
                 assertEquals(4, allEntries.size)
@@ -433,7 +484,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1000L)))
                 send(Frame.Text("{incomplete"))
                 send(Frame.Text(wsEntry("e2", 2000L)))
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
                 val entries = drainUntil(client, 2)
@@ -451,7 +502,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e1", 1_000_000L)))
                 send(Frame.Text(wsEntry("replay", 900_000L))) // 100s old — dropped
                 send(Frame.Text(wsEntry("e2", 1_001_000L)))
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
                 val entries = drainUntil(client, 2)
@@ -470,7 +521,7 @@ class KubesharkClientTest {
                 send(Frame.Text(wsEntry("e2", 12_000L)))
                 send(Frame.Text(wsEntry("e3", 9_000L))) // 3s behind e2, within 5s window
                 send(Frame.Text(wsEntry("e4", 13_000L)))
-                delay(2_000.milliseconds)
+                awaitCancellation()
             },
             testBlock = { client, _ ->
                 val entries = drainUntil(client, 4)

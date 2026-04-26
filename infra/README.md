@@ -11,6 +11,39 @@ Terraform code for deploying the validation platform on GCP.
 
 The stacks are intentionally independent — sandbox can be destroyed and recreated without touching the platform stack.
 
+## Quick Start (Recommended)
+
+The `scripts/` directory at the repository root contains lifecycle scripts that
+automate the procedures described below.
+
+| Script | What it does |
+|--------|-------------|
+| `scripts/bootstrap.sh` | First-time setup: enable APIs, create state buckets, `terraform init` |
+| `scripts/platform-up.sh` | Apply platform stack (Cloud SQL active + Cloud Run) |
+| `scripts/platform-down.sh` | Pause Cloud SQL for cost savings (~$2.50/mo vs ~$13/mo) |
+| `scripts/sandbox-up.sh` | Apply sandbox GKE cluster |
+| `scripts/sandbox-down.sh` | Destroy sandbox cluster (stops all charges) |
+| `scripts/platform-delete.sh` | **NUCLEAR** — destroy platform stack and all data |
+
+Typical first-run workflow:
+```bash
+./scripts/bootstrap.sh      # one-time setup
+./scripts/platform-up.sh    # bring platform up
+# populate Secret Manager values (see Step 4 below)
+./scripts/sandbox-up.sh     # optional: bring GKE sandbox up
+```
+
+End-of-day cost savings:
+```bash
+./scripts/platform-down.sh  # pause Cloud SQL (~$2.50/mo)
+./scripts/sandbox-down.sh   # destroy sandbox ($0/mo)
+```
+
+The manual `terraform` commands below are still valid and useful for one-off
+operations or CI pipelines that call Terraform directly.
+
+---
+
 ## Prerequisites
 
 - `gcloud` CLI authenticated: `gcloud auth application-default login`
@@ -69,16 +102,18 @@ Subsequent applies (after CI builds real images) pass the real image tags — se
 Terraform creates the secret resources but does **not** set secret values. Populate them manually after `terraform apply`:
 
 ```bash
-# Database password
-echo -n "your-strong-db-password" | gcloud secrets versions add validation-db-password \
-  --project=zugzwang-381922 --data-file=-
+# Database password (random 32 bytes, base64-encoded)
+echo -n "$(openssl rand -base64 32)" | gcloud secrets versions add validation-db-password \
+  --data-file=- --project=zugzwang-381922
 
-# JWT private key (RSA PEM — generate with platform's JwtTokenGenerator or openssl)
-gcloud secrets versions add validation-jwt-private-key \
-  --project=zugzwang-381922 --data-file=path/to/private_key.pem
+# JWT private key (RSA 2048, PKCS8 PEM — what the platform expects)
+openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out jwt-key.pem && \
+  gcloud secrets versions add validation-jwt-private-key \
+    --data-file=jwt-key.pem --project=zugzwang-381922 && \
+  rm jwt-key.pem
 ```
 
-Secret values are never stored in Terraform state. Rotation is handled by adding a new secret version — Cloud Run picks up `latest` automatically on next deployment.
+Rotation is handled by adding a new secret version — Cloud Run picks up `latest` automatically on next deployment. Note: the DB password ends up in Terraform state (used by `google_sql_user` to set the initial Postgres user password); state lives in GCS, encrypted at rest, with restricted IAM.
 
 ### Step 5 — Apply the sandbox stack (optional)
 
@@ -208,7 +243,7 @@ infra/
     cloudsql.tf               # PostgreSQL 16, db-f1-micro
     registry.tf               # Artifact Registry "validation" repo
     secrets.tf                # Secret Manager resources (no values)
-    iam.tf                    # validation-platform-sa, validation-sandbox-sa
+    iam.tf                    # validation-platform-sa
     wif.tf                    # Workload Identity Federation pool, provider, cicd SA + IAM
     cloudrun.tf               # Cloud Run: validation-platform, validation-collector
   sandbox/
