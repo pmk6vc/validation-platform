@@ -29,9 +29,8 @@ services:
       DATABASE_USER: ${POSTGRES_USER}
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
-    # No external port — only accessible through envoy
-    expose:
-      - "8080"
+    ports:
+      - "${PLATFORM_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -51,28 +50,15 @@ services:
       DATABASE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB}
       DATABASE_USER: ${POSTGRES_USER}
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
-    # No external port — only accessible through envoy
-    expose:
-      - "8081"
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+    ports:
+      - "${COLLECTOR_PORT:-8081}:8081"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 30s
-
-  envoy:
-    image: envoyproxy/envoy:v1.31-latest
-    container_name: platform-envoy
-    depends_on:
-      platform:
-        condition: service_healthy
-      collector:
-        condition: service_healthy
-    volumes:
-      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-    ports:
-      - "${PROXY_PORT:-8082}:8082"
 
 volumes:
   platform-data:

@@ -26,17 +26,17 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * E2E tests for Envoy JWT auth, routing, and claim forwarding.
+ * E2E tests for in-app JWT auth across both platform (8080) and collector (8081).
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
-class EnvoyAuthE2ETest : PlatformStackTestBase() {
+class JwtAuthE2ETest : PlatformStackTestBase() {
     // --- Health endpoint ---
 
     @Test
     @Order(1)
     fun `health endpoint returns 200 without auth`() =
         runBlocking {
-            val response = httpClient.get("$envoyUrl/health")
+            val response = httpClient.get("$platformUrl/health")
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("OK", response.bodyAsText())
         }
@@ -45,7 +45,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
     @Order(2)
     fun `JWKS endpoint is accessible without auth`() =
         runBlocking {
-            val response = httpClient.get("$envoyUrl/.well-known/jwks.json")
+            val response = httpClient.get("$platformUrl/.well-known/jwks.json")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = response.bodyAsText()
             assertTrue(body.contains("RSA"))
@@ -58,7 +58,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
     @Order(10)
     fun `api request without token returns 401`() =
         runBlocking {
-            val response = httpClient.get("$envoyUrl/api/organizations")
+            val response = httpClient.get("$platformUrl/api/organizations")
             assertEquals(HttpStatusCode.Unauthorized, response.status)
         }
 
@@ -67,7 +67,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
     fun `api request with invalid token returns 401`() =
         runBlocking {
             val response =
-                httpClient.get("$envoyUrl/api/organizations") {
+                httpClient.get("$platformUrl/api/organizations") {
                     bearerAuth("not-a-valid-jwt")
                 }
             assertEquals(HttpStatusCode.Unauthorized, response.status)
@@ -93,7 +93,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
                     )
 
             val response =
-                httpClient.get("$envoyUrl/api/organizations") {
+                httpClient.get("$platformUrl/api/organizations") {
                     bearerAuth(wrongToken)
                 }
             assertEquals(HttpStatusCode.Unauthorized, response.status)
@@ -107,7 +107,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
                 generateJwt(expiresAt = Date.from(Instant.now().minusSeconds(3600)))
 
             val response =
-                httpClient.get("$envoyUrl/api/organizations") {
+                httpClient.get("$platformUrl/api/organizations") {
                     bearerAuth(expiredToken)
                 }
             assertEquals(HttpStatusCode.Unauthorized, response.status)
@@ -117,11 +117,11 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
 
     @Test
     @Order(20)
-    fun `valid token routes to app - create organization`() =
+    fun `valid token routes to platform - create organization`() =
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.post("$envoyUrl/api/organizations") {
+                httpClient.post("$platformUrl/api/organizations") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Auth Test Org"))
@@ -133,11 +133,11 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
 
     @Test
     @Order(21)
-    fun `valid token routes to app - list organizations`() =
+    fun `valid token routes to platform - list organizations`() =
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.get("$envoyUrl/api/organizations") {
+                httpClient.get("$platformUrl/api/organizations") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -145,11 +145,11 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
 
     @Test
     @Order(22)
-    fun `valid token routes to app - agent config`() =
+    fun `valid token routes to platform - agent config`() =
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.get("$envoyUrl/api/agent/config") {
+                httpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -161,7 +161,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.get("$envoyUrl/api/captured-inputs") {
+                httpClient.get("$collectorUrl/api/captured-inputs") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -173,7 +173,7 @@ class EnvoyAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.post("$envoyUrl/api/captured-inputs") {
+                httpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
                     setBody(BatchCreateCapturedInputRequest(items = emptyList()))

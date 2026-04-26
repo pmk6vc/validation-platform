@@ -3,7 +3,6 @@ package com.platform.api
 import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
 import com.platform.models.Organization
-import com.platform.module
 import com.platform.shared.models.OrganizationId
 import com.platform.shared.models.Page
 import io.ktor.client.request.get
@@ -13,9 +12,6 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.testing.ApplicationTestBuilder
-import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -23,22 +19,15 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 
 class OrganizationRoutesTest : AppDatabaseTestBase() {
-    private fun ApplicationTestBuilder.createJsonClient() =
-        createClient {
-            install(ClientContentNegotiation) {
-                json(Json { ignoreUnknownKeys = true })
-            }
-        }
-
     @Test
     fun `GET organizations should return empty page when no organizations`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
-            val response = client.get("/api/organizations")
+        authedTestApplication { client ->
+            val response =
+                client.get(
+                    "/api/organizations",
+                )
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -52,15 +41,16 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations should return all organizations`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             val org1 = Organization(OrganizationId.generate(), "Org 1", Instant.now())
             val org2 = Organization(OrganizationId.generate(), "Org 2", Instant.now())
             OrganizationRepository.create(org1)
             OrganizationRepository.create(org2)
 
-            val response = client.get("/api/organizations")
+            val response =
+                client.get(
+                    "/api/organizations",
+                )
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -74,13 +64,13 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organization by id should return organization when exists`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             val org = Organization(OrganizationId.generate(), "Test Org", Instant.now())
             OrganizationRepository.create(org)
 
-            val response = client.get("/api/organizations/${org.id.value}")
+            val response =
+                client.get("/api/organizations/${org.id.value}") {
+                }
 
             assertEquals(HttpStatusCode.OK, response.status)
             val result = Json.decodeFromString<Organization>(response.bodyAsText())
@@ -90,29 +80,26 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organization by id should return 404 when not exists`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
-            val response = client.get("/api/organizations/${UUID.randomUUID()}")
+        authedTestApplication { client ->
+            val response =
+                client.get("/api/organizations/${UUID.randomUUID()}") {
+                }
 
             assertEquals(HttpStatusCode.NotFound, response.status)
         }
 
     @Test
     fun `GET organization by id should return 400 for malformed UUID`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
-            val response = client.get("/api/organizations/not-a-uuid")
+        authedTestApplication { client ->
+            val response =
+                client.get("/api/organizations/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
     fun `GET organizations with malformed cursor should return 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             val malformedCursors =
                 listOf(
                     "garbage",
@@ -122,19 +109,18 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
                     "not-a-number.0|${UUID.randomUUID()}",
                 )
             for (cursor in malformedCursors) {
-                val response = client.get("/api/organizations?cursor=$cursor")
+                val response =
+                    client.get("/api/organizations?cursor=$cursor")
                 assertEquals(HttpStatusCode.BadRequest, response.status, "Expected 400 for cursor: '$cursor'")
             }
         }
 
     @Test
     fun `POST organizations should create and return organization with 201`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-            val jsonClient = createJsonClient()
+        authedTestApplication { client ->
 
             val response =
-                jsonClient.post("/api/organizations") {
+                client.post("/api/organizations") {
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Acme Corp"))
                 }
@@ -148,12 +134,10 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST organizations should persist organization retrievable by GET`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-            val jsonClient = createJsonClient()
+        authedTestApplication { client ->
 
             val createResponse =
-                jsonClient.post("/api/organizations") {
+                client.post("/api/organizations") {
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Persist Corp"))
                 }
@@ -161,7 +145,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
             val created = Json.decodeFromString<com.platform.models.Organization>(createResponse.bodyAsText())
 
-            val getResponse = jsonClient.get("/api/organizations/${created.id.value}")
+            val getResponse = client.get("/api/organizations/${created.id.value}")
             assertEquals(HttpStatusCode.OK, getResponse.status)
             val fetched = Json.decodeFromString<Organization>(getResponse.bodyAsText())
             assertEquals("Persist Corp", fetched.name)
@@ -170,9 +154,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST organizations with missing name returns 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             val response =
                 client.post("/api/organizations") {
                     contentType(ContentType.Application.Json)
@@ -184,22 +166,19 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations by invalid UUID id returns 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
-            val response = client.get("/api/organizations/not-a-uuid")
+        authedTestApplication { client ->
+            val response =
+                client.get("/api/organizations/not-a-uuid")
 
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
 
     @Test
     fun `POST organizations with blank name returns 400`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-            val jsonClient = createJsonClient()
+        authedTestApplication { client ->
 
             val response =
-                jsonClient.post("/api/organizations") {
+                client.post("/api/organizations") {
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "   "))
                 }
@@ -209,9 +188,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with limit=0 is clamped to 1 and returns results`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             repeat(3) { i ->
                 OrganizationRepository.create(
                     Organization(OrganizationId.generate(), "Org $i", Instant.now()),
@@ -219,7 +196,8 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             }
 
             // limit=0 is parsed as 0 by toIntOrNull; the repository clamps it to 1
-            val response = client.get("/api/organizations?limit=0")
+            val response =
+                client.get("/api/organizations?limit=0")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -233,16 +211,15 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with limit=-1 is clamped to 1 and returns results`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             repeat(3) { i ->
                 OrganizationRepository.create(
                     Organization(OrganizationId.generate(), "Org $i", Instant.now()),
                 )
             }
 
-            val response = client.get("/api/organizations?limit=-1")
+            val response =
+                client.get("/api/organizations?limit=-1")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =
@@ -256,9 +233,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET organizations with limit over maximum is clamped to max page size`() =
-        testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
-
+        authedTestApplication { client ->
             // Insert more than DEFAULT_PAGE_SIZE but fewer than MAX_PAGE_SIZE items so
             // we can tell whether the limit was actually capped
             val count = OrganizationRepository.DEFAULT_PAGE_SIZE + 5
@@ -271,7 +246,8 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
             // limit=200 exceeds MAX_PAGE_SIZE (100); the repository clamps it to 100.
             // Since we only have (DEFAULT_PAGE_SIZE + 5) rows the page should contain
             // all of them and there should be no next cursor.
-            val response = client.get("/api/organizations?limit=200")
+            val response =
+                client.get("/api/organizations?limit=200")
 
             assertEquals(HttpStatusCode.OK, response.status)
             val page =

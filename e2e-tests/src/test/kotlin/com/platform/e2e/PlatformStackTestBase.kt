@@ -13,7 +13,6 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Network
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.containers.wait.strategy.Wait
-import org.testcontainers.utility.MountableFile
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPrivateKey
 import java.security.interfaces.RSAPublicKey
@@ -23,9 +22,9 @@ import java.util.Date
 
 /**
  * Shared test infrastructure for e2e tests that need the full platform stack:
- * Postgres + App + Collector + Envoy.
+ * Postgres + Platform + Collector. Both apps validate JWTs directly.
  *
- * Subclasses get [envoyUrl], [httpClient], and [generateJwt] for free.
+ * Subclasses get [platformUrl], [collectorUrl], [httpClient], and [generateJwt] for free.
  * The stack is started once per test class (companion @BeforeAll).
  */
 abstract class PlatformStackTestBase {
@@ -42,9 +41,9 @@ abstract class PlatformStackTestBase {
         lateinit var postgres: PostgreSQLContainer<*>
         lateinit var app: GenericContainer<*>
         lateinit var collector: GenericContainer<*>
-        lateinit var envoy: GenericContainer<*>
         lateinit var httpClient: HttpClient
-        lateinit var envoyUrl: String
+        lateinit var platformUrl: String
+        lateinit var collectorUrl: String
 
         fun generateJwt(
             organizationId: String = "00000000-0000-0000-0000-000000000001",
@@ -106,18 +105,8 @@ abstract class PlatformStackTestBase {
                     .waitingFor(Wait.forHttp("/health").forPort(8081).forStatusCode(200))
             collector.start()
 
-            envoy =
-                GenericContainer("envoyproxy/envoy:v1.31-latest")
-                    .withNetwork(network)
-                    .withNetworkAliases("envoy")
-                    .withExposedPorts(8082)
-                    .withCopyFileToContainer(
-                        MountableFile.forHostPath("deploy/envoy/envoy.yaml"),
-                        "/etc/envoy/envoy.yaml",
-                    ).waitingFor(Wait.forHttp("/health").forPort(8082).forStatusCode(200))
-            envoy.start()
-
-            envoyUrl = "http://${envoy.host}:${envoy.getMappedPort(8082)}"
+            platformUrl = "http://${app.host}:${app.getMappedPort(8080)}"
+            collectorUrl = "http://${collector.host}:${collector.getMappedPort(8081)}"
 
             httpClient =
                 HttpClient(CIO) {
@@ -131,7 +120,6 @@ abstract class PlatformStackTestBase {
         @JvmStatic
         fun stopStack() {
             httpClient.close()
-            envoy.stop()
             collector.stop()
             app.stop()
             postgres.stop()

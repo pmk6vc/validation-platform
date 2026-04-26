@@ -2,7 +2,9 @@
 #
 # Owns: Organizations, Services, JWKS endpoint, JWT token generation.
 # Runs Flyway migrations on startup — postgres must be ready first.
-# Envoy fetches the RSA public key from this server's /.well-known/jwks.json.
+# Validates JWT bearer tokens in-app via the shared installJwtAuth() extension.
+# /.well-known/jwks.json is still served for any external clients that want to
+# verify tokens themselves.
 #
 # imagePullPolicy: Never — assumes the image was loaded into the local cluster
 # (e.g. `minikube image load validation-platform:latest`).
