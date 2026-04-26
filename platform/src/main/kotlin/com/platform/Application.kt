@@ -4,6 +4,7 @@ import com.platform.api.configureJwks
 import com.platform.api.configureRouting
 import com.platform.shared.auth.installJwtAuth
 import com.platform.shared.database.DatabaseFactory
+import com.platform.shared.secrets.secretsProviderFromEnvironment
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -23,8 +24,10 @@ fun Application.module(
     initDatabase: Boolean = true,
     privateKeyPem: String? = null,
 ) {
+    val secretsProvider = secretsProviderFromEnvironment()
+
     if (initDatabase) {
-        DatabaseFactory.initFromEnvironment()
+        DatabaseFactory.initFromEnvironment(secretsProvider)
     }
 
     install(StatusPages) {
@@ -50,8 +53,7 @@ fun Application.module(
 
     val resolvedKey =
         privateKeyPem
-            ?: System.getenv("JWT_PRIVATE_KEY")
-            ?: error("JWT_PRIVATE_KEY environment variable is required")
+            ?: secretsProvider.get("JWT_PRIVATE_KEY")
     installJwtAuth(resolvedKey)
     configureJwks(resolvedKey)
     configureRouting()

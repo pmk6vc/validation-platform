@@ -1,5 +1,7 @@
 package com.platform.shared.database
 
+import com.platform.shared.secrets.SecretsProvider
+import com.platform.shared.secrets.secretsProviderFromEnvironment
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.flywaydb.core.Flyway
@@ -12,12 +14,19 @@ import org.jetbrains.exposed.sql.Database
  * Pool size and connection timeout are configurable via env vars with sensible defaults.
  */
 object DatabaseFactory {
-    fun initFromEnvironment() {
+    /**
+     * Initializes the database using values from the environment.
+     *
+     * DATABASE_URL, DATABASE_USER, and DATABASE_PASSWORD are read via [secretsProvider],
+     * allowing callers to choose between literal env var values (local/docker) and
+     * Secret Manager resource names (Cloud Run/GCP).
+     */
+    fun initFromEnvironment(secretsProvider: SecretsProvider = secretsProviderFromEnvironment()) {
         val jdbcUrl =
             System.getenv("DATABASE_URL")
                 ?: "jdbc:postgresql://localhost:5432/platform"
         val username = System.getenv("DATABASE_USER") ?: "postgres"
-        val password = System.getenv("DATABASE_PASSWORD") ?: "postgres"
+        val password = secretsProvider.get("DATABASE_PASSWORD")
         init(jdbcUrl, username, password)
     }
 
