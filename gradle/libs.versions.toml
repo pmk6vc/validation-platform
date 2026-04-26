@@ -6,6 +6,7 @@ postgresql = "42.7.7"
 flyway = "9.22.3"
 hikari = "5.1.0"
 logback = "1.5.26"
+logstash-logback-encoder = "8.1"
 fabric8 = "6.10.0"
 serialization-json = "1.7.3"
 junit = "5.10.0"
@@ -52,6 +53,7 @@ fabric8-kubernetes-client = { module = "io.fabric8:kubernetes-client", version.r
 
 # Logging
 logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstash-logback-encoder" }
 
 # Testing
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }

@@ -35,6 +35,7 @@ dependencies {
 
     // Logging
     implementation(libs.logback)
+    implementation(libs.logstash.logback.encoder)
 
     // Testing
     testImplementation(testFixtures(project(":shared")))
