@@ -1,4 +1,4 @@
-package com.platform.collector.database
+package com.platform.database
 
 import com.platform.shared.database.DatabaseTestBase
 import kotlinx.coroutines.runBlocking
@@ -7,20 +7,21 @@ import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransacti
 import org.junit.jupiter.api.BeforeEach
 
 /**
- * Collector-specific test base: cleans the collector-owned tables
- * (CapturedInputs) before each test. Inherits TestContainers PostgreSQL setup
- * from [DatabaseTestBase] in `:shared`.
+ * Platform-specific test base: cleans the platform-owned tables (Organizations,
+ * Services) before each test. Inherits TestContainers PostgreSQL setup from
+ * [DatabaseTestBase] in `:shared`.
  *
  * JWT key fixtures and `generateTestJwt` live in
  * [com.platform.shared.testing.TestJwtKeys] — single source of truth across
  * platform and collector tests.
  */
-abstract class CollectorDatabaseTestBase : DatabaseTestBase() {
+abstract class PlatformDatabaseTestBase : DatabaseTestBase() {
     @BeforeEach
     fun cleanTables() {
         runBlocking {
             newSuspendedTransaction {
-                CapturedInputs.deleteAll()
+                Services.deleteAll()
+                Organizations.deleteAll()
             }
         }
     }

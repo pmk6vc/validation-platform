@@ -1,7 +1,7 @@
 package com.platform.adapters
 
-import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
+import com.platform.database.PlatformDatabaseTestBase
 import com.platform.database.ServiceRepository
 import com.platform.kubernetes.KubernetesWorkloadTestBase
 import com.platform.models.Organization
@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
  *
  * Total discoverable services: 8
  */
-class KubernetesAdapterIntegrationTest : AppDatabaseTestBase() {
+class KubernetesAdapterIntegrationTest : PlatformDatabaseTestBase() {
     private lateinit var testOrg: Organization
 
     @BeforeEach

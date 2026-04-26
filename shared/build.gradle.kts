@@ -38,6 +38,12 @@ dependencies {
     testFixturesImplementation(libs.testcontainers.postgresql)
     testFixturesImplementation(libs.fabric8.kubernetes.client)
     testFixturesImplementation(libs.logback)
+    // For TestJwtKeys (java-jwt) and authedTestApplication (Ktor test host + client)
+    testFixturesImplementation(libs.java.jwt)
+    testFixturesImplementation(libs.ktor.server.test.host)
+    testFixturesImplementation(libs.ktor.client.cio)
+    testFixturesImplementation(libs.ktor.client.content.negotiation)
+    testFixturesImplementation(libs.ktor.serialization.json)
 
     // Tests: WorkloadTrafficIntegrationTest (validates test cluster)
     testImplementation(testFixtures(project(":shared")))

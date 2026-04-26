@@ -1,7 +1,7 @@
 package com.platform.api
 
-import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
+import com.platform.database.PlatformDatabaseTestBase
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Provider
@@ -27,7 +27,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class ServiceRoutesTest : AppDatabaseTestBase() {
+class ServiceRoutesTest : PlatformDatabaseTestBase() {
     private lateinit var testOrg: Organization
 
     @BeforeEach
@@ -58,7 +58,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services should return empty page when no services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get(
                     "/api/services",
@@ -76,7 +76,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services should return all services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc1 = createService(name = "order-service")
             val svc2 = createService(name = "payment-service")
             ServiceRepository.create(svc1)
@@ -99,7 +99,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with organizationId filter should return filtered services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val otherOrg = Organization(OrganizationId.generate(), "Other Org", Instant.now())
             OrganizationRepository.create(otherOrg)
 
@@ -135,7 +135,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with cluster filter should return filtered services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc1 = createService(name = "prod-service", cluster = "prod-us-east")
             val svc2 = createService(name = "staging-service", cluster = "staging")
             ServiceRepository.create(svc1)
@@ -157,7 +157,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with namespace filter should return filtered services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
             ServiceRepository.create(svc1)
@@ -180,7 +180,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with only namespace filter should return filtered services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc1 = createService(name = "payments-api", cluster = "prod", namespace = "payments")
             val svc2 = createService(name = "payments-worker", cluster = "staging", namespace = "payments")
             val svc3 = createService(name = "orders-api", cluster = "prod", namespace = "orders")
@@ -203,7 +203,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with only cluster filter should return filtered services`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc1 = createService(name = "prod-service-1", cluster = "prod")
             val svc2 = createService(name = "prod-service-2", cluster = "prod", namespace = "other")
             val svc3 = createService(name = "staging-service", cluster = "staging")
@@ -226,7 +226,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with malformed cursor should return 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val malformedCursors =
                 listOf(
                     "garbage",
@@ -244,7 +244,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET service by id should return service when exists`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc = createService(name = "my-service", metadata = mapOf("version" to "1.0"))
             ServiceRepository.create(svc)
 
@@ -261,7 +261,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET service by id should return 404 when not exists`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get("/api/services/${UUID.randomUUID()}") {
                 }
@@ -271,7 +271,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET service by id should return 400 for malformed UUID`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get("/api/services/not-a-uuid")
 
@@ -280,7 +280,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST services should create and return service with 201`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val response =
                 client.post("/api/services") {
@@ -306,7 +306,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST services should persist service retrievable by GET`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val createResponse =
                 client.post("/api/services") {
@@ -335,7 +335,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST services with missing required fields returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.post("/api/services") {
                     contentType(ContentType.Application.Json)
@@ -347,7 +347,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST services with duplicate identity returns 409`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val request =
                 CreateServiceRequest(
@@ -374,7 +374,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST services with invalid organizationId returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val response =
                 client.post("/api/services") {
@@ -394,7 +394,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `POST services with blank name returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
 
             val response =
                 client.post("/api/services") {
@@ -414,7 +414,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET service should include all fields in response`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val svc =
                 createService(
                     name = "full-service",
@@ -441,7 +441,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET service by invalid UUID id returns 400`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val response =
                 client.get("/api/services/not-a-uuid")
 
@@ -450,7 +450,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with limit should return paginated response`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             repeat(5) { i ->
                 ServiceRepository.create(createService(name = "service-$i"))
             }
@@ -470,7 +470,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with cursor should return next page`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             repeat(5) { i ->
                 ServiceRepository.create(createService(name = "service-$i"))
             }
@@ -521,7 +521,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with limit=0 is clamped to 1 and returns results`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             repeat(3) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 
             // limit=0 is parsed as 0 by toIntOrNull; the repository clamps it to 1
@@ -540,7 +540,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with limit=-1 is clamped to 1 and returns results`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             repeat(3) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 
             val response =
@@ -558,7 +558,7 @@ class ServiceRoutesTest : AppDatabaseTestBase() {
 
     @Test
     fun `GET services with limit over maximum is clamped to max page size`() =
-        authedTestApplication { client ->
+        platformTestApplication { client ->
             val count = ServiceRepository.DEFAULT_PAGE_SIZE + 5
             repeat(count) { i -> ServiceRepository.create(createService(name = "service-$i")) }
 

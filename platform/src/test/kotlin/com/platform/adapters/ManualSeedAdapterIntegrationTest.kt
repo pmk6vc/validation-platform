@@ -1,7 +1,7 @@
 package com.platform.adapters
 
-import com.platform.database.AppDatabaseTestBase
 import com.platform.database.OrganizationRepository
+import com.platform.database.PlatformDatabaseTestBase
 import com.platform.database.ServiceRepository
 import com.platform.models.Organization
 import com.platform.models.Provider
@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  * 2. Services are persisted to the database via repository
  * 3. Services can be queried back from the database
  */
-class ManualSeedAdapterIntegrationTest : AppDatabaseTestBase() {
+class ManualSeedAdapterIntegrationTest : PlatformDatabaseTestBase() {
     private val adapter = ManualSeedAdapter()
     private lateinit var testOrg: Organization
 

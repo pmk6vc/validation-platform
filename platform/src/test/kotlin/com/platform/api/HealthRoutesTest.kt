@@ -1,7 +1,8 @@
 package com.platform.api
 
-import com.platform.database.AppDatabaseTestBase
+import com.platform.database.PlatformDatabaseTestBase
 import com.platform.module
+import com.platform.shared.testing.TestJwtKeys
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -9,11 +10,11 @@ import io.ktor.server.testing.testApplication
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
-class HealthRoutesTest : AppDatabaseTestBase() {
+class HealthRoutesTest : PlatformDatabaseTestBase() {
     @Test
     fun `GET root should return welcome message`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response = client.get("/")
 
@@ -24,7 +25,7 @@ class HealthRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET health should return OK`() =
         testApplication {
-            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
 
             val response = client.get("/health")
 
