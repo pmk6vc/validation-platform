@@ -8,6 +8,10 @@ resource "google_sql_database_instance" "postgres" {
   region           = var.region
 
   settings {
+    # ENTERPRISE edition is required for the cheap shared-core tiers like
+    # db-f1-micro. ENTERPRISE_PLUS (the new default) only supports
+    # db-perf-optimized-N-* tiers which are ~20× more expensive.
+    edition           = "ENTERPRISE"
     tier              = "db-f1-micro"
     activation_policy = var.cloudsql_active ? "ALWAYS" : "NEVER"
 
@@ -16,11 +20,11 @@ resource "google_sql_database_instance" "postgres" {
     }
 
     ip_configuration {
-      # Cloud Run connects via Cloud SQL Auth Proxy (Unix socket).
-      # No public IP is required for Cloud Run + Cloud SQL connector.
-      ipv4_enabled = false
-
-      private_network = "projects/${var.project}/global/networks/default"
+      # Cloud Run connects via the Cloud SQL Auth Proxy connector, which
+      # uses IAM auth and a TLS tunnel — the public IP is never reachable
+      # without IAM credentials. Avoiding private IP keeps us from having
+      # to set up VPC Service Networking peering on the default network.
+      ipv4_enabled = true
     }
 
     database_flags {
@@ -40,10 +44,17 @@ resource "google_sql_database" "validation" {
   instance = google_sql_database_instance.postgres.name
 }
 
+# Read the DB password from Secret Manager at apply time. The user must
+# populate validation-db-password BEFORE the first terraform apply
+# (bootstrap.sh prints the gcloud command for this).
+data "google_secret_manager_secret_version" "db_password" {
+  secret = google_secret_manager_secret.db_password.secret_id
+}
+
 resource "google_sql_user" "platform" {
   name     = "platform"
   instance = google_sql_database_instance.postgres.name
-  # Password is managed via Secret Manager (validation-db-password).
-  # Set it manually: gcloud secrets versions add validation-db-password --data-file=-
-  password = null
+  password = data.google_secret_manager_secret_version.db_password.secret_data
+  # Note: this puts the password value in Terraform state. The state lives
+  # in GCS, encrypted at rest, with restricted IAM — standard tradeoff.
 }
