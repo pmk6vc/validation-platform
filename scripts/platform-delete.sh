@@ -83,7 +83,24 @@ gcloud sql instances patch validation-postgres \
 success "Instance running and deletion protection disabled."
 
 # ---------------------------------------------------------------------------
-# Step 2 — Destroy the platform stack
+# Step 2 — Apply current config to flip Cloud Run deletion_protection to false
+#
+# Cloud Run services in GCP have deletion_protection=true from a prior apply
+# (it was the provider default). The current Terraform config now sets it to
+# false, but until we apply that, terraform destroy refuses with
+# "cannot destroy service without setting deletion_protection=false and
+# running terraform apply". This step reconciles state before destroy.
+# ---------------------------------------------------------------------------
+
+info "Reconciling Cloud Run deletion_protection state before destroy..."
+terraform -chdir="${REPO_ROOT}/infra/platform" apply \
+  -auto-approve \
+  -var="cloudsql_active=true" \
+  -var="platform_image=${PLACEHOLDER_IMAGE}" \
+  -var="collector_image=${PLACEHOLDER_IMAGE}"
+
+# ---------------------------------------------------------------------------
+# Step 3 — Destroy the platform stack
 #
 # We pass placeholder images because platform_image and collector_image are
 # required variables with no default. Terraform destroy does not actually
