@@ -36,11 +36,7 @@ const val JWT_AUTH = "jwt-auth"
  * The resolved [AgentIdentity] principal is available via
  * `call.principal<AgentIdentity>()` inside authenticated routes.
  */
-fun Application.installJwtAuth(
-    privateKeyPem: String =
-        System.getenv("JWT_PRIVATE_KEY")
-            ?: error("JWT_PRIVATE_KEY environment variable is required"),
-) {
+fun Application.installJwtAuth(privateKeyPem: String) {
     val publicKey = derivePublicKey(privateKeyPem)
     val algorithm = Algorithm.RSA256(publicKey, null)
     val verifier = JWT.require(algorithm).build()

@@ -36,7 +36,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations should return empty page when no organizations`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/organizations")
 
@@ -53,7 +53,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations should return all organizations`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val org1 = Organization(OrganizationId.generate(), "Org 1", Instant.now())
             val org2 = Organization(OrganizationId.generate(), "Org 2", Instant.now())
@@ -75,7 +75,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organization by id should return organization when exists`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val org = Organization(OrganizationId.generate(), "Test Org", Instant.now())
             OrganizationRepository.create(org)
@@ -91,7 +91,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organization by id should return 404 when not exists`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/organizations/${UUID.randomUUID()}")
 
@@ -101,7 +101,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organization by id should return 400 for malformed UUID`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/organizations/not-a-uuid")
 
@@ -111,7 +111,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations with malformed cursor should return 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val malformedCursors =
                 listOf(
@@ -130,7 +130,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations should create and return organization with 201`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -149,7 +149,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations should persist organization retrievable by GET`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val createResponse =
@@ -171,7 +171,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations with missing name returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response =
                 client.post("/api/organizations") {
@@ -185,7 +185,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations by invalid UUID id returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             val response = client.get("/api/organizations/not-a-uuid")
 
@@ -195,7 +195,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `POST organizations with blank name returns 400`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
             val jsonClient = createJsonClient()
 
             val response =
@@ -210,7 +210,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations with limit=0 is clamped to 1 and returns results`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             repeat(3) { i ->
                 OrganizationRepository.create(
@@ -234,7 +234,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations with limit=-1 is clamped to 1 and returns results`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             repeat(3) { i ->
                 OrganizationRepository.create(
@@ -257,7 +257,7 @@ class OrganizationRoutesTest : AppDatabaseTestBase() {
     @Test
     fun `GET organizations with limit over maximum is clamped to max page size`() =
         testApplication {
-            application { module(initDatabase = false) }
+            application { module(initDatabase = false, privateKeyPem = testPrivateKeyPem) }
 
             // Insert more than DEFAULT_PAGE_SIZE but fewer than MAX_PAGE_SIZE items so
             // we can tell whether the limit was actually capped

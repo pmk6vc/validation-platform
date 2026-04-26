@@ -90,6 +90,10 @@ static_resources:
                           from_headers:
                             - name: Authorization
                               value_prefix: "Bearer "
+                          # Keep the Authorization header so the platform's
+                          # in-app JWT validator (installJwtAuth) can re-check.
+                          # Removed in PR E once Envoy is gone entirely.
+                          forward: true
                           forward_payload_header: x-jwt-payload
                           claim_to_headers:
                             - header_name: X-Organization-Id
