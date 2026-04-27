@@ -55,12 +55,16 @@ latest_image() {
   local repo="$1"   # e.g. "platform" or "collector"
   local full_repo="${REGISTRY}/${repo}"
   local tag
+  # gcloud's value(tags) joins all tags on a single image with commas
+  # (push_main.yml pushes each image with both :<sha> and :latest).
+  # cut -d',' -f1 picks just the first tag — Cloud Run rejects multi-tag refs
+  # like "platform:<sha>,latest" with a 400 "parsing failed" error.
   tag="$(gcloud artifacts docker images list "${full_repo}" \
     --project="${PROJECT}" \
     --include-tags \
     --sort-by="~CREATE_TIME" \
     --limit=1 \
-    --format="value(tags)" 2>/dev/null | head -1)"
+    --format="value(tags)" 2>/dev/null | head -1 | cut -d',' -f1)"
 
   if [[ -z "${tag}" ]]; then
     echo "${PLACEHOLDER_IMAGE}"
