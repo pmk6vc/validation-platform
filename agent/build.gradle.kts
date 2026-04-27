@@ -28,6 +28,7 @@ dependencies {
 
     // Logging
     implementation(libs.logback)
+    implementation(libs.logstash.logback.encoder)
 
     // Testing
     testImplementation(libs.junit.jupiter)
