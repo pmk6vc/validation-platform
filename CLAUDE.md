@@ -67,7 +67,7 @@ Each module owns its tables, models, and repositories. Cross-module communicatio
 
 | Module | Owns | Port |
 |--------|------|------|
-| `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer), `AgentIdentity`, `installJwtAuth()`, `OrganizationId`/`ServiceId` value classes | — |
+| `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer), `AgentIdentity`, `installJwtAuth()`, `OrganizationId`/`ServiceId` value classes; test fixtures: `DatabaseTestBase`, `KubernetesWorkloadTestBase`, `TestJwtKeys`, `authedTestApplication` | — |
 | `platform/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server; JWKS endpoint; JWT token generator | 8080 |
 | `collector/` | CapturedInputs table; CapturedInputRepository; Ktor server | 8081 |
 | `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding directly to platform (8080) and collector (8081) | — (standalone process) |
@@ -85,6 +85,7 @@ GET    /api/organizations/{id}             # Get organization by ID — requires
 GET    /api/services                       # List services (paginated, filterable) — requires JWT
 POST   /api/services                       # Create service — requires JWT
 GET    /api/services/{id}                  # Get service by ID — requires JWT
+GET    /api/agent/config                   # Agent dynamic config (target services for the JWT's org+cluster) — requires JWT
 ```
 
 ### Collector Module API Endpoints (port 8081)
@@ -99,7 +100,7 @@ DELETE /api/captured-inputs?serviceId={id}        # Delete all captured inputs f
 
 ### JWT Authentication
 
-Both servers validate RS256 JWT tokens directly using `shared/src/main/kotlin/com/platform/auth/JwtAuth.kt`.
+Both servers validate RS256 JWT tokens directly using `shared/src/main/kotlin/com/platform/shared/auth/JwtAuth.kt`.
 
 - `installJwtAuth(privateKeyPem)` — shared Ktor extension; installs the JWT plugin, derives the RSA public key from the provided PEM, validates `organizationId` (UUID) and `cluster` claims, and populates `call.principal<AgentIdentity>()`
 - `AgentIdentity(organizationId, cluster, role?)` — the resolved principal; defined in `shared/`, available in both servers
@@ -116,7 +117,7 @@ The platform still serves `/.well-known/jwks.json` (RSA public key in JWK format
 // --- platform module ---
 
 // OrganizationId / ServiceId — inline value classes, UUID-validated at construction
-// platform/src/main/kotlin/com/platform/models/Ids.kt
+// shared/src/main/kotlin/com/platform/shared/models/Ids.kt
 @JvmInline value class OrganizationId(val value: String)
 @JvmInline value class ServiceId(val value: String)
 
@@ -183,6 +184,17 @@ data class CreateServiceRequest(
     val metadata: Map<String, String>? = null,
 )
 
+// Response for GET /api/agent/config — matches the agent's DynamicConfig wire format
+data class AgentConfigResponse(
+    val targetServices: Map<String, String> = emptyMap(), // service name → service ID
+    val samplingRate: Double = 1.0,
+    val batchSize: Int = 100,
+    val captureInterval: Long = 5000,    // millis
+    val configPollInterval: Long = 30000, // millis
+    val discoveryInterval: Long = 60000,  // millis
+    val namespaceFilters: List<String> = emptyList(),
+)
+
 // collector module — collector/src/main/kotlin/com/platform/collector/models/
 data class CreateCapturedInputRequest(
     val serviceId: String,
@@ -229,7 +241,7 @@ brew install colima docker && colima start
 ```
 
 **Module structure:**
-- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer, `OrganizationId`, `ServiceId`), JWT auth library (`AgentIdentity`, `installJwtAuth()`, `derivePublicKey()`); exposes `java-test-fixtures` with `DatabaseTestBase` and `KubernetesWorkloadTestBase`
+- `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer, `OrganizationId`, `ServiceId`), JWT auth library (`AgentIdentity`, `installJwtAuth()`, `derivePublicKey()`); exposes `java-test-fixtures` with `DatabaseTestBase`, `KubernetesWorkloadTestBase`, `TestJwtKeys` (consolidated test JWT keypair), and `authedTestApplication` (Ktor test app helper that wires JWT auth)
 - `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; JWKS endpoint; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
 - `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to platform (config) and collector (traffic) directly via JWT; no dependency on `shared/`, `platform/`, or `collector/` (API contract only)
@@ -342,7 +354,7 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 |------|----------|----------------|
 | Service discovery | ~60s | Query K8s API for services → diff against in-memory map → register new services with platform via `POST /api/services` → receive service ID map |
 | Config polling | ~60s | `GET /api/agent/config` → update sampling rate, namespace filters, batch size, poll interval |
-| Traffic capture | continuous | Drain up to batchSize entries from `KubesharkClient`'s persistent WebSocket channel → filter by target services → sample → `POST /api/captured-inputs` via Envoy |
+| Traffic capture | continuous | Drain up to batchSize entries from `KubesharkClient`'s persistent WebSocket channel → filter by target services → sample → `POST /api/captured-inputs` to collector |
 
 **Concurrency model:** Config is stored in a `MutableStateFlow<DynamicConfig>`. `KubesharkClient` and `TrafficTransformer` observe this flow directly. No locks, no coordination.
 
@@ -533,10 +545,10 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 - [x] `JwtTokenGenerator`: CLI tool to generate signed JWTs (`./gradlew :platform:generateToken`)
 - [x] Agent: `KubesharkClient` (WebSocket), `CollectorClient`, `ConfigClient`, `TrafficTransformer`, `AgentConfig`, `AgentApplication`; uses `PLATFORM_URL` for config and `COLLECTOR_URL` for traffic ingestion
 - [x] Agent deployment: `API_KEY` sourced from Kubernetes Secret (`secretKeyRef: platform-api-key/jwt-token`)
-- [x] Agent 79+ unit/integration tests; e2e-tests module with Envoy + platform + collector stack tests
+- [x] Agent 79+ unit/integration tests; e2e-tests module with platform + collector stack tests
 - [x] KubernetesAdapter implements `Closeable`
+- [x] Platform: `GET /api/agent/config` endpoint — returns the agent's target services (`name → serviceId`) for the JWT's organization + cluster
 - [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map (stubbed as no-op)
-- [ ] Platform: `GET /api/agent/config` endpoint (agent polls this; currently returns fallback defaults)
 - [ ] HTTP gzip on agent→collector POST (wire bandwidth optimization)
 
 **Replay Engine (Feature 2)**
@@ -599,7 +611,7 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 | Replay safety | Read-only by default, full with reset hook | Avoids DB mutation between sequential baseline/candidate runs. |
 | Run model | Sequential (baseline then candidate) | Simpler than parallel — one set of staging infra. |
 | Statistical tests | Mann-Whitney U (latency), linear regression (memory) | Non-parametric; handles skewed latency distributions. Detects growth trends. |
-| Traffic capture model | Push (agent → platform via Envoy) not pull | Only requires outbound network access. Platform never reaches into customer clusters. |
+| Traffic capture model | Push (agent → platform/collector directly) not pull | Only requires outbound network access. Platform never reaches into customer clusters. |
 | Agent language | Kotlin | Same build toolchain, CI, team knowledge. Swappable — agent communicates via HTTP only. |
 | Agent config | Static env vars (URLs, auth) + dynamic polling | Mutable config polled from platform avoids redeploying agent for config changes. |
 | Agent ↔ platform contract | Separate DTOs, API contract only, no shared compile-time types | Agent ships as container, versions independently. `ignoreUnknownKeys = true` enables additive API evolution. |
@@ -620,7 +632,7 @@ Before implementing a feature, decide which module owns it:
 - **`platform`**: Organizations, Services, topology/discovery, agent config endpoint, JWKS, token generation
 - **`collector`**: CapturedInputs, traffic ingestion (POST endpoint for agent)
 - **`agent`**: Kubeshark polling, K8s service discovery, traffic capture and forwarding (standalone process, no platform dependencies)
-- **`e2e-tests`**: Full-stack integration tests (Envoy + platform + collector + DB)
+- **`e2e-tests`**: Full-stack integration tests (platform + collector + DB)
 - **Future replay module**: ReplayRuns, ReplayResponses, ReplayEngine
 
 ### Implementation Order (per module)
@@ -646,3 +658,5 @@ The replay engine will fetch captured inputs via `GET /api/captured-inputs` from
 - `InstantSerializer` — kotlinx.serialization adapter for `java.time.Instant`
 - `DatabaseTestBase` (test fixtures) — starts a TestContainers PostgreSQL instance
 - `KubernetesWorkloadTestBase` (test fixtures) — starts a k3s cluster with test workloads
+- `TestJwtKeys` (test fixtures) — single consolidated RSA test keypair + signed-token helpers used by all module tests
+- `authedTestApplication` (test fixtures) — Ktor test app helper that installs `installJwtAuth()` with the test private key, removing per-module JWT setup boilerplate
