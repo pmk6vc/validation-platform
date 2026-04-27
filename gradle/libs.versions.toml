@@ -18,6 +18,7 @@ ktlint-plugin = "12.1.2"
 ktlint = "1.5.0"
 jib = "3.4.4"
 cloud-sql-postgres-socket-factory = "1.21.0"
+google-cloud-secretmanager = "2.54.0"
 
 [libraries]
 # Ktor server
@@ -52,6 +53,9 @@ cloud-sql-postgres-socket-factory = { module = "com.google.cloud.sql:postgres-so
 
 # Kubernetes
 fabric8-kubernetes-client = { module = "io.fabric8:kubernetes-client", version.ref = "fabric8" }
+
+# GCP
+google-cloud-secretmanager = { module = "com.google.cloud:google-cloud-secretmanager", version.ref = "google-cloud-secretmanager" }
 
 # Logging
 logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }

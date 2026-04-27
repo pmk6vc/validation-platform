@@ -36,6 +36,9 @@ dependencies {
     // Pulled in here because DatabaseFactory drives connection creation.
     runtimeOnly(libs.cloud.sql.postgres.socket.factory)
 
+    // GCP Secret Manager SDK — used by GcpSecretsProvider at runtime in GCP environments
+    implementation(libs.google.cloud.secretmanager)
+
     // Test fixtures: shared test infrastructure for integration tests
     testFixturesImplementation(libs.junit.jupiter)
     testFixturesImplementation(libs.testcontainers)
