@@ -59,7 +59,10 @@ resource "google_sql_database" "validation" {
 # Cloud SQL to expect an OAuth token rather than a password. No secret
 # rotation, no password in Terraform state, no Secret Manager involvement.
 resource "google_sql_user" "platform_sa" {
-  name     = google_service_account.platform.email
+  # Cloud SQL requires the ".gserviceaccount.com" suffix stripped from the
+  # IAM SA database username. See cloudrun.tf:database_iam_user for the
+  # matching DATABASE_USER env var the app authenticates with.
+  name     = trimsuffix(google_service_account.platform.email, ".gserviceaccount.com")
   instance = google_sql_database_instance.postgres.name
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
