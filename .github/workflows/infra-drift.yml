@@ -82,16 +82,10 @@ jobs:
           # -lock=false: drift detection is read-only and the cicd SA lacks
           # GCS write needed to create the lock object. Concurrent drift runs
           # are idempotent so skipping the lock is safe.
-          # -refresh=false: skip refreshing state against live infra. We're
-          # detecting "applied locally, didn't merge" — a local apply updates
-          # both state in GCS and live infra, so HCL-vs-state diff catches
-          # it. Skipping refresh also avoids needing secretmanager.versions
-          # .access (Cloud Run refresh dereferences linked secret versions).
           terraform -chdir=infra/platform plan \
             -input=false \
             -no-color \
             -lock=false \
-            -refresh=false \
             -detailed-exitcode \
             -var="platform_image=${{ steps.state.outputs.platform_image }}" \
             -var="collector_image=${{ steps.state.outputs.collector_image }}" \

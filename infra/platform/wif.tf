@@ -84,10 +84,21 @@ resource "google_service_account_iam_member" "cicd_act_as_platform_sa" {
 
 # Project-level read for `terraform plan` drift detection in CI. roles/viewer
 # is read-only on every resource type — no write, no IAM grant capability,
-# no escalation. Excludes Secret Manager values, which terraform doesn't read.
+# no escalation.
 resource "google_project_iam_member" "cicd_viewer" {
   project = var.project
   role    = "roles/viewer"
+  member  = "serviceAccount:${google_service_account.cicd.email}"
+}
+
+# The google_cloud_run_v2_service provider validates secret_key_ref bindings
+# during plan (independent of -refresh=false) by calling versions.access on
+# the linked secrets. Read-only — no write, no IAM grant, no escalation.
+# Practical exposure is unchanged: the cicd SA can already deploy code that
+# reads these secrets at runtime via the platform SA's secret bindings.
+resource "google_project_iam_member" "cicd_secret_accessor" {
+  project = var.project
+  role    = "roles/secretmanager.secretAccessor"
   member  = "serviceAccount:${google_service_account.cicd.email}"
 }
 
