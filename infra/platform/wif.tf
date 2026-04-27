@@ -82,6 +82,15 @@ resource "google_service_account_iam_member" "cicd_act_as_platform_sa" {
   member             = "serviceAccount:${google_service_account.cicd.email}"
 }
 
+# Project-level read for `terraform plan` drift detection in CI. roles/viewer
+# is read-only on every resource type — no write, no IAM grant capability,
+# no escalation. Excludes Secret Manager values, which terraform doesn't read.
+resource "google_project_iam_member" "cicd_viewer" {
+  project = var.project
+  role    = "roles/viewer"
+  member  = "serviceAccount:${google_service_account.cicd.email}"
+}
+
 # ---------------------------------------------------------------------------
 # Bind the GitHub Actions WIF identity to the CI/CD SA
 # ---------------------------------------------------------------------------

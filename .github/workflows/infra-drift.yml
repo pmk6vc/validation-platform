@@ -1,0 +1,135 @@
+name: Infra drift detection
+
+# Runs `terraform plan` against the live state on every PR and fails if the
+# plan is non-empty. Catches the "applied locally, never merged" scenario.
+#
+# Runs on every PR (not just infra/ PRs) so unrelated PRs also surface any
+# pre-existing drift. This is the only check — there's no scheduled run, so
+# drift only gets discovered when someone opens a PR.
+#
+# This is a read-only check. The cicd SA gets project-level roles/viewer
+# (no write capability, no escalation risk) so terraform plan can read every
+# resource type the platform stack manages.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # WIF OIDC token
+  contents: read
+  pull-requests: write  # for posting plan output as a PR comment
+
+env:
+  REGION: us-central1
+  PROJECT: zugzwang-381922
+  TF_VERSION: '1.5.7'
+  PLACEHOLDER_IMAGE: us-docker.pkg.dev/cloudrun/container/hello
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.CICD_SA }}
+
+      # Read currently-deployed images and Cloud SQL state so plan reflects
+      # actual deployment, not hypothetical defaults. Mirrors platform-down.sh.
+      - name: Resolve current state
+        id: state
+        run: |
+          PLATFORM_IMAGE="$(gcloud run services describe validation-platform \
+            --project="${PROJECT}" --region="${REGION}" \
+            --format='value(spec.template.spec.containers[0].image)' 2>/dev/null \
+            || echo "${PLACEHOLDER_IMAGE}")"
+          COLLECTOR_IMAGE="$(gcloud run services describe validation-collector \
+            --project="${PROJECT}" --region="${REGION}" \
+            --format='value(spec.template.spec.containers[0].image)' 2>/dev/null \
+            || echo "${PLACEHOLDER_IMAGE}")"
+          ACTIVATION_POLICY="$(gcloud sql instances describe validation-postgres \
+            --project="${PROJECT}" \
+            --format='value(settings.activationPolicy)' 2>/dev/null \
+            || echo 'NEVER')"
+          if [[ "${ACTIVATION_POLICY}" == "ALWAYS" ]]; then
+            CLOUDSQL_ACTIVE=true
+          else
+            CLOUDSQL_ACTIVE=false
+          fi
+          echo "platform_image=${PLATFORM_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "collector_image=${COLLECTOR_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "cloudsql_active=${CLOUDSQL_ACTIVE}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init
+        run: terraform -chdir=infra/platform init -input=false
+
+      # -detailed-exitcode: 0 = no diff, 1 = error, 2 = diff present
+      - name: Terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform -chdir=infra/platform plan \
+            -input=false \
+            -no-color \
+            -detailed-exitcode \
+            -var="platform_image=${{ steps.state.outputs.platform_image }}" \
+            -var="collector_image=${{ steps.state.outputs.collector_image }}" \
+            -var="cloudsql_active=${{ steps.state.outputs.cloudsql_active }}" \
+            > plan.out 2>&1
+          ec=$?
+          set -e
+          # Truncate plan output to fit GitHub's 65k-char comment limit.
+          head -c 60000 plan.out > plan.trunc
+          {
+            echo 'plan<<__EOPLAN__'
+            cat plan.trunc
+            echo '__EOPLAN__'
+            echo "exitcode=${ec}"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        continue-on-error: true
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const exitcode = '${{ steps.plan.outputs.exitcode }}';
+            const plan = `${{ steps.plan.outputs.plan }}`;
+            const status = exitcode === '0'
+              ? 'No drift'
+              : exitcode === '2'
+                ? 'Drift detected — live infra differs from main'
+                : 'Plan errored';
+            const body = `### Infra drift check — ${status}\n\n<details><summary>terraform plan output</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail on drift or error
+        run: |
+          ec='${{ steps.plan.outputs.exitcode }}'
+          if [[ "${ec}" == "0" ]]; then
+            echo "No drift."
+            exit 0
+          elif [[ "${ec}" == "2" ]]; then
+            echo "::error::Drift detected. Live infra does not match main."
+            exit 1
+          else
+            echo "::error::terraform plan failed with exit ${ec}."
+            exit 1
+          fi
