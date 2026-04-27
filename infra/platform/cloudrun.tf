@@ -105,7 +105,6 @@ resource "google_cloud_run_v2_service" "platform" {
 
   depends_on = [
     google_project_service.apis,
-    google_secret_manager_secret.db_password,
     google_secret_manager_secret.jwt_private_key,
   ]
 }
@@ -195,7 +194,6 @@ resource "google_cloud_run_v2_service" "collector" {
 
   depends_on = [
     google_project_service.apis,
-    google_secret_manager_secret.db_password,
     google_secret_manager_secret.jwt_private_key,
   ]
 }

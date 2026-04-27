@@ -31,6 +31,14 @@ resource "google_sql_database_instance" "postgres" {
       name  = "max_connections"
       value = "100"
     }
+
+    # Enable IAM database authentication. Required for the
+    # CLOUD_IAM_SERVICE_ACCOUNT user below — Cloud Run authenticates as
+    # the service account, no password.
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
   }
 
   # Prevent accidental deletion of the database instance.
@@ -46,17 +54,12 @@ resource "google_sql_database" "validation" {
   instance = google_sql_database_instance.postgres.name
 }
 
-# Read the DB password from Secret Manager at apply time. The user must
-# populate validation-db-password BEFORE the first terraform apply
-# (bootstrap.sh prints the gcloud command for this).
-data "google_secret_manager_secret_version" "db_password" {
-  secret = google_secret_manager_secret.db_password.secret_id
-}
-
-resource "google_sql_user" "platform" {
-  name     = "platform"
+# Cloud Run authenticates to Postgres as its service account via IAM.
+# The "name" must be the SA email; type CLOUD_IAM_SERVICE_ACCOUNT tells
+# Cloud SQL to expect an OAuth token rather than a password. No secret
+# rotation, no password in Terraform state, no Secret Manager involvement.
+resource "google_sql_user" "platform_sa" {
+  name     = google_service_account.platform.email
   instance = google_sql_database_instance.postgres.name
-  password = data.google_secret_manager_secret_version.db_password.secret_data
-  # Note: this puts the password value in Terraform state. The state lives
-  # in GCS, encrypted at rest, with restricted IAM — standard tradeoff.
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }

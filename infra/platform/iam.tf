@@ -20,6 +20,15 @@ resource "google_project_iam_member" "platform_cloudsql_client" {
   member  = "serviceAccount:${google_service_account.platform.email}"
 }
 
+# Required for IAM database authentication (logging in as the SA).
+# Pairs with cloudsql.iam_authentication=on flag and the
+# CLOUD_IAM_SERVICE_ACCOUNT google_sql_user — see cloudsql.tf.
+resource "google_project_iam_member" "platform_cloudsql_instance_user" {
+  project = var.project
+  role    = "roles/cloudsql.instanceUser"
+  member  = "serviceAccount:${google_service_account.platform.email}"
+}
+
 resource "google_project_iam_member" "platform_secret_accessor" {
   project = var.project
   role    = "roles/secretmanager.secretAccessor"
