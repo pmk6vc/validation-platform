@@ -73,19 +73,13 @@ resource "google_project_iam_member" "cicd_run_developer" {
   member  = "serviceAccount:${google_service_account.cicd.email}"
 }
 
-# Allow the SA to act as the Cloud Run runtime SA when updating services
-# (required by terraform apply of cloudrun.tf via the cicd SA).
+# Allow the SA to act as the Cloud Run runtime SA. Required by `gcloud run
+# services update` because Cloud Run treats setting/keeping a service's runtime
+# SA on a new revision as "actAs" on that SA.
 resource "google_service_account_iam_member" "cicd_act_as_platform_sa" {
   service_account_id = google_service_account.platform.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.cicd.email}"
-}
-
-# Allow GCS access so the cicd SA can read/write Terraform state during apply.
-resource "google_project_iam_member" "cicd_storage_admin" {
-  project = var.project
-  role    = "roles/storage.objectAdmin"
-  member  = "serviceAccount:${google_service_account.cicd.email}"
 }
 
 # ---------------------------------------------------------------------------

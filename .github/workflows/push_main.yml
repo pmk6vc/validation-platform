@@ -1,13 +1,13 @@
 name: Build, push, and deploy (main)
 
 # Runs on every merge to main. Builds the platform and collector images,
-# pushes them to Artifact Registry, then deploys to Cloud Run via Terraform.
+# pushes them to Artifact Registry, then rolls out new Cloud Run revisions
+# via `gcloud run services update`.
 #
-# Build approach: existing Dockerfiles in deploy/ (Dockerfile.platform,
-# Dockerfile.collector). Using docker build keeps the CI identical to local
-# development and avoids adding Jib plugin configuration to the Gradle modules.
-# The trade-off is a slower build (full Gradle inside Docker) vs Jib's
-# incremental layer caching — acceptable at current repo size.
+# Why not terraform apply: a full apply needs broad project-level admin roles
+# (cloudsql, secretmanager, projectIamAdmin, workloadIdentityPoolAdmin, …) on
+# the cicd SA. Image rollout only needs run.developer + iam.serviceAccountUser.
+# Infra changes are applied manually via scripts/platform-{up,down}.sh.
 
 on:
   push:
@@ -19,7 +19,7 @@ permissions:
 
 env:
   REGISTRY: us-central1-docker.pkg.dev/zugzwang-381922/validation
-  TF_VERSION: '1.5.7'
+  REGION: us-central1
 
 jobs:
   build-push-deploy:
@@ -32,8 +32,6 @@ jobs:
       # No JSON key file is used. The OIDC token issued by GitHub Actions is
       # exchanged for a short-lived GCP access token that impersonates the
       # validation-cicd-sa service account.
-      # Set WIF_PROVIDER and CICD_SA as GitHub repo variables (Settings →
-      # Variables) using the outputs from `terraform apply` on infra/platform.
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -71,23 +69,19 @@ jobs:
           docker push ${{ env.REGISTRY }}/collector:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/collector:latest
 
-      # --- Deploy to Cloud Run via Terraform ---
-      # Using the SHA-tagged images (not :latest) so each Cloud Run revision
-      # is pinned to a specific build and rollbacks are deterministic.
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform init (platform)
-        run: terraform -chdir=infra/platform init
-        env:
-          GOOGLE_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
-
-      - name: Terraform apply (platform)
+      # --- Roll out new Cloud Run revisions ---
+      # Using the SHA-tagged images (not :latest) so each revision is pinned
+      # to a specific build and rollbacks are deterministic.
+      - name: Deploy validation-platform
         run: |
-          terraform -chdir=infra/platform apply -auto-approve \
-            -var="platform_image=${{ env.REGISTRY }}/platform:${{ github.sha }}" \
-            -var="collector_image=${{ env.REGISTRY }}/collector:${{ github.sha }}"
-        env:
-          GOOGLE_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
+          gcloud run services update validation-platform \
+            --image=${{ env.REGISTRY }}/platform:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --quiet
+
+      - name: Deploy validation-collector
+        run: |
+          gcloud run services update validation-collector \
+            --image=${{ env.REGISTRY }}/collector:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --quiet
