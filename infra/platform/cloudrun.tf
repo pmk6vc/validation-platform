@@ -12,6 +12,12 @@
 
 locals {
   cloud_sql_connection = google_sql_database_instance.postgres.connection_name
+
+  # JDBC URL for Cloud SQL via the cloud-sql-jdbc-socket-factory library
+  # (com.google.cloud.sql:postgres-socket-factory on the runtime classpath).
+  # The factory authenticates with IAM (roles/cloudsql.client on the SA) and
+  # opens a TLS tunnel — no Unix socket / sidecar required.
+  database_jdbc_url = "jdbc:postgresql:///${google_sql_database.validation.name}?cloudSqlInstance=${local.cloud_sql_connection}&socketFactory=com.google.cloud.sql.postgres.SocketFactory"
 }
 
 # ---------------------------------------------------------------------------
@@ -39,6 +45,16 @@ resource "google_cloud_run_v2_service" "platform" {
 
       # PORT is set automatically by Cloud Run from ports.container_port —
       # it's a reserved env name, can't be overridden manually.
+
+      env {
+        name  = "DATABASE_URL"
+        value = local.database_jdbc_url
+      }
+
+      env {
+        name  = "DATABASE_USER"
+        value = google_sql_user.platform.name
+      }
 
       env {
         name = "DATABASE_PASSWORD"
@@ -122,6 +138,16 @@ resource "google_cloud_run_v2_service" "collector" {
       }
 
       # PORT is set automatically by Cloud Run from ports.container_port.
+
+      env {
+        name  = "DATABASE_URL"
+        value = local.database_jdbc_url
+      }
+
+      env {
+        name  = "DATABASE_USER"
+        value = google_sql_user.platform.name
+      }
 
       env {
         name = "DATABASE_PASSWORD"

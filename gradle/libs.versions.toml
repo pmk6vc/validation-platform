@@ -17,6 +17,7 @@ bouncycastle = "1.79"
 ktlint-plugin = "12.1.2"
 ktlint = "1.5.0"
 jib = "3.4.4"
+cloud-sql-postgres-socket-factory = "1.21.0"
 
 [libraries]
 # Ktor server
@@ -47,6 +48,7 @@ exposed-json = { module = "org.jetbrains.exposed:exposed-json", version.ref = "e
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
 hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
+cloud-sql-postgres-socket-factory = { module = "com.google.cloud.sql:postgres-socket-factory", version.ref = "cloud-sql-postgres-socket-factory" }
 
 # Kubernetes
 fabric8-kubernetes-client = { module = "io.fabric8:kubernetes-client", version.ref = "fabric8" }
