@@ -4,27 +4,26 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Replace local images with GCR images.
-# The GCP_PROJECT placeholder is replaced by sandbox-up.sh at deploy time
-# via: kubectl kustomize . | sed "s/GCP_PROJECT/$PROJECT/" | kubectl apply -f -
+# Point all test-service images at Artifact Registry.
+# Registry: us-central1-docker.pkg.dev/zugzwang-381922/validation
 images:
   - name: docker.io/library/test-api-gateway
-    newName: gcr.io/GCP_PROJECT/test-api-gateway
+    newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/test-api-gateway
     newTag: latest
   - name: docker.io/library/test-order-service
-    newName: gcr.io/GCP_PROJECT/test-order-service
+    newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/test-order-service
     newTag: latest
   - name: docker.io/library/test-notification-service
-    newName: gcr.io/GCP_PROJECT/test-notification-service
+    newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/test-notification-service
     newTag: latest
   - name: docker.io/library/test-traffic-generator
-    newName: gcr.io/GCP_PROJECT/test-traffic-generator
+    newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/test-traffic-generator
     newTag: latest
   - name: docker.io/library/test-webhook-stub
-    newName: gcr.io/GCP_PROJECT/test-webhook-stub
+    newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/test-webhook-stub
     newTag: latest
 
-# Override imagePullPolicy from Never to Always for all deployments
+# Override imagePullPolicy from Never (minikube) to Always (GKE) for all deployments
 patches:
   - target:
       kind: Deployment

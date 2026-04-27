@@ -119,18 +119,30 @@ Rotation is handled by adding a new secret version — Cloud Run picks up `lates
 
 The sandbox cluster costs ~$80/mo when running. Only apply when you need it.
 
+Use the lifecycle script — it handles everything in one shot:
+
 ```bash
-cd infra/sandbox
-terraform init
-terraform apply
+./scripts/sandbox-up.sh
 ```
+
+This script:
+1. Runs `terraform apply` on `infra/sandbox/` to provision the GKE cluster.
+2. Fetches kubeconfig via `gcloud container clusters get-credentials`.
+3. Builds and pushes test-service images to Artifact Registry using Jib.
+4. Applies `k8s/test-services/overlays/gke/` via `kubectl apply -k`.
+5. Waits up to 120 s per namespace for all Deployments to become `Available`.
+
+The script is idempotent — running it again will re-apply any drift.
 
 To destroy the sandbox when not in use:
 
 ```bash
-cd infra/sandbox
-terraform destroy
+./scripts/sandbox-down.sh
 ```
+
+**Test-service images in CI:** `push_main.yml` also builds and pushes the five
+test-service images on every merge to `main` (using Jib via Gradle), so the
+images in Artifact Registry stay current without manual pushes.
 
 ## Cost Controls
 
