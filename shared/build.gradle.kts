@@ -31,6 +31,11 @@ dependencies {
     // Connection pool
     implementation(libs.hikari)
 
+    // Cloud SQL JDBC socket factory — used at runtime via socketFactory= URL param
+    // when DATABASE_URL points at a Cloud SQL instance (Cloud Run deploys).
+    // Pulled in here because DatabaseFactory drives connection creation.
+    runtimeOnly(libs.cloud.sql.postgres.socket.factory)
+
     // Test fixtures: shared test infrastructure for integration tests
     testFixturesImplementation(libs.junit.jupiter)
     testFixturesImplementation(libs.testcontainers)
