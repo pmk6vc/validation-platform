@@ -21,6 +21,11 @@ locals {
   # google_sql_user typed CLOUD_IAM_SERVICE_ACCOUNT below.
   database_jdbc_url = "jdbc:postgresql:///${google_sql_database.validation.name}?cloudSqlInstance=${local.cloud_sql_connection}&socketFactory=com.google.cloud.sql.postgres.SocketFactory&enableIamAuth=true"
 
+  # Cloud SQL IAM database username: the service account email with the
+  # ".gserviceaccount.com" suffix stripped. Required format per
+  # https://cloud.google.com/sql/docs/postgres/iam-logins#log-in
+  database_iam_user = trimsuffix(google_service_account.platform.email, ".gserviceaccount.com")
+
   # Fully-qualified Secret Manager resource name. The app resolves it at
   # startup via the SDK (SECRETS_PROVIDER=gcp).
   jwt_private_key_resource_name = "projects/${var.project}/secrets/${google_secret_manager_secret.jwt_private_key.secret_id}/versions/latest"
@@ -69,7 +74,7 @@ resource "google_cloud_run_v2_service" "platform" {
       }
       env {
         name  = "DATABASE_USER"
-        value = google_service_account.platform.email
+        value = local.database_iam_user
       }
       env {
         name  = "DATABASE_AUTH_MODE"
@@ -158,7 +163,7 @@ resource "google_cloud_run_v2_service" "collector" {
       }
       env {
         name  = "DATABASE_USER"
-        value = google_service_account.platform.email
+        value = local.database_iam_user
       }
       env {
         name  = "DATABASE_AUTH_MODE"
