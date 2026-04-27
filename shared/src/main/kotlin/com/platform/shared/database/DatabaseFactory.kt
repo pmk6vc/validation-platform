@@ -28,18 +28,35 @@ object DatabaseFactory {
      *     email of a Postgres user typed `CLOUD_IAM_SERVICE_ACCOUNT`.
      */
     fun initFromEnvironment(secretsProvider: SecretsProvider = secretsProviderFromEnvironment()) {
-        val jdbcUrl =
-            System.getenv("DATABASE_URL")
-                ?: "jdbc:postgresql://localhost:5432/platform"
-        val username = System.getenv("DATABASE_USER") ?: "postgres"
-        val authMode = (System.getenv("DATABASE_AUTH_MODE") ?: "password").lowercase()
+        val resolved = resolveConfig(System::getenv, secretsProvider)
+        init(resolved.jdbcUrl, resolved.username, resolved.password)
+    }
+
+    internal data class ResolvedDbConfig(
+        val jdbcUrl: String,
+        val username: String,
+        val password: String,
+    )
+
+    /**
+     * Pure resolution of DB connection inputs from a (typically env-var-backed)
+     * lookup function and a [SecretsProvider]. Extracted so it can be tested
+     * without spinning up a real DataSource.
+     */
+    internal fun resolveConfig(
+        env: (String) -> String?,
+        secretsProvider: SecretsProvider,
+    ): ResolvedDbConfig {
+        val jdbcUrl = env("DATABASE_URL") ?: "jdbc:postgresql://localhost:5432/platform"
+        val username = env("DATABASE_USER") ?: "postgres"
+        val authMode = (env("DATABASE_AUTH_MODE") ?: "password").lowercase()
         val password =
             when (authMode) {
                 "password" -> secretsProvider.get("DATABASE_PASSWORD")
                 "iam" -> "" // SocketFactory provides the OAuth token in place of a password
                 else -> error("Unknown DATABASE_AUTH_MODE: '$authMode' (expected 'password' or 'iam')")
             }
-        init(jdbcUrl, username, password)
+        return ResolvedDbConfig(jdbcUrl, username, password)
     }
 
     fun init(
