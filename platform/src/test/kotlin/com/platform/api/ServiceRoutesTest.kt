@@ -303,16 +303,16 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
-    fun `POST services should auto-set organizationId from JWT`() =
+    fun `POST services stamps organizationId and cluster from JWT`() =
         platformTestApplication { client ->
+            // The default JWT minted by platformTestApplication has cluster="prod"
+            // (see TestJwtKeys.signedToken). After this POST, the persisted service
+            // must carry the JWT's org and cluster — the body has no say.
             val response =
                 client.post("/api/services") {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            // Provide a different org ID in the body — it should be ignored
-                            organizationId = OrganizationId.generate(),
-                            cluster = "prod",
                             namespace = "default",
                             name = "new-service",
                             provider = Provider.KUBERNETES,
@@ -323,8 +323,8 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
             assertEquals(HttpStatusCode.Created, response.status)
             val svc = Json.decodeFromString<Service>(response.bodyAsText())
             assertEquals("new-service", svc.name)
-            // organizationId is always from the JWT, regardless of what was in the body
             assertEquals(callerOrgId, svc.organizationId)
+            assertEquals("prod", svc.cluster)
         }
 
     @Test
@@ -335,8 +335,6 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = callerOrgId,
-                            cluster = "prod",
                             namespace = "default",
                             name = "new-service",
                             provider = Provider.KUBERNETES,
@@ -360,8 +358,6 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = callerOrgId,
-                            cluster = "staging",
                             namespace = "backend",
                             name = "persist-service",
                             metadata = mapOf("team" to "platform"),
@@ -397,8 +393,6 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         platformTestApplication { client ->
             val request =
                 CreateServiceRequest(
-                    organizationId = callerOrgId,
-                    cluster = "prod",
                     namespace = "default",
                     name = "duplicate-service",
                 )
@@ -426,8 +420,6 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = callerOrgId,
-                            cluster = "prod",
                             namespace = "default",
                             name = "   ",
                         ),

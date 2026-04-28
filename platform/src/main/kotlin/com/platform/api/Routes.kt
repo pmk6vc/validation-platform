@@ -148,12 +148,8 @@ fun Application.configureRouting() {
                         val service =
                             Service(
                                 id = ServiceId.generate(),
-                                // Auto-set organizationId from JWT — body's organizationId field is
-                                // ignored. This prevents callers from inserting services into other
-                                // orgs and avoids a 400/403 ambiguity for honest callers who simply
-                                // omit it or match it to their own org.
                                 organizationId = principal.organizationId,
-                                cluster = request.cluster,
+                                cluster = principal.cluster,
                                 namespace = request.namespace,
                                 name = request.name,
                                 provider = request.provider,

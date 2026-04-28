@@ -1,7 +1,6 @@
 package com.platform.api
 
 import com.platform.models.Provider
-import com.platform.shared.models.OrganizationId
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -24,10 +23,13 @@ data class AgentConfigResponse(
     val namespaceFilters: List<String> = emptyList(),
 )
 
+/**
+ * organizationId and cluster are NOT body fields — both are taken from the JWT
+ * (organizationId + cluster claims). This prevents an agent token scoped to one
+ * org/cluster from registering services in another.
+ */
 @Serializable
 data class CreateServiceRequest(
-    val organizationId: OrganizationId,
-    val cluster: String,
     val namespace: String,
     val name: String,
     val provider: Provider = Provider.UNKNOWN,

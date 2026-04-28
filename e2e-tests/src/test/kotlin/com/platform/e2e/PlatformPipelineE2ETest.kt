@@ -71,15 +71,13 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
             orgAToken = generateJwt(organizationId = org.id.value, cluster = "prod-a")
 
             // Use orgAToken so the service is associated with org-a via JWT scoping.
-            // POST /api/services auto-sets organizationId from the JWT; the body's value is ignored.
+            // POST /api/services takes organizationId + cluster from the JWT.
             val svcResponse =
                 httpClient.post("$platformUrl/api/services") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = org.id,
-                            cluster = "prod-a",
                             namespace = "production",
                             name = "order-service-a",
                         ),
@@ -110,8 +108,6 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                     contentType(ContentType.Application.Json)
                     setBody(
                         CreateServiceRequest(
-                            organizationId = org.id,
-                            cluster = "prod-b",
                             namespace = "production",
                             name = "order-service-b",
                         ),
