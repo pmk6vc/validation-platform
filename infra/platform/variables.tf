@@ -31,15 +31,3 @@ variable "collector_image" {
   description = "Container image for the validation-collector Cloud Run service. Required — set via -var."
   type        = string
 }
-
-variable "db_admin_users" {
-  description = <<-EOT
-    Engineer email addresses granted cloudsqlsuperuser via Cloud SQL IAM auth.
-    Each becomes a CLOUD_IAM_USER in the validation-postgres instance and gets
-    roles/cloudsql.instanceUser at the project level. The actual cloudsqlsuperuser
-    grant is applied in-DB by scripts/bootstrap-db.sh (one-time per DB lifetime).
-    Set the concrete list per environment in terraform.tfvars (gitignored).
-  EOT
-  type        = set(string)
-  default     = []
-}

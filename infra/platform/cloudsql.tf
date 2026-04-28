@@ -66,16 +66,3 @@ resource "google_sql_user" "platform_sa" {
   instance = google_sql_database_instance.postgres.name
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
-
-# Engineers granted DB superuser access via IAM auth — no static passwords.
-# This resource only registers them as known roles in the Postgres instance and
-# enables IAM-auth login (paired with roles/cloudsql.instanceUser in iam.tf).
-# The actual cloudsqlsuperuser grant must be applied in-DB by
-# scripts/bootstrap-db.sh because terraform doesn't have a privileged SQL
-# session at apply time.
-resource "google_sql_user" "admin_users" {
-  for_each = var.db_admin_users
-  name     = each.value
-  instance = google_sql_database_instance.postgres.name
-  type     = "CLOUD_IAM_USER"
-}
