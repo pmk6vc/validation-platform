@@ -175,9 +175,10 @@ enum class InputType { HTTP, UNKNOWN }
 ```kotlin
 // platform module — platform/src/main/kotlin/com/platform/api/Requests.kt
 data class CreateOrganizationRequest(val name: String)
+// organizationId and cluster are NOT body fields — both come from the JWT
+// principal, so an agent token cannot register services into a different
+// org or cluster than its own.
 data class CreateServiceRequest(
-    val organizationId: OrganizationId,
-    val cluster: String,
     val namespace: String,
     val name: String,
     val provider: Provider = Provider.UNKNOWN,
