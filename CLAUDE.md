@@ -273,10 +273,10 @@ session, bootstrapped by:
 ```
 
 `bootstrap-db.sh` briefly sets a random password on `postgres`, runs
-`ALTER SCHEMA public OWNER TO <platform-sa>` via `cloud-sql-proxy`, then
+`GRANT ALL ON SCHEMA public TO <platform-sa>` via `cloud-sql-proxy`, then
 rotates the password to another random value nobody knows. Net result:
-the SA owns `public` and no static credential exists anywhere. Idempotent
-— safe to re-run.
+the SA can create tables in `public` (Flyway succeeds) and no static
+credential exists anywhere. Idempotent — safe to re-run.
 
 ---
 
