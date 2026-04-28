@@ -11,7 +11,7 @@
 | Priority | Issue | Severity | Effort | Why Now |
 |----------|-------|----------|--------|---------|
 | 1 | [SECURITY-1](#security-1-authorization-is-authentication--cross-tenant-data-exposure-on-every-list-endpoint) | Security | Medium | Any valid JWT reads all orgs' data. Multi-tenant breach. |
-| 2 | [SECURITY-2](#security-2-post-apiservices-does-not-verify-jwt-organization-matches-request-body) | Security | Small | Compromised agent can plant services under another org. |
+| 2 | [SECURITY-2](#security-2-post-apiservices-does-not-verify-jwt-organization-matches-request-body) | Security | Small | Services portion fixed in PR #81; admin role for `POST /api/organizations` still open. |
 | 3 | [ARCH-5](#arch-5-trafficcaptureloop-swallows-cancellationexception--agent-cannot-shut-down-cleanly) | Architectural | Small | Agent cannot shut down cleanly; misleading ERROR logs in tests. |
 | 4 | [SECURITY-3](#security-3-kfl-query-injection-via-service-names) | Security | Small | Service names interpolated into KFL queries without escaping. |
 | 5 | [ARCH-6](#arch-6-cursor-pagination-on-captured_inputs-uses-agent-supplied-capturedat--clock-skew-causes-gaps-and-duplicates) | Architectural | Medium | Replay engine will silently skip or double-replay requests. |
@@ -43,13 +43,15 @@
 
 ### SECURITY-2: `POST /api/services` Does Not Verify JWT Organization Matches Request Body
 
-- **Location**: `platform/src/main/kotlin/com/platform/api/Routes.kt` lines 134–154
-- **Issue**: `POST /api/services` accepts a `CreateServiceRequest` body containing an `organizationId` field. The route never verifies that `request.organizationId == call.principal<AgentIdentity>()!!.organizationId`. A valid JWT for Org A can create services under Org B by supplying Org B's UUID in the request body. The only enforcement is the FK from `services.organization_id` to `organizations.id`, which prevents creating services for nonexistent orgs but not for legitimate orgs the caller doesn't own.
+- **Status**: `POST /api/services` portion **fixed in PR #81**. `POST /api/organizations` portion **still open** (needs admin role).
+- **Location**: `platform/src/main/kotlin/com/platform/api/Routes.kt`
+- **Original issue**: `POST /api/services` accepted a `CreateServiceRequest` body containing an `organizationId` field. The route never verified that `request.organizationId == call.principal<AgentIdentity>()!!.organizationId`. A valid JWT for Org A could create services under Org B by supplying Org B's UUID in the request body. The same shape applied to `cluster` (an agent token scoped to `cluster=prod` could register services in `cluster=staging`).
 
-  `POST /api/organizations` has no principal check at all — any authenticated caller can create organizations. This may be an intentional provisioning path, but it is undocumented.
+  `POST /api/organizations` had — and still has — no principal check at all: any authenticated caller can create organizations.
 
-- **Impact**: A compromised or malicious agent can pollute another tenant's service registry, affecting their `GET /api/agent/config` response and their KFL queries, redirecting their traffic capture.
-- **Fix**: In `POST /api/services`, enforce `request.organizationId == identity.organizationId`; return 403 if they differ. For `POST /api/organizations`, decide whether it requires an admin role and enforce `identity.role == "admin"` if so.
+- **Impact**: A compromised or malicious agent could pollute another tenant's service registry, affecting their `GET /api/agent/config` response and their KFL queries, redirecting their traffic capture.
+- **Fix applied (PR #81)**: Removed `organizationId` and `cluster` from `CreateServiceRequest` entirely; both are now stamped from the JWT principal in the route handler. Structurally stronger than the originally-recommended runtime equality check — there is no body field to mismatch.
+- **Still required**: For `POST /api/organizations`, decide whether it requires an admin role and enforce `identity.role == "admin"` if so. The route currently carries a TODO comment acknowledging the gap.
 
 ---
 
