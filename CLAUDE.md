@@ -258,6 +258,26 @@ brew install colima docker && colima start
 ./gradlew testServicesDown            # Remove test services
 ```
 
+### Cloud SQL public schema bootstrap (one-time per DB lifetime)
+
+Cloud Run authenticates to Postgres as the platform SA via IAM auth — no
+static DB password. But the SA needs to own the `public` schema before
+Flyway can create tables (PG15+ default doesn't grant `CREATE` on `public`
+to ordinary roles). That ownership transfer requires one privileged SQL
+session, bootstrapped by:
+
+```bash
+# After a brand-new platform-up (or after the validation DB is recreated):
+./scripts/platform-up.sh
+./scripts/bootstrap-db.sh
+```
+
+`bootstrap-db.sh` briefly sets a random password on `postgres`, runs
+`ALTER SCHEMA public OWNER TO <platform-sa>` via `cloud-sql-proxy`, then
+rotates the password to another random value nobody knows. Net result:
+the SA owns `public` and no static credential exists anywhere. Idempotent
+— safe to re-run.
+
 ---
 
 ## Architecture Vision
