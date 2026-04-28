@@ -257,6 +257,29 @@ brew install colima docker && colima start
 ./gradlew testServicesDown            # Remove test services
 ```
 
+### Cloud SQL admin bootstrap (one-time per DB lifetime)
+
+Cloud Run uses IAM auth as the platform SA — no static DB password. Granting
+the SA ownership of the `public` schema (so Flyway can create tables) and
+granting engineers `cloudsqlsuperuser` for break-glass access requires one
+privileged SQL session. That session is bootstrapped by:
+
+```bash
+# After a brand-new platform-up (or after the validation DB is recreated):
+cp infra/platform/terraform.tfvars.example infra/platform/terraform.tfvars
+# edit terraform.tfvars to add your email under db_admin_users
+./scripts/platform-up.sh                       # creates IAM users + bindings
+./scripts/bootstrap-db.sh                      # one-time in-DB grants
+```
+
+`bootstrap-db.sh` briefly sets a random password on `postgres`, runs the
+grants via `cloud-sql-proxy`, then rotates the password to another random
+value nobody knows. After it finishes, all admin DB access uses IAM auth via
+`cloud-sql-proxy --auto-iam-authn` — no static credential exists anywhere.
+
+To add another engineer admin later: add their email to `terraform.tfvars`,
+re-run `platform-up.sh`, then re-run `bootstrap-db.sh` (idempotent).
+
 ---
 
 ## Architecture Vision

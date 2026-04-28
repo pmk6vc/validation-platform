@@ -49,3 +49,18 @@ resource "google_service_account_iam_member" "platform_workload_identity_self" {
 # created with that workload pool — chicken-and-egg with the sandbox stack.
 # We'll re-add this (in infra/sandbox/iam.tf) when the agent actually goes
 # into the sandbox cluster as part of the customer-onboarding work.
+
+# ---------------------------------------------------------------------------
+# Engineer DB admins
+# Project-level binding so each var.db_admin_users entry can authenticate to
+# Cloud SQL via IAM auth. Pairs with the CLOUD_IAM_USER google_sql_user
+# resources in cloudsql.tf and the in-DB cloudsqlsuperuser grant applied by
+# scripts/bootstrap-db.sh.
+# ---------------------------------------------------------------------------
+
+resource "google_project_iam_member" "db_admin_instance_user" {
+  for_each = var.db_admin_users
+  project  = var.project
+  role     = "roles/cloudsql.instanceUser"
+  member   = "user:${each.value}"
+}

@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (which is gitignored) and edit with your values.
+#
+# Engineer email addresses granted DB superuser via IAM auth. Each entry
+# becomes a CLOUD_IAM_USER in Cloud SQL + gets roles/cloudsql.instanceUser
+# at the project level. The cloudsqlsuperuser grant itself is applied in-DB
+# by scripts/bootstrap-db.sh (run once per DB lifetime, then again any time
+# you add a new admin).
+
+db_admin_users = [
+  # "you@example.com",
+]

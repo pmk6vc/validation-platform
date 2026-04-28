@@ -38,3 +38,9 @@ out/
 ### Claude Code ###
 .claude/
 .mcp.json
+
+### Terraform ###
+# Per-environment values (db_admin_users etc.). Commit terraform.tfvars.example
+# as the template; never commit the real file.
+infra/**/terraform.tfvars
+infra/**/*.auto.tfvars

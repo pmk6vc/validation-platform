@@ -53,6 +53,8 @@ fi
 # ---------------------------------------------------------------------------
 
 info "Applying platform stack (Cloud SQL active=true)..."
+# terraform.tfvars (gitignored) supplies per-environment values like
+# db_admin_users. terraform auto-loads it from the -chdir directory.
 terraform -chdir="${REPO_ROOT}/infra/platform" apply \
   -auto-approve \
   -var="cloudsql_active=true" \
