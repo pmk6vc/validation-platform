@@ -78,14 +78,18 @@ for _ in {1..15}; do
   sleep 1
 done
 
-info "Granting public schema ownership to the platform SA..."
+info "Granting CREATE/USAGE on public schema to the platform SA..."
+# We don't ALTER OWNER because Cloud SQL's postgres user is cloudsqlsuperuser,
+# not a real PG superuser, and ALTER SCHEMA … OWNER requires the granter to
+# be a member of the target role (which postgres isn't). GRANT ALL is
+# sufficient for Flyway: the SA can CREATE tables in public, and tables it
+# creates are owned by the SA — no ownership transfer needed.
 PGPASSWORD="${TEMP_PASS}" psql \
   -h 127.0.0.1 -p "${PROXY_PORT}" \
   -U postgres -d "${DATABASE}" \
   -v ON_ERROR_STOP=1 \
-  -c "ALTER SCHEMA public OWNER TO \"${APP_USER}\";" \
   -c "GRANT ALL ON SCHEMA public TO \"${APP_USER}\";"
 
 success "Bootstrap complete. Postgres password is unknown again."
-echo "The platform service account now owns the public schema and Flyway"
-echo "migrations will succeed on the next Cloud Run deploy."
+echo "The platform service account can now create tables in the public schema."
+echo "Flyway migrations will succeed on the next Cloud Run deploy."
