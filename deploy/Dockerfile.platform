@@ -5,8 +5,11 @@ COPY --chown=gradle:gradle . .
 RUN gradle :platform:buildFatJar --no-daemon
 
 # Run stage
-FROM eclipse-temurin:21-jre-alpine
-RUN addgroup -S platform && adduser -S platform -G platform
+# Using -jre (Ubuntu/glibc), not -jre-alpine (musl). cloud-sql-jdbc-socket-factory
+# pulls in netty-tcnative, whose native libs are built against glibc and SIGSEGV
+# on musl at startup.
+FROM eclipse-temurin:21-jre
+RUN groupadd -r platform && useradd -r -g platform platform
 WORKDIR /app
 COPY --from=build /app/platform/build/libs/validation-platform.jar platform.jar
 USER platform

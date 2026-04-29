@@ -5,8 +5,11 @@ COPY --chown=gradle:gradle . .
 RUN gradle :collector:buildFatJar --no-daemon
 
 # Run stage
-FROM eclipse-temurin:21-jre-alpine
-RUN addgroup -S collector && adduser -S collector -G collector
+# Using -jre (Ubuntu/glibc), not -jre-alpine (musl). cloud-sql-jdbc-socket-factory
+# pulls in netty-tcnative, whose native libs are built against glibc and SIGSEGV
+# on musl at startup.
+FROM eclipse-temurin:21-jre
+RUN groupadd -r collector && useradd -r -g collector collector
 WORKDIR /app
 COPY --from=build /app/collector/build/libs/collector.jar app.jar
 USER collector
