@@ -73,7 +73,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
             // Use orgAToken so the service is associated with org-a via JWT scoping.
             // POST /api/services takes organizationId + cluster from the JWT.
             val svcResponse =
-                httpClient.post("$platformUrl/api/services") {
+                agentHttpClient.post("$platformUrl/api/services") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(
@@ -103,7 +103,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
 
             // Use orgBToken so the service is associated with org-b via JWT scoping.
             val svcResponse =
-                httpClient.post("$platformUrl/api/services") {
+                agentHttpClient.post("$platformUrl/api/services") {
                     bearerAuth(orgBToken)
                     contentType(ContentType.Application.Json)
                     setBody(
@@ -123,7 +123,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     fun `agent can POST captured traffic to collector`() =
         runBlocking {
             val configResponse =
-                httpClient.get("$platformUrl/api/agent/config") {
+                agentHttpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, configResponse.status)
@@ -157,7 +157,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 )
 
             val batchResponse =
-                httpClient.post("$collectorUrl/api/captured-inputs") {
+                agentHttpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(batch)
@@ -181,7 +181,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     fun `agent config is scoped by JWT claims - only sees own org and cluster`() =
         runBlocking {
             val response =
-                httpClient.get("$platformUrl/api/agent/config") {
+                agentHttpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -215,7 +215,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 )
 
             val response =
-                httpClient.post("$collectorUrl/api/captured-inputs") {
+                agentHttpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(batch)
@@ -232,7 +232,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
     fun `large batch ingest succeeds`() =
         runBlocking {
             val configResponse =
-                httpClient.get("$platformUrl/api/agent/config") {
+                agentHttpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(orgAToken)
                 }
             val config = json.decodeFromString<AgentConfigResponse>(configResponse.bodyAsText())
@@ -254,7 +254,7 @@ class PlatformPipelineE2ETest : PlatformStackTestBase() {
                 )
 
             val response =
-                httpClient.post("$collectorUrl/api/captured-inputs") {
+                agentHttpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(orgAToken)
                     contentType(ContentType.Application.Json)
                     setBody(batch)

@@ -149,7 +149,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.get("$platformUrl/api/agent/config") {
+                agentHttpClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -173,7 +173,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.post("$collectorUrl/api/captured-inputs") {
+                agentHttpClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
                     setBody(BatchCreateCapturedInputRequest(items = emptyList()))

@@ -2,6 +2,7 @@ package com.platform.e2e
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import com.platform.agent.buildAgentHttpClient
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -24,7 +25,10 @@ import java.util.Date
  * Shared test infrastructure for e2e tests that need the full platform stack:
  * Postgres + Platform + Collector. Both apps validate JWTs directly.
  *
- * Subclasses get [platformUrl], [collectorUrl], [httpClient], and [generateJwt] for free.
+ * Subclasses get [platformUrl], [collectorUrl], [httpClient], [agentHttpClient],
+ * and [generateJwt] for free. Use [agentHttpClient] for any call that
+ * simulates the production agent (config poll, service registration,
+ * captured-inputs POST) so the agent's plugin stack is exercised end-to-end.
  * The stack is started once per test class (companion @BeforeAll).
  */
 abstract class PlatformStackTestBase {
@@ -42,6 +46,10 @@ abstract class PlatformStackTestBase {
         lateinit var app: GenericContainer<*>
         lateinit var collector: GenericContainer<*>
         lateinit var httpClient: HttpClient
+
+        // Built via the agent's production factory so e2e calls that
+        // simulate the agent inherit any plugin added there.
+        lateinit var agentHttpClient: HttpClient
         lateinit var platformUrl: String
         lateinit var collectorUrl: String
 
@@ -114,11 +122,13 @@ abstract class PlatformStackTestBase {
                         json(json)
                     }
                 }
+            agentHttpClient = buildAgentHttpClient()
         }
 
         @AfterAll
         @JvmStatic
         fun stopStack() {
+            agentHttpClient.close()
             httpClient.close()
             collector.stop()
             app.stop()
