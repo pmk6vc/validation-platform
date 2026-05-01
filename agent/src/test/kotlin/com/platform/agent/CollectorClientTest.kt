@@ -58,7 +58,7 @@ class CollectorClientTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val httpClient = buildAgentHttpClient(engine)
+        val httpClient = buildAgentCollectorHttpClient(engine)
         return CollectorClient(
             httpClient = httpClient,
             baseUrl = "http://collector:8081",
@@ -123,7 +123,7 @@ class CollectorClientTest {
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
                     )
                 }
-            val httpClient = buildAgentHttpClient(engine)
+            val httpClient = buildAgentCollectorHttpClient(engine)
             val client =
                 CollectorClient(
                     httpClient = httpClient,

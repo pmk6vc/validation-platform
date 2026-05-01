@@ -272,7 +272,7 @@ class CapturePipelineIntegrationTest {
                 .first()
                 .port
 
-        val wsHttpClient = buildAgentHttpClient()
+        val wsHttpClient = buildAgentKubesharkHttpClient()
 
         // SharedFlow for collector observations. replay = Int.MAX_VALUE so a
         // late subscriber sees the full history (tests sometimes assert on
@@ -293,7 +293,7 @@ class CapturePipelineIntegrationTest {
                     else -> respondJson("{}")
                 }
             }
-        val collectorHttpClient = buildAgentHttpClient(collectorEngine)
+        val collectorHttpClient = buildAgentCollectorHttpClient(collectorEngine)
 
         val clientScope = CoroutineScope(coroutineContext + Job())
         try {

@@ -49,7 +49,7 @@ class LoopLogicTest {
                         )
                     }
                 }
-            val httpClient = buildAgentHttpClient(engine)
+            val httpClient = buildAgentPlatformHttpClient(engine)
             return ConfigClient(httpClient, "http://platform:8080", "key")
         }
 
@@ -185,7 +185,7 @@ class LoopLogicTest {
                         else -> respondJson("{}")
                     }
                 }
-            val httpClient = buildAgentHttpClient(engine)
+            val httpClient = buildAgentCollectorHttpClient(engine)
             val dynamicConfig =
                 MutableStateFlow(
                     DynamicConfig(

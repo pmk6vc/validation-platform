@@ -112,7 +112,7 @@ class KubesharkClientTest {
                 .first()
                 .port
 
-        val httpClient = buildAgentHttpClient()
+        val httpClient = buildAgentKubesharkHttpClient()
 
         val clientScope = CoroutineScope(coroutineContext + Job())
         try {

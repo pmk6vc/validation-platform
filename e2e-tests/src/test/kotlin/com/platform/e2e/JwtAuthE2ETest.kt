@@ -36,7 +36,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
     @Order(1)
     fun `health endpoint returns 200 without auth`() =
         runBlocking {
-            val response = httpClient.get("$platformUrl/health")
+            val response = platformClient.get("$platformUrl/health")
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals("OK", response.bodyAsText())
         }
@@ -45,7 +45,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
     @Order(2)
     fun `JWKS endpoint is accessible without auth`() =
         runBlocking {
-            val response = httpClient.get("$platformUrl/.well-known/jwks.json")
+            val response = platformClient.get("$platformUrl/.well-known/jwks.json")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = response.bodyAsText()
             assertTrue(body.contains("RSA"))
@@ -58,7 +58,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
     @Order(10)
     fun `api request without token returns 401`() =
         runBlocking {
-            val response = httpClient.get("$platformUrl/api/organizations")
+            val response = platformClient.get("$platformUrl/api/organizations")
             assertEquals(HttpStatusCode.Unauthorized, response.status)
         }
 
@@ -67,7 +67,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
     fun `api request with invalid token returns 401`() =
         runBlocking {
             val response =
-                httpClient.get("$platformUrl/api/organizations") {
+                platformClient.get("$platformUrl/api/organizations") {
                     bearerAuth("not-a-valid-jwt")
                 }
             assertEquals(HttpStatusCode.Unauthorized, response.status)
@@ -93,7 +93,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
                     )
 
             val response =
-                httpClient.get("$platformUrl/api/organizations") {
+                platformClient.get("$platformUrl/api/organizations") {
                     bearerAuth(wrongToken)
                 }
             assertEquals(HttpStatusCode.Unauthorized, response.status)
@@ -107,7 +107,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
                 generateJwt(expiresAt = Date.from(Instant.now().minusSeconds(3600)))
 
             val response =
-                httpClient.get("$platformUrl/api/organizations") {
+                platformClient.get("$platformUrl/api/organizations") {
                     bearerAuth(expiredToken)
                 }
             assertEquals(HttpStatusCode.Unauthorized, response.status)
@@ -121,7 +121,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.post("$platformUrl/api/organizations") {
+                platformClient.post("$platformUrl/api/organizations") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
                     setBody(CreateOrganizationRequest(name = "Auth Test Org"))
@@ -137,7 +137,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.get("$platformUrl/api/organizations") {
+                platformClient.get("$platformUrl/api/organizations") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -149,7 +149,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                agentHttpClient.get("$platformUrl/api/agent/config") {
+                platformClient.get("$platformUrl/api/agent/config") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -161,7 +161,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                httpClient.get("$collectorUrl/api/captured-inputs") {
+                collectorClient.get("$collectorUrl/api/captured-inputs") {
                     bearerAuth(token)
                 }
             assertEquals(HttpStatusCode.OK, response.status)
@@ -173,7 +173,7 @@ class JwtAuthE2ETest : PlatformStackTestBase() {
         runBlocking {
             val token = generateJwt()
             val response =
-                agentHttpClient.post("$collectorUrl/api/captured-inputs") {
+                collectorClient.post("$collectorUrl/api/captured-inputs") {
                     bearerAuth(token)
                     contentType(ContentType.Application.Json)
                     setBody(BatchCreateCapturedInputRequest(items = emptyList()))

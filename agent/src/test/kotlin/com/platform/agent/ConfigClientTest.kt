@@ -29,7 +29,7 @@ class ConfigClientTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val httpClient = buildAgentHttpClient(engine)
+        val httpClient = buildAgentPlatformHttpClient(engine)
         return ConfigClient(httpClient, "http://platform:8080", "test-api-key")
     }
 
@@ -85,7 +85,7 @@ class ConfigClientTest {
                 MockEngine {
                     throw IOException("Connection refused")
                 }
-            val httpClient = buildAgentHttpClient(engine)
+            val httpClient = buildAgentPlatformHttpClient(engine)
             val client = ConfigClient(httpClient, "http://platform:8080", "key")
 
             val config = client.fetchConfig()
