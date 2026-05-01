@@ -44,6 +44,7 @@ abstract class PlatformStackTestBase {
         lateinit var postgres: PostgreSQLContainer<*>
         lateinit var app: GenericContainer<*>
         lateinit var collector: GenericContainer<*>
+
         // One client per target server, each built via the agent's per-server
         // factory. Plugin stacks are tuned to what the corresponding server
         // can handle, so plugins added on one factory cannot accidentally be
