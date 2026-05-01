@@ -6,16 +6,13 @@ import com.platform.agent.models.KubesharkEntry
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
-import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
-import io.ktor.serialization.kotlinx.json.json
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,10 +49,7 @@ class LoopLogicTest {
                         )
                     }
                 }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) { json(json) }
-                }
+            val httpClient = buildAgentPlatformHttpClient(engine)
             return ConfigClient(httpClient, "http://platform:8080", "key")
         }
 
@@ -191,10 +185,7 @@ class LoopLogicTest {
                         else -> respondJson("{}")
                     }
                 }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) { json(json) }
-                }
+            val httpClient = buildAgentCollectorHttpClient(engine)
             val dynamicConfig =
                 MutableStateFlow(
                     DynamicConfig(

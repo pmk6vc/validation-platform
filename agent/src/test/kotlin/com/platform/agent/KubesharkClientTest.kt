@@ -1,9 +1,6 @@
 package com.platform.agent
 
 import com.platform.agent.models.KubesharkEntry
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -115,10 +112,7 @@ class KubesharkClientTest {
                 .first()
                 .port
 
-        val httpClient =
-            HttpClient(CIO) {
-                install(WebSockets)
-            }
+        val httpClient = buildAgentKubesharkHttpClient()
 
         val clientScope = CoroutineScope(coroutineContext + Job())
         try {

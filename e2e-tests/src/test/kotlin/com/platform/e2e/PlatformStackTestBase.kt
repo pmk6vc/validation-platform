@@ -2,10 +2,9 @@ package com.platform.e2e
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import com.platform.agent.buildAgentCollectorHttpClient
+import com.platform.agent.buildAgentPlatformHttpClient
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -24,7 +23,11 @@ import java.util.Date
  * Shared test infrastructure for e2e tests that need the full platform stack:
  * Postgres + Platform + Collector. Both apps validate JWTs directly.
  *
- * Subclasses get [platformUrl], [collectorUrl], [httpClient], and [generateJwt] for free.
+ * Subclasses get [platformUrl], [collectorUrl], [platformClient],
+ * [collectorClient], and [generateJwt] for free. Each client is built via
+ * the agent's per-server factory so its plugin stack matches what the
+ * target server actually supports — pick the field by which server the
+ * call hits, not by who's calling it.
  * The stack is started once per test class (companion @BeforeAll).
  */
 abstract class PlatformStackTestBase {
@@ -41,7 +44,13 @@ abstract class PlatformStackTestBase {
         lateinit var postgres: PostgreSQLContainer<*>
         lateinit var app: GenericContainer<*>
         lateinit var collector: GenericContainer<*>
-        lateinit var httpClient: HttpClient
+
+        // One client per target server, each built via the agent's per-server
+        // factory. Plugin stacks are tuned to what the corresponding server
+        // can handle, so plugins added on one factory cannot accidentally be
+        // sent to a server that doesn't support them.
+        lateinit var platformClient: HttpClient
+        lateinit var collectorClient: HttpClient
         lateinit var platformUrl: String
         lateinit var collectorUrl: String
 
@@ -108,18 +117,15 @@ abstract class PlatformStackTestBase {
             platformUrl = "http://${app.host}:${app.getMappedPort(8080)}"
             collectorUrl = "http://${collector.host}:${collector.getMappedPort(8081)}"
 
-            httpClient =
-                HttpClient(CIO) {
-                    install(ContentNegotiation) {
-                        json(json)
-                    }
-                }
+            platformClient = buildAgentPlatformHttpClient()
+            collectorClient = buildAgentCollectorHttpClient()
         }
 
         @AfterAll
         @JvmStatic
         fun stopStack() {
-            httpClient.close()
+            collectorClient.close()
+            platformClient.close()
             collector.stop()
             app.stop()
             postgres.stop()

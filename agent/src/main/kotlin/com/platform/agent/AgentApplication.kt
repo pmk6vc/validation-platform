@@ -2,6 +2,8 @@ package com.platform.agent
 
 import com.platform.agent.models.BatchCapturedInputRequest
 import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
@@ -22,6 +24,46 @@ import kotlin.time.Duration.Companion.seconds
 
 private val logger = LoggerFactory.getLogger("AgentApplication")
 
+// One HttpClient per target server. Each factory installs only the plugins
+// the corresponding server actually supports, so a plugin landing on (say)
+// the collector factory cannot accidentally be sent to platform — the
+// platform client never had it. Tests pass an HttpClientEngine (typically
+// MockEngine) to the engine-taking overload; production calls the no-arg form.
+//
+// Adding a new client-side plugin is a one-place edit on the relevant
+// factory; everything that uses that factory inherits the change.
+
+/** Client for talking to the platform server (e.g. GET /api/agent/config). */
+fun buildAgentPlatformHttpClient(): HttpClient = HttpClient(CIO) { configurePlatform() }
+
+fun buildAgentPlatformHttpClient(engine: HttpClientEngine): HttpClient = HttpClient(engine) { configurePlatform() }
+
+private fun HttpClientConfig<*>.configurePlatform() {
+    install(ContentNegotiation) {
+        json(Json { ignoreUnknownKeys = true })
+    }
+}
+
+/** Client for talking to the collector server (POST /api/captured-inputs). */
+fun buildAgentCollectorHttpClient(): HttpClient = HttpClient(CIO) { configureCollector() }
+
+fun buildAgentCollectorHttpClient(engine: HttpClientEngine): HttpClient = HttpClient(engine) { configureCollector() }
+
+private fun HttpClientConfig<*>.configureCollector() {
+    install(ContentNegotiation) {
+        json(Json { ignoreUnknownKeys = true })
+    }
+}
+
+/** Client for the Kubeshark WebSocket session. WebSockets only. */
+fun buildAgentKubesharkHttpClient(): HttpClient = HttpClient(CIO) { configureKubeshark() }
+
+fun buildAgentKubesharkHttpClient(engine: HttpClientEngine): HttpClient = HttpClient(engine) { configureKubeshark() }
+
+private fun HttpClientConfig<*>.configureKubeshark() {
+    install(WebSockets)
+}
+
 fun main() {
     val staticConfig = StaticConfig.fromEnvironment()
     val dynamicConfig = MutableStateFlow(DynamicConfig.default())
@@ -33,18 +75,14 @@ fun main() {
         staticConfig.collectorUrl,
     )
 
-    val httpClient =
-        HttpClient(CIO) {
-            install(ContentNegotiation) {
-                json(Json { ignoreUnknownKeys = true })
-            }
-            install(WebSockets)
-        }
+    val platformHttpClient = buildAgentPlatformHttpClient()
+    val collectorHttpClient = buildAgentCollectorHttpClient()
+    val kubesharkHttpClient = buildAgentKubesharkHttpClient()
 
     val collectorClient =
-        CollectorClient(httpClient, staticConfig.collectorUrl, staticConfig.apiKey)
+        CollectorClient(collectorHttpClient, staticConfig.collectorUrl, staticConfig.apiKey)
     val configClient =
-        ConfigClient(httpClient, staticConfig.platformUrl, staticConfig.apiKey)
+        ConfigClient(platformHttpClient, staticConfig.platformUrl, staticConfig.apiKey)
     val transformer = TrafficTransformer(dynamicConfig)
 
     runBlocking {
@@ -53,7 +91,7 @@ fun main() {
             // reconnects automatically when targetServices changes.
             val kubesharkClient =
                 KubesharkClient(
-                    httpClient = httpClient,
+                    httpClient = kubesharkHttpClient,
                     baseUrl = staticConfig.kubesharkUrl,
                     scope = this,
                     configFlow = dynamicConfig,

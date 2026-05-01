@@ -1,16 +1,12 @@
 package com.platform.agent
 
-import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
-import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.io.IOException
 import kotlin.test.assertEquals
@@ -33,12 +29,7 @@ class ConfigClientTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val httpClient =
-            HttpClient(engine) {
-                install(ContentNegotiation) {
-                    json(Json { ignoreUnknownKeys = true })
-                }
-            }
+        val httpClient = buildAgentPlatformHttpClient(engine)
         return ConfigClient(httpClient, "http://platform:8080", "test-api-key")
     }
 
@@ -94,12 +85,7 @@ class ConfigClientTest {
                 MockEngine {
                     throw IOException("Connection refused")
                 }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) {
-                        json(Json { ignoreUnknownKeys = true })
-                    }
-                }
+            val httpClient = buildAgentPlatformHttpClient(engine)
             val client = ConfigClient(httpClient, "http://platform:8080", "key")
 
             val config = client.fetchConfig()

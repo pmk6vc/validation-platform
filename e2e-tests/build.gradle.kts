@@ -36,6 +36,11 @@ dependencies {
     // Platform modules (for request/response DTOs — compile-time type safety)
     testImplementation(project(":platform"))
     testImplementation(project(":collector"))
+    // Agent module: gives e2e tests access to buildAgentHttpClient() so
+    // calls that simulate the agent in production (config poll, service
+    // registration, captured-inputs POST) inherit the agent's plugin stack
+    // automatically. Avoids test/prod drift if a new client plugin lands.
+    testImplementation(project(":agent"))
 
     // Testing
     testImplementation(libs.junit.jupiter)
