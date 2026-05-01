@@ -2,22 +2,18 @@ package com.platform.agent
 
 import com.platform.agent.models.BatchCapturedInputRequest
 import com.platform.agent.models.CapturedInputRequest
-import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
-import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
@@ -62,12 +58,7 @@ class CollectorClientTest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
             }
-        val httpClient =
-            HttpClient(engine) {
-                install(ContentNegotiation) {
-                    json(Json { ignoreUnknownKeys = true })
-                }
-            }
+        val httpClient = buildAgentHttpClient(engine)
         return CollectorClient(
             httpClient = httpClient,
             baseUrl = "http://collector:8081",
@@ -132,12 +123,7 @@ class CollectorClientTest {
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
                     )
                 }
-            val httpClient =
-                HttpClient(engine) {
-                    install(ContentNegotiation) {
-                        json(Json { ignoreUnknownKeys = true })
-                    }
-                }
+            val httpClient = buildAgentHttpClient(engine)
             val client =
                 CollectorClient(
                     httpClient = httpClient,

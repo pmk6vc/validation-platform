@@ -2,6 +2,8 @@ package com.platform.agent
 
 import com.platform.agent.models.BatchCapturedInputRequest
 import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
@@ -22,6 +24,23 @@ import kotlin.time.Duration.Companion.seconds
 
 private val logger = LoggerFactory.getLogger("AgentApplication")
 
+/**
+ * Production HttpClient factory for the agent. Tests should call this with a
+ * mock engine instead of constructing their own HttpClient — that way any
+ * plugin added or removed here is reflected in tests automatically and there
+ * is no risk of test/prod plugin drift.
+ */
+fun buildAgentHttpClient(): HttpClient = HttpClient(CIO) { configureAgent() }
+
+fun buildAgentHttpClient(engine: HttpClientEngine): HttpClient = HttpClient(engine) { configureAgent() }
+
+private fun HttpClientConfig<*>.configureAgent() {
+    install(ContentNegotiation) {
+        json(Json { ignoreUnknownKeys = true })
+    }
+    install(WebSockets)
+}
+
 fun main() {
     val staticConfig = StaticConfig.fromEnvironment()
     val dynamicConfig = MutableStateFlow(DynamicConfig.default())
@@ -33,13 +52,7 @@ fun main() {
         staticConfig.collectorUrl,
     )
 
-    val httpClient =
-        HttpClient(CIO) {
-            install(ContentNegotiation) {
-                json(Json { ignoreUnknownKeys = true })
-            }
-            install(WebSockets)
-        }
+    val httpClient = buildAgentHttpClient()
 
     val collectorClient =
         CollectorClient(httpClient, staticConfig.collectorUrl, staticConfig.apiKey)

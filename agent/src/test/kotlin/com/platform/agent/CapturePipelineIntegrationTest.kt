@@ -9,19 +9,14 @@ import com.platform.agent.models.KubesharkPostData
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.http.isSuccess
-import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -277,10 +272,7 @@ class CapturePipelineIntegrationTest {
                 .first()
                 .port
 
-        val wsHttpClient =
-            HttpClient(CIO) {
-                install(WebSockets)
-            }
+        val wsHttpClient = buildAgentHttpClient()
 
         // SharedFlow for collector observations. replay = Int.MAX_VALUE so a
         // late subscriber sees the full history (tests sometimes assert on
@@ -301,10 +293,7 @@ class CapturePipelineIntegrationTest {
                     else -> respondJson("{}")
                 }
             }
-        val collectorHttpClient =
-            HttpClient(collectorEngine) {
-                install(ContentNegotiation) { json(json) }
-            }
+        val collectorHttpClient = buildAgentHttpClient(collectorEngine)
 
         val clientScope = CoroutineScope(coroutineContext + Job())
         try {
