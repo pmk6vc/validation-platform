@@ -325,6 +325,86 @@ class LoopLogicTest {
 
                 assertNull(result.lag)
             }
+
+        @Test
+        fun `heartbeat fires after drain even when collector is hanging in retries`() =
+            runBlocking {
+                var heartbeats = 0
+                val entries = listOf(httpEntry(1000L, "order-service"))
+                val (client, _, transformer) = mockClients(entries = entries)
+                // Collector permanently returns 5xx → sendBatch retries forever. With OPS-1
+                // fixed, the heartbeat must fire after drain returns, before the retry loop
+                // can starve it.
+                val brokenCollector =
+                    CollectorClient(
+                        httpClient =
+                            HttpClient(
+                                MockEngine {
+                                    respond(content = "boom", status = HttpStatusCode.InternalServerError)
+                                },
+                            ) {
+                                install(ContentNegotiation) { json(json) }
+                            },
+                        baseUrl = "http://collector:8081",
+                        authToken = "key",
+                        initialBackoff = 10.milliseconds,
+                        maxBackoff = 10.milliseconds,
+                    )
+
+                kotlinx.coroutines.withTimeoutOrNull(500) {
+                    captureOneBatch(
+                        batchSize = 100,
+                        maxWait = defaultMaxWait,
+                        kubesharkClient = client,
+                        collectorClient = brokenCollector,
+                        transformer = transformer,
+                        heartbeat = { heartbeats++ },
+                    )
+                }
+
+                assertEquals(1, heartbeats, "heartbeat should fire once after successful drain")
+            }
+
+        @Test
+        fun `heartbeat does not fire when drain returns empty`() =
+            runBlocking {
+                var heartbeats = 0
+                val (client, collector, transformer) = mockClients(entries = emptyList())
+
+                captureOneBatch(
+                    batchSize = 100,
+                    maxWait = defaultMaxWait,
+                    kubesharkClient = client,
+                    collectorClient = collector,
+                    transformer = transformer,
+                    heartbeat = { heartbeats++ },
+                )
+
+                // Empty drain means we can't tell if Kubeshark is healthy or disconnected.
+                // Don't fake liveness — let the probe fail if quiet persists. (See QUALITY-8.)
+                assertEquals(0, heartbeats)
+            }
+
+        @Test
+        fun `heartbeat fires once per successful drain even if all entries filtered out`() =
+            runBlocking {
+                var heartbeats = 0
+                // Entries drained from Kubeshark (proves WebSocket is alive), but transform
+                // filters them all out. Heartbeat should still fire — pipeline is healthy.
+                val entries = listOf(httpEntry(1000L, "unknown-service"))
+                val (client, collector, transformer) = mockClients(entries = entries)
+
+                captureOneBatch(
+                    batchSize = 100,
+                    maxWait = defaultMaxWait,
+                    kubesharkClient = client,
+                    collectorClient = collector,
+                    transformer = transformer,
+                    heartbeat = { heartbeats++ },
+                )
+
+                assertEquals(1, heartbeats)
+            }
     }
 
     private fun MockRequestHandleScope.respondJson(body: String) =

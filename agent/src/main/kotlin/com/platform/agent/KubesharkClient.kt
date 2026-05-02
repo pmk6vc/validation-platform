@@ -196,21 +196,55 @@ class KubesharkClient(
         val DEDUP_LOOKBACK: Duration = 5.seconds
 
         /**
+         * Pattern of names safe to embed as a quoted KFL string literal. Matches RFC 1123
+         * DNS labels — by construction these contain no `"`, no whitespace, and no KFL
+         * operator characters, so they cannot escape the quotes. The platform validates
+         * the same shape at `POST /api/services`; this filter is local defense — the
+         * agent does not trust the platform to have validated, since other code paths
+         * (future discovery adapters, manual DB backfill) could land an unvalidated row.
+         */
+        private val KFL_SAFE_NAME = Regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+        /** Sentinel KFL filter that won't match any real K8s Service name. */
+        private const val KFL_NO_MATCH = """http and dst.name == "__validation_agent_no_match__""""
+
+        private val kflQueryLogger = LoggerFactory.getLogger("KubesharkClient.buildKflQuery")
+
+        /**
          * Build a KFL query: `http` alone (empty map) or
          * `http and dst.name == "svc"` / `http and (dst.name == "a" or dst.name == "b")`.
          *
          * Empty map returns `"http"` (not empty string, which means "no filter").
          * Only map keys (K8s service names) are used; values (platform IDs) are ignored.
+         *
+         * Names that can't be safely embedded in KFL (e.g. contain `"` or operators)
+         * are dropped with a warning. If every name is rejected, returns a no-match
+         * sentinel rather than the unfiltered `"http"` query — refusing to widen
+         * capture beyond what was requested.
          */
         fun buildKflQuery(targetServices: Map<String, String>): String {
             if (targetServices.isEmpty()) return "http"
 
-            val serviceNames = targetServices.keys.toList()
+            val safeNames =
+                targetServices.keys.filter { name ->
+                    if (KFL_SAFE_NAME.matches(name)) {
+                        true
+                    } else {
+                        kflQueryLogger.warn(
+                            "Dropping service name from KFL query — cannot be safely embedded: {}",
+                            name,
+                        )
+                        false
+                    }
+                }
+
+            if (safeNames.isEmpty()) return KFL_NO_MATCH
+
             val dstFilter =
-                if (serviceNames.size == 1) {
-                    """dst.name == "${serviceNames[0]}""""
+                if (safeNames.size == 1) {
+                    """dst.name == "${safeNames[0]}""""
                 } else {
-                    serviceNames.joinToString(
+                    safeNames.joinToString(
                         separator = " or ",
                         prefix = "(",
                         postfix = ")",

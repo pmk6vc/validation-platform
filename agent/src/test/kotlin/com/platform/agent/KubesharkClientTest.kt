@@ -370,6 +370,36 @@ class KubesharkClientTest {
             assertTrue(query.contains("my-svc"))
             assertTrue(!query.contains("platform-id-xyz"))
         }
+
+        @Test
+        fun `unsafe service names are filtered out, leaving safe names`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        "order-service" to "id-1",
+                        """svc" or true or dst.name == "x""" to "id-2",
+                    ),
+                )
+
+            // Unsafe name dropped, safe name retained as a single-name filter.
+            assertEquals("""http and dst.name == "order-service"""", query)
+            assertTrue(!query.contains("or true"))
+        }
+
+        @Test
+        fun `all unsafe names produce a no-match query, not http`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        """svc" or true""" to "id-1",
+                        "UPPERCASE" to "id-2",
+                    ),
+                )
+
+            // Critically, must NOT widen to "http" (which would capture all traffic).
+            assertTrue(query != "http", "must not fall back to unfiltered 'http'")
+            assertTrue(query.startsWith("http and dst.name == "), "should still be a dst.name filter")
+        }
     }
 
     // -----------------------------------------------------------------------
