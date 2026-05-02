@@ -335,16 +335,15 @@ class LoopLogicTest {
                 // Collector permanently returns 5xx → sendBatch retries forever. With OPS-1
                 // fixed, the heartbeat must fire after drain returns, before the retry loop
                 // can starve it.
+                val brokenHttpClient =
+                    buildAgentCollectorHttpClient(
+                        MockEngine {
+                            respond(content = "boom", status = HttpStatusCode.InternalServerError)
+                        },
+                    )
                 val brokenCollector =
                     CollectorClient(
-                        httpClient =
-                            HttpClient(
-                                MockEngine {
-                                    respond(content = "boom", status = HttpStatusCode.InternalServerError)
-                                },
-                            ) {
-                                install(ContentNegotiation) { json(json) }
-                            },
+                        httpClient = brokenHttpClient,
                         baseUrl = "http://collector:8081",
                         authToken = "key",
                         initialBackoff = 10.milliseconds,
