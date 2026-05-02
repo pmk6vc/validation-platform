@@ -1,356 +1,151 @@
-# Plan: End-to-End Deployment on GKE
+# Plan: Finish End-to-End Traffic Flow on GCP
 
 ## Context
 
-The platform works locally (docker-compose, minikube) but has never been deployed to a real cloud environment. The goal is to reach a milestone where:
-- Test services run in a **dummy GKE cluster** generating traffic
-- The **agent** in that cluster captures traffic via Kubeshark and sends it to the platform
-- The **platform** runs in a separate **platform GKE cluster** in a production-ready configuration (Cloud SQL, ESO, TLS)
-- The full auth flow (JWT generation → Envoy validation → claim forwarding) works across clusters
+Most of the original GKE-based deployment plan has shipped — but the architecture pivoted twice along the way:
 
-### What's already done (old Phases 1-3)
+1. **Envoy was dropped** (PR #75). JWT is validated in-app via the shared `installJwtAuth()` library on both `platform` and `collector`.
+2. **Platform + collector moved to Cloud Run**, not GKE. Cloud SQL is reached via the JDBC socket factory (PR #86), not an Auth Proxy sidecar. Secrets are read directly from Secret Manager via `SecretsProvider` (PR #82) — no ESO.
 
-- Agent config endpoint (`GET /api/agent/config`) + `PLATFORM_URL` env var
-- JWT auth via Envoy reverse proxy (RS256, JWKS endpoint, claim forwarding)
-- Platform K8s manifests (postgres, platform, collector, envoy) in `k8s/platform/`
-- E2E tests for the full Envoy + platform + collector stack
-- Validated on minikube: all pods healthy, health → 200, unauthenticated API → 401
+The deployed topology today is:
 
----
+- **Cloud Run** (region `us-central1`): `validation-platform`, `validation-collector` — public HTTPS, JWT-authenticated, talking to Cloud SQL via JDBC socket factory.
+- **GKE Standard sandbox cluster** (`infra/sandbox/`): on-demand, brought up by `scripts/sandbox-up.sh`. Currently runs the test microservices only.
+- **Cloud SQL** PostgreSQL 16, **Artifact Registry**, **Secret Manager**, **WIF for CI** — all Terraform-managed (`infra/platform/`).
+- **CI** (PR #66): terraform fmt/validate on PRs; on merge to main, build → push → `gcloud run update`.
 
-## Architecture Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Cluster topology | Two GKE Standard clusters | Exercises real cross-cluster networking. Scale to 0 when idle. |
-| GKE mode | Standard (not Autopilot) | Kubeshark requires privileged DaemonSet + eBPF. Autopilot blocks both. Known product constraint. |
-| Database | Cloud SQL from day one | No migration step. Persists across cluster restarts. ~$10/mo. |
-| Secrets | ESO + Google Secret Manager | Workload Identity already needed for Cloud SQL. GitOps-safe ExternalSecret CRDs. |
-| Telemetry | Structured JSON logging | Cloud Logging parses JSON natively. Low effort, high value. |
-| Container registry | Artifact Registry | GCR is deprecated. AR supports multi-region, vulnerability scanning. |
-| Platform exposure | LoadBalancer Service | Agent in dummy cluster reaches platform via public endpoint. |
-| Infrastructure provisioning | Terraform | Declarative state, dependency graph, targeted destroy for cost control. Shell scripts for K8s deployment. |
-
-### Known Product Constraint: eBPF Compatibility
-
-Kubeshark's eBPF DaemonSet requires privileged access, blocking: GKE Autopilot, EKS Fargate, Azure ACI. Our agent only works on clusters allowing privileged DaemonSets (GKE Standard, EKS on EC2, AKS node pools, self-managed K8s). Future options: sidecar capture, service mesh integration, application SDK.
+What's missing to close the end-to-end loop is the **agent + Kubeshark on the sandbox cluster**, plus an **org-seeding script** to mint the agent's JWT.
 
 ---
 
-## Phase 1: GCP Infrastructure
+## What's already done
 
-**Goal:** Provision all GCP resources both clusters depend on. Zero application code changes.
-
-**Why first:** Cloud SQL takes ~10 min to provision. Artifact Registry must exist before image pushes. Secret Manager must exist before ESO can sync. This is the longest lead time.
-
-### What to create
-
-1. **Artifact Registry repo**
-   - `us-central1-docker.pkg.dev/$PROJECT/validation/`
-   - All images: `validation-platform`, `validation-collector`, `validation-agent`, test services
-
-2. **Cloud SQL PostgreSQL 16**
-   - Instance: `validation-platform`, tier `db-f1-micro`, region `us-central1`
-   - Database: `platform`, user: `platform`
-   - Instance connection name: `$PROJECT:us-central1:validation-platform`
-
-3. **Two GKE Standard clusters**
-   - `validation-platform` — platform stack (Envoy, platform, collector)
-   - `validation-sandbox` — test services + Kubeshark + agent
-   - Both: `--workload-pool=$PROJECT.svc.id.goog`, `--spot`, `--no-enable-autoupgrade`
-
-4. **Google Secret Manager secrets**
-   - `validation-db-password` — Cloud SQL password
-   - `validation-jwt-private-key` — RSA private key PEM
-   - `validation-jwt-token` — placeholder (populated after org seeding in Phase 3)
-
-5. **IAM Service Accounts + Workload Identity**
-   - `validation-platform-sa` (GCP) → KSA `platform-sa` in `validation` namespace on platform cluster
-     - Roles: `roles/cloudsql.client`, `roles/secretmanager.secretAccessor`
-   - `validation-eso-sa` (GCP) → KSA used by ESO controller
-     - Role: `roles/secretmanager.secretAccessor`
-   - `validation-agent-sa` (GCP) → KSA `agent-sa` in `validation` namespace on sandbox cluster
-     - Role: `roles/secretmanager.secretAccessor` (reads JWT token)
-
-6. **External Secrets Operator** (Helm install on both clusters)
-   - `ClusterSecretStore` referencing GCP Secret Manager on each cluster
-
-### Provisioning: Terraform
-
-All GCP resources in this phase are managed by Terraform. State stored in a GCS bucket.
-
-**Why Terraform over shell scripts for infra:**
-- Dependency graph — Cloud SQL, IAM, Workload Identity, GKE have complex interdependencies that Terraform resolves automatically
-- Targeted destroy — `terraform destroy -target=google_container_cluster.platform` tears down clusters (~$150/mo) while keeping Cloud SQL (~$10/mo) and secrets
-- Idempotent by design — `terraform apply` is safe to re-run; no check-before-create guards needed
-- Drift detection — `terraform plan` shows what changed vs. what's declared
-
-**Cost control workflow:**
-```bash
-# Developing: everything up
-terraform apply
-
-# Done for the day: destroy clusters only (~$4/mo residual for Cloud SQL + secrets + state bucket)
-terraform destroy -target=google_container_cluster.platform -target=google_container_cluster.sandbox
-
-# Next session: clusters recreated, everything else untouched
-terraform apply
-
-# Done with project entirely: everything gone
-terraform destroy
-```
-
-### Files to create
-
-- `infra/main.tf` — **new** provider config, GCS backend for state
-- `infra/clusters.tf` — **new** two GKE Standard clusters with Workload Identity
-- `infra/database.tf` — **new** Cloud SQL instance, database, user
-- `infra/secrets.tf` — **new** Secret Manager secrets (db-password, jwt-private-key, jwt-token)
-- `infra/iam.tf` — **new** GCP service accounts, IAM bindings, Workload Identity bindings
-- `infra/registry.tf` — **new** Artifact Registry repo
-- `infra/variables.tf` — **new** project, region, zone, cluster config
-- `infra/outputs.tf` — **new** Cloud SQL connection name, Artifact Registry URL, cluster endpoints
-- `infra/setup-eso.sh` — **new** script for Helm install + ClusterSecretStore (ESO is K8s-side, not Terraform-managed)
-
-**Note:** ESO installation (Helm chart + ClusterSecretStore CRD) stays as a shell script because it targets K8s clusters, not GCP APIs. It runs after `terraform apply` creates the clusters.
-
-### Verification
-- `gcloud sql instances describe validation-platform` → RUNNABLE
-- `gcloud artifacts repositories describe validation --location=us-central1` → exists
-- `gcloud secrets versions access latest --secret=validation-db-password` → returns password
-- `kubectl get clustersecretstore gcp-secret-manager` → Valid on both clusters
-
-### Milestone
-GCP infrastructure provisioned. No applications deployed.
+| Area | Status | Reference |
+|------|--------|-----------|
+| Terraform for Cloud Run, Cloud SQL, Artifact Registry, Secret Manager, IAM, WIF | Done | `infra/platform/` (PRs #61, #66) |
+| Sandbox GKE cluster Terraform | Done | `infra/sandbox/cluster.tf` |
+| Public schema bootstrap for Cloud SQL IAM auth | Done | `scripts/bootstrap-db.sh` (PRs #89, #90) |
+| Lifecycle scripts | Done | `scripts/{bootstrap,platform-up,platform-down,platform-delete,sandbox-up,sandbox-down}.sh` (PRs #65, #67, #68) |
+| Cloud Run JDBC socket factory + IAM DB auth | Done | PRs #86, #87, #88 |
+| In-app RS256 JWT auth (Envoy removed) | Done | PRs #71–#75 |
+| Per-tenant authorization on `/api/*` | Done | PR #81 |
+| Agent: split `PLATFORM_URL` / `COLLECTOR_URL` | Done | PR #74 |
+| Agent → collector gzip POST | Done | PR #80 |
+| Structured JSON logging (LogstashEncoder) | Done | PR #78 |
+| Test services deploy to GKE sandbox | Done | `k8s/test-services/overlays/gke/`, `scripts/sandbox-up.sh` (PR #79) |
+| CI: build + push + deploy on merge to main | Done | `.github/workflows/push_main.yml` (PR #66) |
 
 ---
 
-## Phase 2: Platform on GKE with Cloud SQL
+## What's left
 
-**Goal:** Platform server, collector, and Envoy running in the platform cluster, backed by Cloud SQL, with Envoy exposed via LoadBalancer.
+The "money test" from the original plan — production-style traffic flowing through Kubeshark → agent → collector — has not yet been demonstrated on real GCP. To get there, we need three things on the sandbox cluster: an agent overlay, Kubeshark, and a JWT for the agent to use.
 
-**Why second (de-risking):** Highest risk piece. Combines Cloud SQL Auth Proxy sidecar, Artifact Registry pulls, Flyway migrations against Cloud SQL, JWT auth through Envoy, and the LoadBalancer. If this works, everything else is configuration.
+### Phase A: Org seeding + agent JWT
 
-### 2a. Build and push images to Artifact Registry
+**Goal:** Create the dummy org in the platform, generate an agent JWT, and store it in Secret Manager so the sandbox cluster can pick it up.
 
-Add platform + collector to the image build/push loop in `sandbox-up.sh`:
-```
-docker build -t $REGISTRY/validation-platform:latest -f deploy/Dockerfile.platform .
-docker push $REGISTRY/validation-platform:latest
-# Same for collector
-```
+**Why first:** The agent can't do anything without a token. The token requires an organization to exist. One small script bootstraps both.
 
-### 2b. GKE Kustomize overlay for platform
+#### Steps
 
-Create `k8s/platform/overlays/gke/` following the pattern from `k8s/test-services/overlays/gke/`:
+1. Generate a temp admin JWT locally with `./gradlew :platform:generateToken` (reads `JWT_PRIVATE_KEY` from env / Secret Manager).
+2. `POST <CLOUD_RUN_PLATFORM_URL>/api/organizations` → captures org ID for `sandbox-org`.
+3. (Optional, for a richer demo) `POST /api/services` for `api-gateway`, `order-service`, `notification-service`. The agent's discovery loop will eventually do this on its own; pre-seeding lets the demo show captured traffic immediately.
+4. Generate an agent JWT: `./gradlew :platform:generateToken --args="--org $ORG_ID --cluster validation-sandbox"`.
+5. Write the agent JWT to Secret Manager: `gcloud secrets versions add validation-jwt-token --data-file=-`.
 
-- **Remove** `postgres.yaml` from resources (replaced by Cloud SQL)
-- **Override** images to Artifact Registry refs (with `GCP_PROJECT` placeholder)
-- **Patch** `imagePullPolicy` from Never → Always
-- **Patch** `DATABASE_URL` to `jdbc:postgresql://localhost:5432/platform` (Cloud SQL Auth Proxy sidecar is localhost)
-- **Add** Cloud SQL Auth Proxy sidecar to platform + collector Deployments
-- **Add** ServiceAccount with Workload Identity annotation
-- **Add** ExternalSecret CRD that syncs `platform-api-key` from Google Secret Manager
-- **Change** Envoy Service type to `LoadBalancer`
+#### Files
 
-### 2c. Deploy and verify
+- `scripts/seed-org.sh` — **new**, idempotent (skips creating the org if it already exists).
+- `infra/platform/secrets.tf` — confirm `validation-jwt-token` secret exists; create it if not.
 
-```bash
-kubectl apply -k k8s/platform/overlays/gke/   # after sed for GCP_PROJECT
-kubectl wait --for=condition=available deployment/platform -n validation --timeout=180s
-```
+#### Verification
 
-### Files to create
+- `curl -H "Authorization: Bearer $TOKEN" $PLATFORM_URL/api/organizations` → returns `sandbox-org`.
+- `gcloud secrets versions access latest --secret=validation-jwt-token` → returns a valid JWT.
 
-- `k8s/platform/overlays/gke/kustomization.yaml` — image overrides, patches, resources
-- `k8s/platform/overlays/gke/cloudsql-sidecar-patch.yaml` — Auth Proxy sidecar for platform + collector
-- `k8s/platform/overlays/gke/service-account.yaml` — KSA with Workload Identity
-- `k8s/platform/overlays/gke/external-secret.yaml` — ExternalSecret for platform-api-key
-- `k8s/platform/overlays/gke/envoy-lb-patch.yaml` — Change Envoy Service to LoadBalancer
+#### Milestone
 
-### Verification
-1. `curl http://<ENVOY_LB_IP>:8082/health` → OK
-2. `curl http://<ENVOY_LB_IP>:8082/.well-known/jwks.json` → RSA public key
-3. `curl http://<ENVOY_LB_IP>:8082/api/services` (no auth) → 401
-4. Platform logs: Flyway migrations completed against Cloud SQL
-5. `kubectl get externalsecret -n validation` → SecretSynced
-
-### Milestone
-Platform running on GKE + Cloud SQL. Envoy exposed via LoadBalancer. JWT auth working.
+Agent JWT lives in Secret Manager. Re-running `seed-org.sh` is a no-op.
 
 ---
 
-## Phase 3: Org Seeding + Agent Token Generation
+### Phase B: Agent + Kubeshark on the sandbox cluster
 
-**Goal:** Create the dummy org in the platform, generate a JWT for it, store it in Secret Manager so ESO can sync it to the sandbox cluster.
+**Goal:** Deploy Kubeshark and the agent into the sandbox cluster. Agent connects to Kubeshark over WebSocket, captures HTTP traffic from the test services, and pushes it to the Cloud Run collector.
 
-**Why third:** Platform is running. Now we need the org + token that the agent will use.
+#### Steps
 
-### 3a. Seed script
+1. **Kubeshark.** Add a step to `sandbox-up.sh` that runs `kubeshark tap --set tap.namespaces='{production}' -n kubeshark --headless`, or apply a pinned Helm chart. Keep it scoped to the `production` namespace to avoid capturing infrastructure traffic.
+2. **Agent overlay.** Create `k8s/agent/overlays/gke/` mirroring the test-services overlay pattern:
+   - Override the image to `${REGISTRY}/validation-agent:latest` (or `:dev-<sha>` for `--build-local`).
+   - Patch `imagePullPolicy: Always`.
+   - Set env vars: `PLATFORM_URL` and `COLLECTOR_URL` to the Cloud Run URLs (Terraform output), `KUBESHARK_URL=http://kubeshark-front.kubeshark:80`.
+   - Workload Identity ServiceAccount bound to `validation-agent-sa` (read access to `validation-jwt-token`).
+   - `validation-jwt-token` is loaded directly via the GCP Secret Manager CSI driver, or — simpler — fetched at pod start by an initContainer that writes `/tmp/jwt-token` and the agent reads from there. Decide based on what's already wired into the cluster (no ESO).
+3. **Wire into `sandbox-up.sh`.** After test services are up: install Kubeshark, then `kubectl apply -k k8s/agent/overlays/gke/`. Same `--build-local` story as test services so we can iterate on agent code.
+4. **Update sandbox-down.sh / lifecycle docs** to mention Kubeshark and the agent.
 
-Create `scripts/seed-org.sh` that:
-1. Generates a temp admin JWT (using `./gradlew :platform:generateToken`)
-2. `POST /api/organizations` → creates "sandbox-org", captures org ID
-3. `POST /api/services` for each test service (api-gateway, order-service, notification-service)
-4. Generates an agent JWT with `--org $ORG_ID --cluster validation-sandbox`
-5. Stores the agent JWT in Google Secret Manager (`validation-jwt-token`)
+#### Files
 
-### 3b. ESO syncs the token to sandbox cluster
+- `k8s/agent/overlays/gke/kustomization.yaml` — **new**.
+- `k8s/agent/overlays/gke/service-account.yaml` — **new**, KSA + Workload Identity annotation.
+- `k8s/agent/overlays/gke/secret-volume-patch.yaml` (or CSI-driver SecretProviderClass) — **new**, mounts the JWT into the agent.
+- `scripts/sandbox-up.sh` — extend with Kubeshark install + agent deploy.
+- `infra/sandbox/iam.tf` — **new**, Workload Identity binding for `validation-agent-sa`.
 
-The ExternalSecret in the sandbox cluster picks up the new `validation-jwt-token` value on its next refresh interval.
+#### Verification
 
-### Files to create
-- `scripts/seed-org.sh` — **new** org seeding script
+1. `kubectl logs deployment/validation-agent -n validation` → no auth errors; sees `Target services updated`.
+2. `kubectl logs deployment/validation-agent -n validation | grep "Captured"` → entries flowing.
+3. `curl -H "Authorization: Bearer $TOKEN" $COLLECTOR_URL/api/captured-inputs` → captured inputs from the test services.
+4. Traffic generator running: `kubectl logs deployment/traffic-generator -n production | tail -20`.
 
-### Verification
-1. `curl http://<ENVOY_LB_IP>:8082/api/organizations -H "Authorization: Bearer $TOKEN"` → lists sandbox-org
-2. `curl http://<ENVOY_LB_IP>:8082/api/services -H "Authorization: Bearer $TOKEN"` → lists 3 test services
-3. `gcloud secrets versions access latest --secret=validation-jwt-token` → valid JWT
-4. `kubectl get secret platform-api-key -n validation --context=sandbox-cluster -o jsonpath='{.data.jwt-token}' | base64 -d` → same JWT
+#### Milestone
 
-### Milestone
-Dummy org exists. Agent JWT stored in Secret Manager and synced to sandbox cluster.
-
----
-
-## Phase 4: Test Services + Agent in Sandbox Cluster
-
-**Goal:** Deploy test services, Kubeshark, and the agent to the sandbox cluster. Agent captures traffic and pushes it to the platform cluster. End-to-end flow proven.
-
-### 4a. Update test-services GKE overlay
-
-- Change image refs from `gcr.io/` to Artifact Registry (`us-central1-docker.pkg.dev/`)
-
-### 4b. Create agent GKE overlay
-
-Create `k8s/agent/overlays/gke/` that:
-- Overrides image to Artifact Registry ref
-- Patches `imagePullPolicy` from Never → Always
-- Sets `PLATFORM_URL` to the platform cluster's Envoy LoadBalancer IP/DNS: `http://<ENVOY_LB_IP>:8082`
-- Adds ServiceAccount with Workload Identity annotation
-- Adds ExternalSecret for `platform-api-key` (syncs `jwt-token` from Secret Manager)
-
-### 4c. Deploy Kubeshark
-```bash
-kubeshark tap --set tap.namespaces='{production}'
-```
-
-### 4d. Deploy test services + agent
-```bash
-kubectl apply -k k8s/test-services/overlays/gke/   # after sed
-kubectl apply -k k8s/agent/overlays/gke/            # after sed
-```
-
-### Files to create/modify
-- `k8s/agent/overlays/gke/kustomization.yaml` — **new**
-- `k8s/agent/overlays/gke/external-secret.yaml` — **new**
-- `k8s/agent/overlays/gke/service-account.yaml` — **new**
-- `k8s/test-services/overlays/gke/kustomization.yaml` — update image refs to Artifact Registry
-
-### Verification (the money test)
-1. Agent logs: `kubectl logs deployment/validation-agent -n validation | grep "Target services updated"`
-2. Agent logs: `grep "Captured .* entries"`
-3. Traffic in collector: `curl http://<ENVOY_LB_IP>:8082/api/captured-inputs -H "Authorization: Bearer $TOKEN"` → returns captured entries
-4. Traffic generator running: `kubectl logs deployment/traffic-generator -n production | tail -20`
-
-### Milestone
-**End-to-end flow proven.** Test services → Kubeshark → agent → (cross-cluster) → Envoy → collector. Traffic visible in the API.
+End-to-end traffic flow on GCP: test services → Kubeshark → agent (sandbox GKE) → Cloud Run collector. Captured inputs queryable via the public API.
 
 ---
 
-## Phase 5: Structured JSON Logging
+### Phase C: Tighten the sandbox loop
 
-**Goal:** Replace plaintext logging with JSON so Cloud Logging can parse and search logs.
+**Goal:** Make the sandbox demo robust enough to leave running for a few hours of testing without hand-holding.
 
-**Why last:** The system is running. This makes it observable.
+#### Items
 
-### Changes
-- Add `net.logstash.logback:logstash-logback-encoder` dependency to `gradle/libs.versions.toml`
-- Replace console encoder with `LogstashEncoder` in all three logback.xml files
-- Add `customFields` per service: `{"service":"platform"}`, `{"service":"collector"}`, `{"service":"agent"}`
+- **Agent CI.** The `push_main.yml` pipeline builds and pushes platform + collector on merge to main. Confirm agent image is pushed to Artifact Registry on the same trigger; add it if not.
+- **Sandbox idempotency.** Re-running `sandbox-up.sh` should be safe whether the cluster already exists or not. Same for Kubeshark and the agent overlay.
+- **Cost guard.** `sandbox-down.sh` should leave Cloud Run + Cloud SQL untouched. Confirm Terraform targets in `sandbox-down.sh` only destroy the sandbox cluster, never platform infra.
+- **README pass.** Document the full bring-up (`bootstrap.sh` → `platform-up.sh` → `bootstrap-db.sh` → `seed-org.sh` → `sandbox-up.sh`) in one place. Today the sequence is implicit across multiple scripts and `CLAUDE.md` notes.
 
-### Files to modify
-- `gradle/libs.versions.toml` — add logstash-logback-encoder
-- `platform/build.gradle.kts`, `collector/build.gradle.kts`, `agent/build.gradle.kts` — add dependency
-- `platform/src/main/resources/logback.xml` — switch to LogstashEncoder
-- `collector/src/main/resources/logback.xml` — switch to LogstashEncoder
-- `agent/src/main/resources/logback.xml` — switch to LogstashEncoder
+#### Verification
 
-### Verification
-1. Rebuild + push images, rolling restart
-2. `kubectl logs deployment/platform -n validation` → JSON output
-3. Cloud Console → Logging → filter `resource.labels.namespace_name="validation"` → structured entries with searchable fields
+- From a clean GCP project: bootstrap + platform-up + bootstrap-db + seed-org + sandbox-up runs end-to-end without manual edits.
+- `sandbox-down.sh` deletes the sandbox cluster only; Cloud Run and Cloud SQL keep running.
 
-### Milestone
-JSON structured logs flowing to Cloud Logging. Searchable by service, level, message.
+#### Milestone
+
+One-command bring-up of the full demo from scratch, repeatable.
 
 ---
 
-## Phase 6: Update sandbox-up.sh
+## Phase summary
 
-**Goal:** Single script that brings up the entire deployment end-to-end, using Terraform for infra and kustomize for K8s.
-
-### Flow
-1. `terraform apply` in `infra/` (GCP infra — idempotent)
-2. `infra/setup-eso.sh` (install ESO on both clusters — idempotent)
-3. Build + push all images to Artifact Registry
-4. Deploy platform stack to platform cluster (kustomize GKE overlay)
-5. Wait for platform healthy
-6. Seed org + services + generate agent JWT → store in Secret Manager
-7. Deploy test services + agent to sandbox cluster
-8. Wait for agent healthy
-9. Print access instructions (Envoy LB IP, port-forward commands, verification curls)
-
-### Lifecycle commands
-```bash
-./scripts/sandbox-up.sh                     # Full bring-up (terraform + deploy + seed)
-terraform -chdir=infra destroy \            # Pause: destroy clusters, keep Cloud SQL + secrets
-  -target=google_container_cluster.platform \
-  -target=google_container_cluster.sandbox
-terraform -chdir=infra apply                # Resume: recreate clusters
-./scripts/sandbox-up.sh                     # Re-deploy apps (terraform apply is idempotent)
-terraform -chdir=infra destroy              # Full teardown
-```
-
-### Files to modify
-- `scripts/sandbox-up.sh` — rewrite to orchestrate terraform + deploy + seed
-- `scripts/sandbox-down.sh` — remove (replaced by `terraform destroy -target`)
-- `scripts/sandbox-destroy.sh` — remove (replaced by `terraform destroy`)
-
-### Verification
-- From scratch: `./scripts/sandbox-up.sh` completes without errors
-- `curl http://<ENVOY_LB_IP>:8082/api/captured-inputs -H "Authorization: Bearer $TOKEN"` → traffic flowing
-- `./scripts/sandbox-down.sh` → both clusters at 0 nodes
-- `./scripts/sandbox-up.sh` again → resumes (idempotent)
-
-### Milestone
-One-command deployment of the full two-cluster topology.
+| Phase | Deliverable | Risk de-risked |
+|-------|-------------|----------------|
+| A | `seed-org.sh` + agent JWT in Secret Manager | Org bootstrap, token sync |
+| B | Agent + Kubeshark on sandbox cluster | Cross-environment traffic flow (sandbox GKE → Cloud Run), Workload Identity for the agent |
+| C | Idempotent end-to-end bring-up, README | Repeatability, cost control |
 
 ---
 
-## Phase Summary
+## Out of scope (for this plan)
 
-| Phase | Deliverable | Risk De-risked |
-|-------|------------|----------------|
-| 1 | GCP infra provisioned | Cloud SQL, Workload Identity, ESO, Artifact Registry |
-| 2 | Platform on GKE + Cloud SQL | Auth Proxy sidecar, Flyway on Cloud SQL, JWT through Envoy, LoadBalancer |
-| 3 | Org seeded, agent JWT in Secret Manager | Token generation, ESO sync across clusters |
-| 4 | End-to-end traffic flow | Cross-cluster networking, agent auth, Kubeshark on GKE |
-| 5 | Structured JSON logging | Cloud Logging integration |
-| 6 | One-command sandbox script | Repeatable deployment |
+These were called out in the original plan or surfaced during the pivots, and are deliberately not on the path to the end-to-end demo:
 
----
-
-## Future (not in this plan)
-
-- TLS on Envoy LoadBalancer (GCP managed cert or cert-manager)
-- CI/CD pipeline (build + push + deploy on merge to main)
-- Rich health endpoints (DB connectivity checks)
-- Prometheus metrics
-- Envoy access logs
-- NetworkPolicy for namespace isolation
-- Short-lived JWTs + client credentials flow
-- RBAC (role claim enforcement)
-- Row-level security (RLS) in Postgres
-- Rate limiting per org
-- mTLS between services
+- TLS / managed cert on the sandbox side (Cloud Run is already HTTPS by default).
+- Replay engine, staging observation, comparison, verdicts (Phases 4–5 in `CLAUDE.md` delivery plan — separate workstream).
+- Rich health checks (DB connectivity probes), Prometheus metrics, NetworkPolicy.
+- Short-lived JWTs / client credentials flow, RBAC role enforcement, RLS, rate limiting per org.
+- Multi-cluster / multi-region. Single sandbox cluster is enough to prove the pattern.
