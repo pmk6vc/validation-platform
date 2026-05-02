@@ -43,68 +43,106 @@ The "money test" from the original plan — production-style traffic flowing thr
 
 ### Phase A: Org seeding + agent JWT
 
-**Goal:** Create the dummy org in the platform, generate an agent JWT, and store it in Secret Manager so the sandbox cluster can pick it up.
+**Goal:** Create the dummy org in the platform, mint an agent JWT, and write it directly to a Kubernetes Secret in the sandbox cluster.
 
 **Why first:** The agent can't do anything without a token. The token requires an organization to exist. One small script bootstraps both.
 
+**Why not Secret Manager:** the only consumer is the agent, in one ephemeral cluster. `agent.yaml` already reads `API_KEY` from a K8s Secret called `platform-api-key`. Routing the JWT through Secret Manager would force us to add a GCP SA for the agent, a Workload Identity binding, a `secretAccessor` role, and a CSI driver or initContainer — all to deliver a value we just generated locally. `kubectl create secret` is the right tool.
+
 #### Steps
 
-1. Generate a temp admin JWT locally with `./gradlew :platform:generateToken` (reads `JWT_PRIVATE_KEY` from env / Secret Manager).
-2. `POST <CLOUD_RUN_PLATFORM_URL>/api/organizations` → captures org ID for `sandbox-org`.
-3. (Optional, for a richer demo) `POST /api/services` for `api-gateway`, `order-service`, `notification-service`. The agent's discovery loop will eventually do this on its own; pre-seeding lets the demo show captured traffic immediately.
-4. Generate an agent JWT: `./gradlew :platform:generateToken --args="--org $ORG_ID --cluster validation-sandbox"`.
-5. Write the agent JWT to Secret Manager: `gcloud secrets versions add validation-jwt-token --data-file=-`.
+1. Pull the JWT private key from Secret Manager: `gcloud secrets versions access latest --secret=validation-jwt-private-key`. Export as `JWT_PRIVATE_KEY` for the next two steps.
+2. Generate a temp admin JWT with `./gradlew :platform:generateToken --args="--org <new-uuid> --cluster validation-sandbox"`. (No org exists yet, but the platform doesn't validate the org claim against the DB on `POST /api/organizations` — see TODO in `Routes.kt`.)
+3. `POST <CLOUD_RUN_PLATFORM_URL>/api/organizations` with `{"name":"sandbox-org"}`, capture org ID from the response.
+4. Mint the real agent JWT: `./gradlew :platform:generateToken --args="--org $ORG_ID --cluster validation-sandbox"`.
+5. Write it to the sandbox cluster as a K8s Secret:
+   ```bash
+   kubectl create secret generic platform-api-key \
+     --from-literal=jwt-token="$AGENT_JWT" \
+     --namespace=validation \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+   Idempotent via `apply`.
 
 #### Files
 
-- `scripts/seed-org.sh` — **new**, idempotent (skips creating the org if it already exists).
-- `infra/platform/secrets.tf` — confirm `validation-jwt-token` secret exists; create it if not.
+- `scripts/seed-org.sh` — **new**, idempotent (re-running picks up an existing org by name and re-mints the JWT).
 
 #### Verification
 
 - `curl -H "Authorization: Bearer $TOKEN" $PLATFORM_URL/api/organizations` → returns `sandbox-org`.
-- `gcloud secrets versions access latest --secret=validation-jwt-token` → returns a valid JWT.
+- `kubectl get secret platform-api-key -n validation -o jsonpath='{.data.jwt-token}' | base64 -d` → matches the minted JWT.
 
 #### Milestone
 
-Agent JWT lives in Secret Manager. Re-running `seed-org.sh` is a no-op.
+Agent JWT in place in the sandbox cluster. Re-running `seed-org.sh` is a no-op for the org and refreshes the Secret.
 
 ---
 
-### Phase B: Agent + Kubeshark on the sandbox cluster
+### Phase B: Agent service discovery + agent + Kubeshark on the sandbox cluster
 
-**Goal:** Deploy Kubeshark and the agent into the sandbox cluster. Agent connects to Kubeshark over WebSocket, captures HTTP traffic from the test services, and pushes it to the Cloud Run collector.
+**Goal:** Implement the agent's K8s service discovery loop, deploy Kubeshark and the agent into the sandbox cluster. Agent surfaces test services to the platform via `POST /api/services`, captures their traffic from Kubeshark, and pushes it to the Cloud Run collector.
 
-#### Steps
+#### B1. Implement Agent Loop 1 (service discovery)
 
-1. **Kubeshark.** Add a step to `sandbox-up.sh` that runs `kubeshark tap --set tap.namespaces='{production}' -n kubeshark --headless`, or apply a pinned Helm chart. Keep it scoped to the `production` namespace to avoid capturing infrastructure traffic.
-2. **Agent overlay.** Create `k8s/agent/overlays/gke/` mirroring the test-services overlay pattern:
-   - Override the image to `${REGISTRY}/validation-agent:latest` (or `:dev-<sha>` for `--build-local`).
-   - Patch `imagePullPolicy: Always`.
-   - Set env vars: `PLATFORM_URL` and `COLLECTOR_URL` to the Cloud Run URLs (Terraform output), `KUBESHARK_URL=http://kubeshark-front.kubeshark:80`.
-   - Workload Identity ServiceAccount bound to `validation-agent-sa` (read access to `validation-jwt-token`).
-   - `validation-jwt-token` is loaded directly via the GCP Secret Manager CSI driver, or — simpler — fetched at pod start by an initContainer that writes `/tmp/jwt-token` and the agent reads from there. Decide based on what's already wired into the cluster (no ESO).
-3. **Wire into `sandbox-up.sh`.** After test services are up: install Kubeshark, then `kubectl apply -k k8s/agent/overlays/gke/`. Same `--build-local` story as test services so we can iterate on agent code.
-4. **Update sandbox-down.sh / lifecycle docs** to mention Kubeshark and the agent.
+`agent/src/main/kotlin/com/platform/agent/AgentApplication.kt:227` is a stub today. Implement it:
+
+- Add a Fabric8 `KubernetesClient` to the agent module (it can use the in-cluster ServiceAccount automatically).
+- New file `agent/src/main/kotlin/com/platform/agent/K8sServiceDiscovery.kt`: list `Service` resources across configured namespaces (default: `production`, configurable via `DynamicConfig.namespaceFilters`), filter out headless / system services, return `(namespace, name)` pairs.
+- New file `agent/src/main/kotlin/com/platform/agent/PlatformClient.kt` (or extend `ConfigClient`): `POST /api/services` with `{namespace, name, provider: "KUBERNETES"}`. Treat 409 / already-exists as success.
+- Wire into `discoverServices()`: each tick, list current services, diff against an in-memory set of "already registered", POST new ones. The platform's `GET /api/agent/config` will then include them in `targetServices` on the next config poll, and the StateFlow propagates to `KubesharkClient`.
+- Tests: unit test the diff logic against a fake K8s client + a fake platform; integration test against `KubernetesWorkloadTestBase` (already has 7 K8s Services in 3 namespaces — perfect fixture).
+
+The agent doesn't need GCP Workload Identity for this — the in-cluster KSA is enough to talk to the K8s API. RBAC: a ClusterRole granting `list`/`watch` on `services` in the target namespaces, bound via RoleBinding.
+
+#### B2. Kubeshark
+
+Add a step to `sandbox-up.sh` that installs Kubeshark scoped to the `production` namespace:
+
+```bash
+kubeshark tap --set tap.namespaces='{production}' --set tap.proxy.front.port=8899 -n kubeshark --headless
+```
+
+Or pin a Helm chart version if `kubeshark` CLI isn't acceptable in the script. Skip if already installed.
+
+#### B3. Agent overlay
+
+Create `k8s/agent/overlays/gke/` mirroring the test-services overlay pattern:
+
+- Override the image to `${REGISTRY}/validation-agent:latest` (or `:dev-<sha>` for `--build-local`).
+- Patch `imagePullPolicy: Always`.
+- Set env vars: `PLATFORM_URL` and `COLLECTOR_URL` to the Cloud Run URLs (Terraform outputs), `KUBESHARK_URL=http://kubeshark-front.kubeshark:80`.
+- ServiceAccount `validation-agent` (no GCP IAM annotation — pure K8s).
+- ClusterRole + RoleBinding granting `list`/`watch` on Services in `production` (and any other discovery namespaces).
+
+The `platform-api-key` Secret is created out-of-band by `seed-org.sh` (Phase A); the overlay doesn't manage it.
+
+#### B4. Wire into `sandbox-up.sh`
+
+Order: Terraform → test services → `seed-org.sh` (Cloud Run platform must be up first, but that's already true post platform-up) → Kubeshark → agent. Same `--build-local` flow as test services so we can iterate on agent code.
 
 #### Files
 
+- `agent/src/main/kotlin/com/platform/agent/K8sServiceDiscovery.kt` — **new**.
+- `agent/src/main/kotlin/com/platform/agent/PlatformClient.kt` — **new** (or merge into `ConfigClient.kt`).
+- `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` — replace `discoverServices()` stub.
+- `agent/build.gradle.kts` — add Fabric8 K8s client dependency (the platform module already uses it; bump `gradle/libs.versions.toml` if pinned).
+- `agent/src/test/...` — discovery loop tests.
 - `k8s/agent/overlays/gke/kustomization.yaml` — **new**.
-- `k8s/agent/overlays/gke/service-account.yaml` — **new**, KSA + Workload Identity annotation.
-- `k8s/agent/overlays/gke/secret-volume-patch.yaml` (or CSI-driver SecretProviderClass) — **new**, mounts the JWT into the agent.
-- `scripts/sandbox-up.sh` — extend with Kubeshark install + agent deploy.
-- `infra/sandbox/iam.tf` — **new**, Workload Identity binding for `validation-agent-sa`.
+- `k8s/agent/overlays/gke/rbac.yaml` — **new**, ServiceAccount + ClusterRole + RoleBinding for service-listing.
+- `scripts/sandbox-up.sh` — extend with Kubeshark install + `seed-org.sh` call + agent deploy.
 
 #### Verification
 
-1. `kubectl logs deployment/validation-agent -n validation` → no auth errors; sees `Target services updated`.
-2. `kubectl logs deployment/validation-agent -n validation | grep "Captured"` → entries flowing.
-3. `curl -H "Authorization: Bearer $TOKEN" $COLLECTOR_URL/api/captured-inputs` → captured inputs from the test services.
-4. Traffic generator running: `kubectl logs deployment/traffic-generator -n production | tail -20`.
+1. `kubectl logs deployment/validation-agent -n validation` → discovery loop logs `Registered service api-gateway` (×3) on first run, no errors.
+2. `curl -H "Authorization: Bearer $TOKEN" $PLATFORM_URL/api/services` → returns the test services discovered by the agent (not pre-seeded).
+3. `kubectl logs deployment/validation-agent -n validation | grep "Target services updated"` → fires after the next config poll.
+4. `kubectl logs deployment/validation-agent -n validation | grep "Captured"` → entries flowing.
+5. `curl -H "Authorization: Bearer $TOKEN" $COLLECTOR_URL/api/captured-inputs` → captured inputs from the test services.
 
 #### Milestone
 
-End-to-end traffic flow on GCP: test services → Kubeshark → agent (sandbox GKE) → Cloud Run collector. Captured inputs queryable via the public API.
+End-to-end traffic flow on GCP: test services → agent discovers and registers them → Kubeshark → agent (sandbox GKE) → Cloud Run collector. Services and captured inputs queryable via the public API.
 
 ---
 
@@ -134,8 +172,8 @@ One-command bring-up of the full demo from scratch, repeatable.
 
 | Phase | Deliverable | Risk de-risked |
 |-------|-------------|----------------|
-| A | `seed-org.sh` + agent JWT in Secret Manager | Org bootstrap, token sync |
-| B | Agent + Kubeshark on sandbox cluster | Cross-environment traffic flow (sandbox GKE → Cloud Run), Workload Identity for the agent |
+| A | `seed-org.sh` creates org and writes agent JWT to a K8s Secret in the sandbox cluster | Org bootstrap, agent auth |
+| B | Agent service discovery + Kubeshark + agent overlay on sandbox cluster | Cross-environment traffic flow (sandbox GKE → Cloud Run), agent surfacing services to the platform |
 | C | Idempotent end-to-end bring-up, README | Repeatability, cost control |
 
 ---
