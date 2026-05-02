@@ -372,7 +372,7 @@ class KubesharkClientTest {
         }
 
         @Test
-        fun `unsafe service names are filtered out, leaving safe names`() {
+        fun `names with embedded quotes are filtered out, leaving safe names`() {
             val query =
                 KubesharkClient.buildKflQuery(
                     mapOf(
@@ -381,9 +381,32 @@ class KubesharkClientTest {
                     ),
                 )
 
-            // Unsafe name dropped, safe name retained as a single-name filter.
+            // The injection-shaped name is dropped; the legitimate name is retained.
             assertEquals("""http and dst.name == "order-service"""", query)
             assertTrue(!query.contains("or true"))
+        }
+
+        @Test
+        fun `names with backslashes or control chars are filtered out`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        "order-service" to "id-1",
+                        "svc\\backslash" to "id-2",
+                        "svc\nnewline" to "id-3",
+                    ),
+                )
+
+            assertEquals("""http and dst.name == "order-service"""", query)
+        }
+
+        @Test
+        fun `names the server considers invalid but KFL can embed are still passed through`() {
+            // The agent does not enforce RFC 1123 — that's the platform's job at POST /api/services.
+            // The agent only refuses to embed strings that would change KFL semantics.
+            // "Order-Service" is not RFC 1123 (uppercase) but is safe inside KFL quotes.
+            val query = KubesharkClient.buildKflQuery(mapOf("Order-Service" to "id-1"))
+            assertEquals("""http and dst.name == "Order-Service"""", query)
         }
 
         @Test
@@ -392,7 +415,7 @@ class KubesharkClientTest {
                 KubesharkClient.buildKflQuery(
                     mapOf(
                         """svc" or true""" to "id-1",
-                        "UPPERCASE" to "id-2",
+                        "another\"quote" to "id-2",
                     ),
                 )
 
