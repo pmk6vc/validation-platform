@@ -8,6 +8,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
+import io.ktor.server.plugins.compression.Compression
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
@@ -28,6 +29,9 @@ fun Application.module(
     if (initDatabase) {
         DatabaseFactory.initFromEnvironment(secretsProvider)
     }
+
+    // Decompress incoming request bodies (e.g. Content-Encoding: gzip from the agent).
+    install(Compression)
 
     install(StatusPages) {
         exception<IllegalArgumentException> { call, cause ->

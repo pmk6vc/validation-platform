@@ -2,6 +2,7 @@ package com.platform.agent
 
 import com.platform.agent.models.BatchCapturedInputRequest
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.compression.compress
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -113,6 +114,12 @@ class CollectorClient(
                 httpClient.post("$baseUrl/api/captured-inputs") {
                     contentType(ContentType.Application.Json)
                     bearerAuth(authToken)
+                    // Opt this request into the ContentEncoding plugin's gzip
+                    // compression. The plugin (installed by
+                    // buildAgentCollectorHttpClient) only compresses requests
+                    // tagged via compress(); doing it here keeps gzip applied
+                    // to every POST through this client.
+                    compress("gzip")
                     setBody(batch)
                 }
 

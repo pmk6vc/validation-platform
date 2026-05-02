@@ -191,6 +191,24 @@ class CollectorClientTest {
         }
 
     @Test
+    fun `sends Content-Encoding gzip header on each POST`() =
+        runBlocking {
+            var contentEncoding = ""
+
+            val client =
+                mockCollector(onRequest = { request ->
+                    // Ktor's ContentEncoding plugin sets Content-Encoding on
+                    // the OutgoingContent's headers (sent to the wire when
+                    // the engine flushes), not on the request-builder headers.
+                    contentEncoding = request.body.headers[HttpHeaders.ContentEncoding] ?: ""
+                })
+
+            client.sendBatch(testBatch())
+
+            assertEquals("gzip", contentEncoding, "request body should be gzip-compressed")
+        }
+
+    @Test
     fun `suspends on sustained outage and resumes when collector recovers`() =
         runBlocking {
             coroutineScope {
