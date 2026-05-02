@@ -430,6 +430,52 @@ class ServiceRoutesTest : PlatformDatabaseTestBase() {
         }
 
     @Test
+    fun `POST services rejects names that violate RFC 1123 DNS label`() =
+        platformTestApplication { client ->
+            val invalidNames =
+                listOf(
+                    "UPPERCASE",
+                    "has space",
+                    "-leading-hyphen",
+                    "trailing-hyphen-",
+                    "underscore_name",
+                    "dot.name",
+                    """svc" or true or dst.name == "x""",
+                    "a".repeat(64),
+                )
+
+            for (name in invalidNames) {
+                val response =
+                    client.post("/api/services") {
+                        contentType(ContentType.Application.Json)
+                        setBody(CreateServiceRequest(namespace = "default", name = name))
+                    }
+                assertEquals(
+                    HttpStatusCode.BadRequest,
+                    response.status,
+                    "Expected 400 for invalid name: '$name'",
+                )
+            }
+        }
+
+    @Test
+    fun `POST services rejects namespaces that violate RFC 1123 DNS label`() =
+        platformTestApplication { client ->
+            val response =
+                client.post("/api/services") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        CreateServiceRequest(
+                            namespace = "Bad Namespace",
+                            name = "ok-name",
+                        ),
+                    )
+                }
+
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+
+    @Test
     fun `GET service should include all fields in response`() =
         platformTestApplication { client ->
             val svc =

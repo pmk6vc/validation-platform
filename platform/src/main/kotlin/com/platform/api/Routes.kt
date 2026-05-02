@@ -22,6 +22,15 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import java.time.Instant
 
+// RFC 1123 DNS label: lowercase alnum and hyphens, may not start or end with a hyphen, max 63 chars.
+// Kubernetes Service and Namespace names follow this rule, so we mirror it as the contract for
+// /api/services. Source of truth for "what's a legal name" — the agent does not second-guess this,
+// it only escapes for safe KFL embedding.
+private val RFC_1123_LABEL = Regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+private const val RFC_1123_MAX_LENGTH = 63
+
+private fun isRfc1123Label(s: String): Boolean = s.length in 1..RFC_1123_MAX_LENGTH && RFC_1123_LABEL.matches(s)
+
 fun Application.configureRouting() {
     routing {
         get("/") {
@@ -141,8 +150,17 @@ fun Application.configureRouting() {
                     post {
                         val principal = call.principal<AgentIdentity>()!!
                         val request = call.receive<CreateServiceRequest>()
-                        if (request.name.isBlank()) {
-                            return@post call.respond(HttpStatusCode.BadRequest, "Service name must not be blank")
+                        if (!isRfc1123Label(request.name)) {
+                            return@post call.respond(
+                                HttpStatusCode.BadRequest,
+                                "Service name must be a valid RFC 1123 DNS label (lowercase alphanumeric and hyphens, max 63 chars)",
+                            )
+                        }
+                        if (!isRfc1123Label(request.namespace)) {
+                            return@post call.respond(
+                                HttpStatusCode.BadRequest,
+                                "Namespace must be a valid RFC 1123 DNS label (lowercase alphanumeric and hyphens, max 63 chars)",
+                            )
                         }
                         val now = Instant.now()
                         val service =

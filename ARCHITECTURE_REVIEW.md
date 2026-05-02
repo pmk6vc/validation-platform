@@ -1,6 +1,6 @@
 # Architecture Review — Validation Platform
 
-**Last updated:** 2026-04-26
+**Last updated:** 2026-05-01
 **Reviewer:** Claude (architecture-reviewer agent)
 **Scope:** Full-system audit of all modules, database layer, API layer, agent, test suite, deployment, and security.
 
@@ -10,64 +10,26 @@
 
 | Priority | Issue | Severity | Effort | Why Now |
 |----------|-------|----------|--------|---------|
-| 1 | [SECURITY-1](#security-1-authorization-is-authentication--cross-tenant-data-exposure-on-every-list-endpoint) | Security | Medium | Any valid JWT reads all orgs' data. Multi-tenant breach. |
-| 2 | [SECURITY-2](#security-2-post-apiservices-does-not-verify-jwt-organization-matches-request-body) | Security | Small | Services portion fixed in PR #81; admin role for `POST /api/organizations` still open. |
-| 3 | [ARCH-5](#arch-5-trafficcaptureloop-swallows-cancellationexception--agent-cannot-shut-down-cleanly) | Architectural | Small | Agent cannot shut down cleanly; misleading ERROR logs in tests. |
-| 4 | [SECURITY-3](#security-3-kfl-query-injection-via-service-names) | Security | Small | Service names interpolated into KFL queries without escaping. |
-| 5 | [ARCH-6](#arch-6-cursor-pagination-on-captured_inputs-uses-agent-supplied-capturedat--clock-skew-causes-gaps-and-duplicates) | Architectural | Medium | Replay engine will silently skip or double-replay requests. |
-| 6 | [OPS-1](#ops-1-collector-outage-triggers-agent-pod-restart-after-45-seconds) | Operational | Small | 75s collector outage kills agent pod, causing data loss. |
-| 7 | [SECURITY-4](#security-4-jwt-has-no-iss-or-aud-claims--tokens-are-cross-service) | Security | Small | Tokens lack issuer/audience; no service binding. |
-| 8 | [QUALITY-8](#quality-8-captureonebatch-heartbeat-is-touched-even-when-kubeshark-is-disconnected) | Quality | Small | Broken Kubeshark session is silent; liveness probe says alive. |
-| 9 | [ARCH-7](#arch-7-both-platform-and-collector-run-flyway-against-the-same-schema-on-cold-start) | Architectural | Medium | Concurrent Flyway runs on cold start; implicit ordering dependency. |
-| 10 | [OPS-2](#ops-2-jwt-tokens-have-365-day-default-expiry-with-no-rotation-mechanism) | Operational | Small | Leaked token is valid 1 year; no revocation path. |
-| 11 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
-| 12 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 13 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 14 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
+| 1 | [SECURITY-2](#security-2-post-apiorganizations-has-no-authorization-check) | Security | Small | Any authenticated caller can create organizations; no admin role check. |
+| 2 | [ARCH-6](#arch-6-cursor-pagination-on-captured_inputs-uses-agent-supplied-capturedat--clock-skew-causes-gaps-and-duplicates) | Architectural | Medium | Replay engine will silently skip or double-replay requests. |
+| 3 | [SECURITY-4](#security-4-jwt-has-no-iss-or-aud-claims--tokens-are-cross-service) | Security | Small | Tokens lack issuer/audience; no service binding. |
+| 4 | [QUALITY-8](#quality-8-captureonebatch-heartbeat-is-touched-even-when-kubeshark-is-disconnected) | Quality | Small | Broken Kubeshark session is silent; liveness probe says alive. |
+| 5 | [ARCH-7](#arch-7-both-platform-and-collector-run-flyway-against-the-same-schema-on-cold-start) | Architectural | Medium | Concurrent Flyway runs on cold start; implicit ordering dependency. |
+| 6 | [OPS-2](#ops-2-jwt-tokens-have-365-day-default-expiry-with-no-rotation-mechanism) | Operational | Small | Leaked token is valid 1 year; no revocation path. |
+| 7 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
+| 8 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
+| 9 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 10 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
 ## Security Issues
 
-### SECURITY-1: Authorization Is Authentication — Cross-Tenant Data Exposure on Every List Endpoint
+### SECURITY-2: `POST /api/organizations` Has No Authorization Check
 
-- **Location**: `platform/src/main/kotlin/com/platform/api/Routes.kt` lines 40–48, 65–85, 103–131; `collector/src/main/kotlin/com/platform/collector/api/Routes.kt` lines 70–104, 106–123, 125–143
-- **Issue**: Every list and get endpoint ignores the resolved `AgentIdentity` principal. `GET /api/organizations` returns all organizations in the database to any valid JWT. `GET /api/services` accepts an optional `?organizationId=` query parameter but does not enforce that it matches the caller's JWT `organizationId` — omitting the filter returns all services across all tenants. `GET /api/captured-inputs` on the collector has no org-scoping at all; any authenticated caller can enumerate all captured production traffic for all customers by paginating without filters. `GET /api/organizations/{id}` and `GET /api/services/{id}` return data for any org when given its ID.
-
-  The only route that correctly enforces tenant scoping is `GET /api/agent/config` (which extracts `identity.organizationId` and `identity.cluster`). Every other authenticated route treats "authenticated" as "authorized for everything."
-
-- **Impact**: Tenant A's agent (or any caller with a valid JWT) can enumerate Tenant B's entire service registry and all of Tenant B's captured production traffic — including request/response bodies, URLs, headers, and source IPs. This is a multi-tenant data breach at the API layer. The collector's lack of scoping is particularly severe because captured traffic may include PII, session tokens, and business-sensitive payloads.
-- **Fix**: Enforce `call.principal<AgentIdentity>()!!.organizationId` as a mandatory filter on every authenticated list/get endpoint. For the collector, add an `organization_id UUID NOT NULL` column to `captured_inputs` (populated from the JWT principal at ingest time via a V0007 migration) and filter on it. The pattern is already correct in `GET /api/agent/config` — replicate it everywhere.
-
----
-
-### SECURITY-2: `POST /api/services` Does Not Verify JWT Organization Matches Request Body
-
-- **Status**: `POST /api/services` portion **fixed in PR #81**. `POST /api/organizations` portion **still open** (needs admin role).
-- **Location**: `platform/src/main/kotlin/com/platform/api/Routes.kt`
-- **Original issue**: `POST /api/services` accepted a `CreateServiceRequest` body containing an `organizationId` field. The route never verified that `request.organizationId == call.principal<AgentIdentity>()!!.organizationId`. A valid JWT for Org A could create services under Org B by supplying Org B's UUID in the request body. The same shape applied to `cluster` (an agent token scoped to `cluster=prod` could register services in `cluster=staging`).
-
-  `POST /api/organizations` had — and still has — no principal check at all: any authenticated caller can create organizations.
-
-- **Impact**: A compromised or malicious agent could pollute another tenant's service registry, affecting their `GET /api/agent/config` response and their KFL queries, redirecting their traffic capture.
-- **Fix applied (PR #81)**: Removed `organizationId` and `cluster` from `CreateServiceRequest` entirely; both are now stamped from the JWT principal in the route handler. Structurally stronger than the originally-recommended runtime equality check — there is no body field to mismatch.
-- **Still required**: For `POST /api/organizations`, decide whether it requires an admin role and enforce `identity.role == "admin"` if so. The route currently carries a TODO comment acknowledging the gap.
-
----
-
-### SECURITY-3: KFL Query Injection via Service Names
-
-- **Location**: `agent/src/main/kotlin/com/platform/agent/KubesharkClient.kt` lines 205–221
-- **Issue**: `buildKflQuery` interpolates Kubernetes service names directly into a KFL query string without escaping:
-
-  ```kotlin
-  { name -> """dst.name == "$name"""" }
-  ```
-
-  A service name containing `"` or KFL operators produces a semantically different query. For example, a service named `svc" or true or dst.name == "` would produce `http and dst.name == "svc" or true or dst.name == ""`, which Kubeshark may evaluate as "all HTTP traffic." K8s service names are RFC 1123 (lowercase alphanumeric and hyphens), so well-behaved clusters cannot create such names. The risk materializes if `POST /api/services` accepts names without format validation — currently the only check is `isBlank()`.
-
-- **Impact**: If exploited, Kubeshark streams all traffic to the agent instead of only targeted services, causing unintended cross-tenant data capture.
-- **Fix**: Add RFC 1123 name validation (`^[a-z0-9][a-z0-9\-]*[a-z0-9]$`, max 63 chars) to `POST /api/services`. Additionally, sanitize names in `buildKflQuery` defensively — if a name fails the pattern, skip it with a warning. Defense-in-depth: do not trust that API validation alone is sufficient.
+- **Location**: `platform/src/main/kotlin/com/platform/api/Routes.kt` (POST `/api/organizations` handler)
+- **Issue**: Any authenticated caller can create organizations. The route has no admin/role gate.
+- **Fix**: Decide whether org creation requires an admin role and enforce `identity.role == "admin"` if so. The route currently carries a TODO comment acknowledging the gap.
 
 ---
 
@@ -88,15 +50,6 @@
 - **Issue**: All repositories are Kotlin `object` singletons called as global state. Cannot inject mocks for route-level unit tests.
 - **Impact**: Every route test requires TestContainers + Docker. Pattern should not spread to new modules.
 - **Fix**: Convert to classes, inject via Ktor `Application` extension function.
-
----
-
-### ARCH-5: `trafficCaptureLoop` Swallows `CancellationException` — Agent Cannot Shut Down Cleanly
-
-- **Location**: `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` lines 122–149
-- **Issue**: `trafficCaptureLoop` catches `Exception` but does not re-throw `CancellationException`. Compare with `serviceDiscoveryLoop` (line 82) and `configPollLoop` (line 98), both of which explicitly `throw e` on `CancellationException`. When the enclosing `coroutineScope` is cancelled (graceful shutdown, test teardown, uncaught exception in a sibling loop), `trafficCaptureLoop` catches the `CancellationException`, logs "Traffic capture failed" at ERROR level, delays for `captureInterval`, and then loops. The delay is a suspend point that will eventually re-propagate cancellation, but not before firing a misleading error log and potentially running one more iteration.
-- **Impact**: Spurious ERROR logs on every agent shutdown and test teardown. In automated test suites, error logs from normal shutdown paths mask real failures.
-- **Fix**: Add `catch (e: CancellationException) { throw e }` before the generic `catch (e: Exception)` block, matching the pattern in the other two loops.
 
 ---
 
@@ -161,27 +114,6 @@
 
 ## Operational Issues
 
-### OPS-1: Collector Outage Triggers Agent Pod Restart After ~45 Seconds
-
-- **Location**: `k8s/agent/agent.yaml` lines 62–66; `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` lines 133–134; `agent/src/main/kotlin/com/platform/agent/CollectorClient.kt` lines 81–98
-- **Issue**: `touchHeartbeat()` is called inside the `try` block of `trafficCaptureLoop` after `captureOneBatch` returns. `captureOneBatch` calls `collectorClient.sendBatch()`, which retries transient failures indefinitely — suspending in the retry loop. While `sendBatch` is suspended retrying, `touchHeartbeat()` is never reached.
-
-  The liveness probe checks that `/tmp/agent-alive` was modified within the last minute. With `initialDelaySeconds: 30`, `periodSeconds: 15`, and `failureThreshold: 3`, a collector outage of ~75 seconds causes K8s to restart the agent pod.
-
-  Restarting the agent tears down the Kubeshark WebSocket, causing Kubeshark to replay ~4–10 seconds of history on reconnect and dropping entries that were buffered in the channel at pod termination — exactly the data loss path the bounded channel was designed to prevent. A collector rolling deployment (typically 30–60 seconds) crosses this threshold.
-
-- **Impact**: Data loss during collector deployments. Increased Kubeshark reconnect load. Potential restart loop if the collector is persistently degraded.
-- **Fix**: Touch the heartbeat after a successful `drainBatch` rather than after a successful `sendBatch`. The heartbeat should signal "agent is reachable and processing" — Kubeshark connectivity, not collector delivery:
-
-  ```kotlin
-  val entries = kubesharkClient.drainBatch(limit = batchSize, maxWait = maxWait)
-  if (entries.isNotEmpty()) touchHeartbeat()  // alive = pipeline is running
-  ```
-
-  The collector retry loop remains the correct mechanism for handling collector downtime.
-
----
-
 ### OPS-2: JWT Tokens Have 365-Day Default Expiry with No Rotation Mechanism
 
 - **Location**: `platform/src/main/kotlin/com/platform/auth/JwtTokenGenerator.kt` line 28; `k8s/agent/agent.yaml` lines 58–61; `k8s/platform/secret.yaml`
@@ -196,7 +128,7 @@
 
 ## Positive Patterns Worth Preserving
 
-1. **Structured concurrency in the agent is done correctly.** `AgentApplication` passes `coroutineScope` to `KubesharkClient`, which launches its streamer job within that scope. Cancellation propagates cleanly. `CancellationException` is properly re-thrown in all loops (`serviceDiscoveryLoop`, `configPollLoop`, `KubesharkClient.streamerLoop`, `CollectorClient.tryPost`). (Note: `trafficCaptureLoop` is the one exception — see ARCH-5.)
+1. **Structured concurrency in the agent is done correctly.** `AgentApplication` passes `coroutineScope` to `KubesharkClient`, which launches its streamer job within that scope. Cancellation propagates cleanly. `CancellationException` is properly re-thrown in all loops (`serviceDiscoveryLoop`, `configPollLoop`, `trafficCaptureLoop`, `KubesharkClient.streamerLoop`, `CollectorClient.tryPost`).
 
 2. **The `CollectorClient` retry model is sound.** Exponential backoff with configurable cap, 4xx as permanent failures, 5xx and network errors as transient, backpressure through the channel.
 
@@ -238,4 +170,4 @@
 
 21. **`DatabaseFactory` uses HikariCP connection pool.** Configurable pool size, connection timeout, and leak detection via environment variables. Proper connection lifecycle management for production workloads.
 
-22. **`GET /api/agent/config` correctly enforces multi-tenant scoping.** The route extracts both `organizationId` and `cluster` from the JWT principal and passes them as mandatory filters to `ServiceRepository.find()`. This is the correct authorization pattern for the platform — it is the only endpoint that currently implements it, and it demonstrates the team knows how to do this correctly. (See SECURITY-1 for why all other endpoints need the same treatment.)
+22. **All `/api/*` routes enforce per-tenant scoping from the JWT principal.** Every list/get endpoint on both `platform` and `collector` filters by `principal.organizationId`; `POST` handlers stamp it from the principal rather than the body. The collector's `captured_inputs` table carries `organization_id NOT NULL` (V0007) populated at ingest time, so cross-tenant exposure cannot leak through repository code either. Originally landed in PR #81.

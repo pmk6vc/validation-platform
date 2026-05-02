@@ -187,8 +187,6 @@ suspend fun trafficCaptureLoop(
                     transformer = transformer,
                 )
 
-            touchHeartbeat()
-
             if (result.lag != null && result.lag > LAG_WARN_THRESHOLD) {
                 // TODO: Surface lag to the platform (e.g. via config poll or heartbeat)
                 //  so the customer can take action (scale agents, increase sampling, tune batch size)
@@ -198,6 +196,8 @@ suspend fun trafficCaptureLoop(
                     result.entriesProcessed,
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.error("Traffic capture failed", e)
             delay(config.captureInterval)
@@ -282,12 +282,18 @@ suspend fun captureOneBatch(
     collectorClient: CollectorClient,
     transformer: TrafficTransformer,
     nowMs: Long = System.currentTimeMillis(),
+    heartbeat: () -> Unit = ::touchHeartbeat,
 ): CaptureResult {
     val entries = kubesharkClient.drainBatch(limit = batchSize, maxWait = maxWait)
 
     if (entries.isEmpty()) {
         return CaptureResult(entriesProcessed = 0, lag = null)
     }
+
+    // Heartbeat fires on successful drain — i.e. Kubeshark is delivering entries.
+    // Touched before the collector send so a collector outage doesn't kill the
+    // pod's liveness probe (sendBatch retries indefinitely on transient errors).
+    heartbeat()
 
     val captured = transformer.transform(entries)
 

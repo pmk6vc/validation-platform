@@ -370,6 +370,59 @@ class KubesharkClientTest {
             assertTrue(query.contains("my-svc"))
             assertTrue(!query.contains("platform-id-xyz"))
         }
+
+        @Test
+        fun `names with embedded quotes are filtered out, leaving safe names`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        "order-service" to "id-1",
+                        """svc" or true or dst.name == "x""" to "id-2",
+                    ),
+                )
+
+            // The injection-shaped name is dropped; the legitimate name is retained.
+            assertEquals("""http and dst.name == "order-service"""", query)
+            assertTrue(!query.contains("or true"))
+        }
+
+        @Test
+        fun `names with backslashes or control chars are filtered out`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        "order-service" to "id-1",
+                        "svc\\backslash" to "id-2",
+                        "svc\nnewline" to "id-3",
+                    ),
+                )
+
+            assertEquals("""http and dst.name == "order-service"""", query)
+        }
+
+        @Test
+        fun `names the server considers invalid but KFL can embed are still passed through`() {
+            // The agent does not enforce RFC 1123 — that's the platform's job at POST /api/services.
+            // The agent only refuses to embed strings that would change KFL semantics.
+            // "Order-Service" is not RFC 1123 (uppercase) but is safe inside KFL quotes.
+            val query = KubesharkClient.buildKflQuery(mapOf("Order-Service" to "id-1"))
+            assertEquals("""http and dst.name == "Order-Service"""", query)
+        }
+
+        @Test
+        fun `all unsafe names produce a no-match query, not http`() {
+            val query =
+                KubesharkClient.buildKflQuery(
+                    mapOf(
+                        """svc" or true""" to "id-1",
+                        "another\"quote" to "id-2",
+                    ),
+                )
+
+            // Critically, must NOT widen to "http" (which would capture all traffic).
+            assertTrue(query != "http", "must not fall back to unfiltered 'http'")
+            assertTrue(query.startsWith("http and dst.name == "), "should still be a dst.name filter")
+        }
     }
 
     // -----------------------------------------------------------------------
