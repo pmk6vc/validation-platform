@@ -148,10 +148,17 @@ suspend fun serviceDiscoveryLoop(
     platformClient: PlatformClient,
     dynamicConfig: StateFlow<DynamicConfig>,
     registeredServices: MutableSet<Pair<String, String>> = mutableSetOf(),
+    permanentlyFailed: MutableSet<Pair<String, String>> = mutableSetOf(),
 ) {
     while (true) {
         try {
-            discoverServices(discovery, platformClient, dynamicConfig, registeredServices)
+            discoverServices(
+                discovery,
+                platformClient,
+                dynamicConfig,
+                registeredServices,
+                permanentlyFailed,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -236,13 +243,22 @@ data class CaptureResult(
  * One iteration of Loop 1.
  *
  * Lists Services from the K8s API (scoped by [DynamicConfig.namespaceFilters]),
- * diffs against [registeredServices], and POSTs each new one to the platform's
- * `/api/services`. The platform's `GET /api/agent/config` will then include the
- * registered services in `targetServices` on the next config poll, and the
- * existing `MutableStateFlow<DynamicConfig>` propagates them to
- * [KubesharkClient] (which reconnects with an updated KFL query).
+ * diffs against [registeredServices] AND [permanentlyFailed], and POSTs each
+ * remaining service to the platform's `/api/services`. The platform's
+ * `GET /api/agent/config` will then include the registered services in
+ * `targetServices` on the next config poll, and the existing
+ * `MutableStateFlow<DynamicConfig>` propagates them to [KubesharkClient]
+ * (which reconnects with an updated KFL query).
  *
- * [registeredServices] is in-memory and per-pod; restarting the agent re-POSTs
+ * Outcome handling:
+ * - [RegistrationOutcome.Success] → add to [registeredServices]; never re-POST.
+ * - [RegistrationOutcome.PermanentRejection] → add to [permanentlyFailed];
+ *   never re-POST. The platform rejected the request shape (e.g. invalid name)
+ *   and retrying won't change the answer.
+ * - [RegistrationOutcome.TransientFailure] → leave alone. The next discovery
+ *   tick will re-attempt registration.
+ *
+ * Both sets are in-memory and per-pod; restarting the agent re-POSTs
  * everything, but the platform's 409-on-conflict makes that idempotent. This
  * is intentional — there's no value in persisting registration state across
  * restarts when the platform is the source of truth.
@@ -252,17 +268,40 @@ suspend fun discoverServices(
     platformClient: PlatformClient,
     dynamicConfig: StateFlow<DynamicConfig>,
     registeredServices: MutableSet<Pair<String, String>>,
+    permanentlyFailed: MutableSet<Pair<String, String>> = mutableSetOf(),
 ) {
     val found = discovery.discover(dynamicConfig.value.namespaceFilters)
-    val newServices = found.filter { (it.namespace to it.name) !in registeredServices }
-    if (newServices.isEmpty()) {
-        logger.debug("Service discovery: no new services (already registered: {})", registeredServices.size)
+    val candidates =
+        found.filter {
+            val key = it.namespace to it.name
+            key !in registeredServices && key !in permanentlyFailed
+        }
+    if (candidates.isEmpty()) {
+        logger.debug(
+            "Service discovery: no new services (registered: {}, permanently failed: {})",
+            registeredServices.size,
+            permanentlyFailed.size,
+        )
         return
     }
-    for (svc in newServices) {
-        if (platformClient.registerService(svc.namespace, svc.name)) {
-            registeredServices += svc.namespace to svc.name
-            logger.info("Registered service {}/{}", svc.namespace, svc.name)
+    for (svc in candidates) {
+        when (platformClient.registerService(svc.namespace, svc.name)) {
+            RegistrationOutcome.Success -> {
+                registeredServices += svc.namespace to svc.name
+                logger.info("Registered service {}/{}", svc.namespace, svc.name)
+            }
+            RegistrationOutcome.PermanentRejection -> {
+                permanentlyFailed += svc.namespace to svc.name
+                logger.warn(
+                    "Service {}/{} permanently rejected by platform; will not re-attempt",
+                    svc.namespace,
+                    svc.name,
+                )
+            }
+            RegistrationOutcome.TransientFailure -> {
+                // Leave svc out of both sets so the next tick re-attempts.
+                // Already logged with details inside PlatformClient.registerService.
+            }
         }
     }
 }
