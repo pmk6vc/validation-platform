@@ -1,6 +1,6 @@
 # Architecture Review — Validation Platform
 
-**Last updated:** 2026-05-01
+**Last updated:** 2026-05-02
 **Reviewer:** Claude (architecture-reviewer agent)
 **Scope:** Full-system audit of all modules, database layer, API layer, agent, test suite, deployment, and security.
 
@@ -13,13 +13,12 @@
 | 1 | [SECURITY-2](#security-2-post-apiorganizations-has-no-authorization-check) | Security | Small | Any authenticated caller can create organizations; no admin role check. |
 | 2 | [ARCH-6](#arch-6-cursor-pagination-on-captured_inputs-uses-agent-supplied-capturedat--clock-skew-causes-gaps-and-duplicates) | Architectural | Medium | Replay engine will silently skip or double-replay requests. |
 | 3 | [SECURITY-4](#security-4-jwt-has-no-iss-or-aud-claims--tokens-are-cross-service) | Security | Small | Tokens lack issuer/audience; no service binding. |
-| 4 | [QUALITY-8](#quality-8-captureonebatch-heartbeat-is-touched-even-when-kubeshark-is-disconnected) | Quality | Small | Broken Kubeshark session is silent; liveness probe says alive. |
-| 5 | [ARCH-7](#arch-7-both-platform-and-collector-run-flyway-against-the-same-schema-on-cold-start) | Architectural | Medium | Concurrent Flyway runs on cold start; implicit ordering dependency. |
-| 6 | [OPS-2](#ops-2-jwt-tokens-have-365-day-default-expiry-with-no-rotation-mechanism) | Operational | Small | Leaked token is valid 1 year; no revocation path. |
-| 7 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
-| 8 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 9 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 10 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
+| 4 | [ARCH-7](#arch-7-both-platform-and-collector-run-flyway-against-the-same-schema-on-cold-start) | Architectural | Medium | Concurrent Flyway runs on cold start; implicit ordering dependency. |
+| 5 | [OPS-2](#ops-2-jwt-tokens-have-365-day-default-expiry-with-no-rotation-mechanism) | Operational | Small | Leaked token is valid 1 year; no revocation path. |
+| 6 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
+| 7 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
+| 8 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 9 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
@@ -100,16 +99,6 @@
 - **Scope**: Test service only, but makes workloads less realistic.
 - **Fix**: Replace with `HikariDataSource` (10-line change).
 
-### QUALITY-8: `captureOneBatch` Heartbeat Is Touched Even When Kubeshark Is Disconnected
-
-- **Location**: `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` lines 133–134; `agent/src/main/kotlin/com/platform/agent/KubesharkClient.kt` lines 95–113
-- **Issue**: `drainBatch` returns an empty list both when Kubeshark delivers no traffic (legitimate idle) and when the Kubeshark WebSocket is disconnected (the `streamerJob` is in its reconnect delay loop and the channel is empty). In both cases `captureOneBatch` returns `CaptureResult(entriesProcessed=0, lag=null)`, and `touchHeartbeat()` is called — keeping the liveness probe satisfied.
-
-  An agent whose Kubeshark WebSocket has been failing to reconnect for hours will report as alive while capturing zero traffic.
-
-- **Impact**: Silent data loss. No alertable signal that capture has stopped until operators notice missing data in the collector — which could be hours or days after the Kubeshark connection broke.
-- **Fix**: Track whether the `streamerJob` is actively connected (expose `isStreaming: Boolean` from `KubesharkClient`, set to `true` after a successful frame is received, reset during reconnect delay). Only touch the heartbeat when `isStreaming` is true or the idle condition is legitimately quiet. Alternatively, use a separate status file that the liveness probe checks for Kubeshark connectivity health, failing the probe only after a configurable disconnection duration.
-
 ---
 
 ## Operational Issues
@@ -171,3 +160,5 @@
 21. **`DatabaseFactory` uses HikariCP connection pool.** Configurable pool size, connection timeout, and leak detection via environment variables. Proper connection lifecycle management for production workloads.
 
 22. **All `/api/*` routes enforce per-tenant scoping from the JWT principal.** Every list/get endpoint on both `platform` and `collector` filters by `principal.organizationId`; `POST` handlers stamp it from the principal rather than the body. The collector's `captured_inputs` table carries `organization_id NOT NULL` (V0007) populated at ingest time, so cross-tenant exposure cannot leak through repository code either. Originally landed in PR #81.
+
+23. **Liveness heartbeat distinguishes "Kubeshark connected and idle" from "Kubeshark disconnected".** `KubesharkClient.isConnected()` reflects whether a WebSocket session is open and the KFL filter has been sent (set in `runSession` after `send(Frame.Text(kflQuery))`, cleared in a `finally`). `captureOneBatch` consults it on empty drains: heartbeats when connected (so the probe doesn't restart a healthy quiet pod), skips when disconnected (so the probe fails and the pod restarts). Closes QUALITY-8 — previously the agent could not signal a broken upstream session through the liveness path.

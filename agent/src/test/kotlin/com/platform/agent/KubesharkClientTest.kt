@@ -22,7 +22,9 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -580,4 +582,49 @@ class KubesharkClientTest {
                 assertEquals("e4", entries[3].id)
             },
         )
+
+    // -----------------------------------------------------------------------
+    // isConnected — tracks WebSocket session state for liveness probe
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `isConnected becomes true once WebSocket session is open`() =
+        withClient(
+            serverBlock = {
+                send(Frame.Text(wsEntry("e1", 1000L)))
+                awaitCancellation()
+            },
+            testBlock = { client, _ ->
+                // Drain proves the WebSocket is fully open and a frame was processed.
+                drainUntil(client, 1)
+                assertTrue(client.isConnected(), "isConnected should be true while session is open")
+            },
+        )
+
+    @Test
+    fun `isConnected becomes false during reconnect delay after server closes session`() {
+        val sessionCount = AtomicInteger(0)
+        withClient(
+            serverBlock = {
+                val session = sessionCount.incrementAndGet()
+                if (session == 1) {
+                    // First session: send an entry, then return to close the WebSocket.
+                    send(Frame.Text(wsEntry("e1", 1000L)))
+                } else {
+                    // Subsequent reconnects: hold open until the test scope ends.
+                    awaitCancellation()
+                }
+            },
+            // Long reconnect delay opens a stable window where isConnected must be false.
+            reconnectDelay = 5.seconds,
+            testBlock = { client, _ ->
+                drainUntil(client, 1)
+                // Server closes after sending; poll until the finally-block flips connected to false.
+                withTimeout(2.seconds) {
+                    while (client.isConnected()) kotlinx.coroutines.delay(10)
+                }
+                assertFalse(client.isConnected(), "isConnected should be false during reconnect delay")
+            },
+        )
+    }
 }

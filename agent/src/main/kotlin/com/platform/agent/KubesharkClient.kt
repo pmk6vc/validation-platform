@@ -22,6 +22,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.net.URI
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -60,6 +61,17 @@ class KubesharkClient(
 
     /** Current session job — cancelled to force reconnect on config change. */
     private val sessionJobRef = AtomicReference<Job?>(null)
+
+    /**
+     * True while a WebSocket session is open and the KFL filter has been sent.
+     * False during the reconnect delay or before the first session opens. The
+     * capture loop reads this to distinguish "Kubeshark is healthy but quiet"
+     * from "Kubeshark session is broken" — only the former should keep the
+     * liveness probe satisfied during periods of zero traffic.
+     */
+    private val connected = AtomicBoolean(false)
+
+    fun isConnected(): Boolean = connected.get()
 
     private val channel = Channel<KubesharkEntry>(capacity = capacity)
 
@@ -155,11 +167,16 @@ class KubesharkClient(
                 kflQuery.ifEmpty { "(none — streaming all)" },
             )
 
-            for (frame in incoming) {
-                if (frame !is Frame.Text) continue
-                val entry = parseEntry(frame.readText()) ?: continue
-                if (!acceptAndTrack(entry.timestamp)) continue
-                channel.send(entry)
+            connected.set(true)
+            try {
+                for (frame in incoming) {
+                    if (frame !is Frame.Text) continue
+                    val entry = parseEntry(frame.readText()) ?: continue
+                    if (!acceptAndTrack(entry.timestamp)) continue
+                    channel.send(entry)
+                }
+            } finally {
+                connected.set(false)
             }
         }
     }

@@ -283,10 +283,19 @@ suspend fun captureOneBatch(
     transformer: TrafficTransformer,
     nowMs: Long = System.currentTimeMillis(),
     heartbeat: () -> Unit = ::touchHeartbeat,
+    isKubesharkConnected: () -> Boolean = kubesharkClient::isConnected,
 ): CaptureResult {
     val entries = kubesharkClient.drainBatch(limit = batchSize, maxWait = maxWait)
 
     if (entries.isEmpty()) {
+        // Empty drain has two causes: legitimate idle (WebSocket open, no
+        // traffic right now) vs broken session (reconnect loop, channel
+        // empty). Heartbeat the former so the probe doesn't restart a
+        // healthy quiet pod; skip the latter so the probe fails and the
+        // pod restarts.
+        if (isKubesharkConnected()) {
+            heartbeat()
+        }
         return CaptureResult(entriesProcessed = 0, lag = null)
     }
 
