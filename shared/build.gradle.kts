@@ -59,6 +59,7 @@ dependencies {
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.testcontainers)
     testImplementation(libs.testcontainers.k3s)
+    testImplementation(libs.testcontainers.postgresql)
     // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
     testImplementation(libs.bouncycastle)
     testImplementation(libs.ktor.client.cio)

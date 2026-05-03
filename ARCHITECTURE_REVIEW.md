@@ -1,6 +1,6 @@
 # Architecture Review — Validation Platform
 
-**Last updated:** 2026-05-02
+**Last updated:** 2026-05-03
 **Reviewer:** Claude (architecture-reviewer agent)
 **Scope:** Full-system audit of all modules, database layer, API layer, agent, test suite, deployment, and security.
 
@@ -13,12 +13,11 @@
 | 1 | [SECURITY-2](#security-2-post-apiorganizations-has-no-authorization-check) | Security | Small | Any authenticated caller can create organizations; no admin role check. |
 | 2 | [ARCH-6](#arch-6-cursor-pagination-on-captured_inputs-uses-agent-supplied-capturedat--clock-skew-causes-gaps-and-duplicates) | Architectural | Medium | Replay engine will silently skip or double-replay requests. |
 | 3 | [SECURITY-4](#security-4-jwt-has-no-iss-or-aud-claims--tokens-are-cross-service) | Security | Small | Tokens lack issuer/audience; no service binding. |
-| 4 | [ARCH-7](#arch-7-both-platform-and-collector-run-flyway-against-the-same-schema-on-cold-start) | Architectural | Medium | Concurrent Flyway runs on cold start; implicit ordering dependency. |
-| 5 | [OPS-2](#ops-2-jwt-tokens-have-365-day-default-expiry-with-no-rotation-mechanism) | Operational | Small | Leaked token is valid 1 year; no revocation path. |
-| 6 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
-| 7 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
-| 8 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
-| 9 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
+| 4 | [OPS-2](#ops-2-jwt-tokens-have-365-day-default-expiry-with-no-rotation-mechanism) | Operational | Small | Leaked token is valid 1 year; no revocation path. |
+| 5 | [QUALITY-1](#quality-1-dynamicconfig-not-validated-after-deserialization) | Quality | Small | Zero captureInterval = tight-spin CPU loop. |
+| 6 | [ARCH-2](#arch-2-repositories-are-object-singletons) | Architectural | Medium | Every route test needs TestContainers. Pattern should not spread. |
+| 7 | [QUALITY-6](#quality-6-ignoreunknownkeys-on-server-side-json) | Quality | Small | Typos in request fields are silently ignored. |
+| 8 | [QUALITY-7](#quality-7-orderservice-no-connection-pool) | Quality | Small | Test service only; makes test workloads less realistic. |
 
 ---
 
@@ -63,18 +62,6 @@
 
 - **Impact**: The replay engine (planned) will fetch captured inputs via `GET /api/captured-inputs`. Pagination gaps mean captured requests are silently never replayed. Duplicates (from retries) mean the same request is replayed twice, potentially mutating staging state. Both failure modes are silent — the API returns 200 with what appears to be a valid page.
 - **Fix**: Add `collected_at TIMESTAMPTZ NOT NULL DEFAULT now()` to `captured_inputs` in a V0007 migration. Sort and build cursors on `collected_at` (DB-assigned, monotonic). Retain `capturedAt` as a queryable data field for latency analysis. Add an index on `collected_at`.
-
----
-
-### ARCH-7: Both Platform and Collector Run Flyway Against the Same Schema on Cold Start
-
-- **Location**: `shared/src/main/kotlin/com/platform/shared/database/DatabaseFactory.kt` lines 48–55; `platform/src/main/kotlin/com/platform/Application.kt` line 27; `collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt` line 26
-- **Issue**: `DatabaseFactory.init()` runs Flyway migrations from `classpath:db/migration`. Both the `platform` and `collector` JARs include the `shared` module's migration resources on their classpath. When both services start simultaneously (as they do in Docker Compose and Kubernetes cold starts), both processes call `Flyway.migrate()` against the same PostgreSQL database concurrently.
-
-  Flyway uses a distributed lock on the `flyway_schema_history` table so data integrity is preserved. However: (1) the second process to acquire the lock blocks until the first completes, potentially causing readiness probe failures if migrations are slow; (2) the Kubernetes manifests have no `initContainer` or explicit startup ordering enforcing that `platform` runs migrations before `collector` starts; (3) if Flyway's lock timeout is shorter than migration duration (possible with large future migrations), the second process fails its startup entirely — a silent dependency that becomes a production incident.
-
-- **Impact**: Low risk today with six short migrations. Grows as the migration chain expands for replay engine, observation data, and verdict storage. The first large migration (multi-second) on a populated database will expose this race.
-- **Fix**: Designate `platform` as the sole migration runner. Add a `runMigrations: Boolean = true` parameter to `DatabaseFactory.init()` and pass `false` from the collector. Alternatively, add a Kubernetes `initContainer` on the collector that polls `platform`'s `/health` endpoint (which only returns 200 after migrations succeed) before starting the collector process.
 
 ---
 
@@ -162,3 +149,5 @@
 22. **All `/api/*` routes enforce per-tenant scoping from the JWT principal.** Every list/get endpoint on both `platform` and `collector` filters by `principal.organizationId`; `POST` handlers stamp it from the principal rather than the body. The collector's `captured_inputs` table carries `organization_id NOT NULL` (V0007) populated at ingest time, so cross-tenant exposure cannot leak through repository code either. Originally landed in PR #81.
 
 23. **Liveness heartbeat distinguishes "Kubeshark connected and idle" from "Kubeshark disconnected".** `KubesharkClient.isConnected()` reflects whether a WebSocket session is open and the KFL filter has been sent (set in `runSession` after `send(Frame.Text(kflQuery))`, cleared in a `finally`). `captureOneBatch` consults it on empty drains: heartbeats when connected (so the probe doesn't restart a healthy quiet pod), skips when disconnected (so the probe fails and the pod restarts). The Kubeshark `HttpClient` sets `pingIntervalMillis = 30_000` so silent TCP zombies (NAT timeouts, peer hung without FIN/RST) surface as a missed-pong exception within ~30s, exit the `for (frame in incoming)` loop, run the `finally`, and flip `connected` to false — closing the gap where the `finally` would otherwise never run. Closes QUALITY-8.
+
+24. **Migration ownership is split between platform and collector.** `DatabaseFactory.init()` accepts a `MigrationMode` enum: platform uses `MIGRATE` (the schema owner, runs `flyway.migrate()`), collector uses `VALIDATE` (calls `flyway.validate()` to confirm the schema matches its expected migration chain). Eliminates the cold-start race where both processes would compete for the `flyway_schema_history` lock — only one ever runs migrations, and the follower's startup probe fails loudly if it boots against a not-yet-migrated schema (Cloud Run / k8s retry the revision until the platform deploy catches up). The `gcloud run services update` ordering in `push_main.yml` (platform first, collector second) means this rarely fires in practice, but the contract is now explicit in code rather than implicit in CI ordering. Closes ARCH-7.

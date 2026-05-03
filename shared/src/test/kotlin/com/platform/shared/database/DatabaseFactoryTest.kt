@@ -1,12 +1,72 @@
 package com.platform.shared.database
 
 import com.platform.shared.secrets.SecretsProvider
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
+import org.flywaydb.core.api.exception.FlywayValidateException
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.testcontainers.postgresql.PostgreSQLContainer
+import org.testcontainers.utility.DockerImageName
+import java.sql.Connection
+import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class DatabaseFactoryTest {
+    companion object {
+        // Single Postgres container shared across MigrationModeTests; each test
+        // creates its own database within it so they don't see each other's
+        // migration state. Stopping is left to TestContainers' Ryuk daemon.
+        private lateinit var postgres: PostgreSQLContainer
+        private lateinit var adminDataSource: HikariDataSource
+        private lateinit var baseJdbcUrl: String
+
+        @BeforeAll
+        @JvmStatic
+        fun startPostgres() {
+            postgres =
+                PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).apply {
+                    withDatabaseName("admin")
+                    withUsername("test")
+                    withPassword("test")
+                    start()
+                }
+            // Strip the database segment so we can append per-test database names.
+            // Container URL: jdbc:postgresql://host:port/admin?... → keep up to the host:port.
+            val jdbcUrl = postgres.jdbcUrl
+            val dbStart = jdbcUrl.indexOf("/", "jdbc:postgresql://".length)
+            baseJdbcUrl = jdbcUrl.substring(0, dbStart)
+            adminDataSource =
+                HikariDataSource(
+                    HikariConfig().apply {
+                        this.jdbcUrl = jdbcUrl
+                        username = postgres.username
+                        password = postgres.password
+                        driverClassName = "org.postgresql.Driver"
+                        maximumPoolSize = 1
+                    },
+                )
+        }
+
+        @AfterAll
+        @JvmStatic
+        fun closeAdmin() {
+            if (::adminDataSource.isInitialized) adminDataSource.close()
+        }
+
+        fun tableExists(
+            ds: DataSource,
+            name: String,
+        ): Boolean =
+            ds.connection.use { conn ->
+                conn.metaData.getTables(null, null, name, arrayOf("TABLE")).use { rs -> rs.next() }
+            }
+    }
+
     private class RecordingSecretsProvider(
         private val values: Map<String, String> = emptyMap(),
     ) : SecretsProvider {
@@ -108,6 +168,63 @@ class DatabaseFactoryTest {
         assertEquals("jdbc:postgresql://db.example.com:6543/myapp", resolved.jdbcUrl)
         assertEquals("app_user", resolved.username)
         assertEquals("pw", resolved.password)
+    }
+
+    /**
+     * Migration mode tests against a real Postgres TestContainer. Each test
+     * carves out a fresh Postgres database on the shared container so it can
+     * exercise applyMigrations in isolation without colliding with other tests.
+     */
+    @Nested
+    inner class MigrationModeTests {
+        private fun freshDatabase(name: String): HikariDataSource {
+            // CREATE DATABASE on the shared container, then return a DataSource scoped to it.
+            adminDataSource.connection.use { conn: Connection ->
+                conn.createStatement().use { stmt -> stmt.execute("CREATE DATABASE \"$name\"") }
+            }
+            return HikariDataSource(
+                HikariConfig().apply {
+                    jdbcUrl = "$baseJdbcUrl/$name"
+                    username = postgres.username
+                    password = postgres.password
+                    driverClassName = "org.postgresql.Driver"
+                    maximumPoolSize = 2
+                },
+            )
+        }
+
+        @Test
+        fun `MIGRATE applies migrations and creates expected tables`() {
+            val ds = freshDatabase("migrate_${System.nanoTime()}")
+            ds.use {
+                DatabaseFactory.applyMigrations(it, MigrationMode.MIGRATE)
+                assertTrue(tableExists(it, "organizations"))
+                assertTrue(tableExists(it, "captured_inputs"))
+                assertTrue(tableExists(it, "flyway_schema_history"))
+            }
+        }
+
+        @Test
+        fun `VALIDATE succeeds after MIGRATE has run`() {
+            val ds = freshDatabase("validate_ok_${System.nanoTime()}")
+            ds.use {
+                DatabaseFactory.applyMigrations(it, MigrationMode.MIGRATE)
+                // Should not throw — schema matches the migration chain on the classpath.
+                DatabaseFactory.applyMigrations(it, MigrationMode.VALIDATE)
+            }
+        }
+
+        @Test
+        fun `VALIDATE throws on a fresh empty database`() {
+            val ds = freshDatabase("validate_empty_${System.nanoTime()}")
+            ds.use {
+                // No migrations have run — Flyway's validate() must reject the empty schema
+                // so the follower service fails its startup probe and gets retried.
+                assertThrows<FlywayValidateException> {
+                    DatabaseFactory.applyMigrations(it, MigrationMode.VALIDATE)
+                }
+            }
+        }
     }
 
     @Test

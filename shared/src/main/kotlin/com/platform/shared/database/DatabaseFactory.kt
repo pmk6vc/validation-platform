@@ -6,6 +6,7 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.sql.Database
+import javax.sql.DataSource
 
 /**
  * Database configuration and initialization.
@@ -27,9 +28,12 @@ object DatabaseFactory {
      *     URL must include `enableIamAuth=true` and the user must be the SA
      *     email of a Postgres user typed `CLOUD_IAM_SERVICE_ACCOUNT`.
      */
-    fun initFromEnvironment(secretsProvider: SecretsProvider = secretsProviderFromEnvironment()) {
+    fun initFromEnvironment(
+        secretsProvider: SecretsProvider = secretsProviderFromEnvironment(),
+        migrationMode: MigrationMode = MigrationMode.MIGRATE,
+    ) {
         val resolved = resolveConfig(System::getenv, secretsProvider)
-        init(resolved.jdbcUrl, resolved.username, resolved.password)
+        init(resolved.jdbcUrl, resolved.username, resolved.password, migrationMode)
     }
 
     internal data class ResolvedDbConfig(
@@ -63,6 +67,7 @@ object DatabaseFactory {
         jdbcUrl: String,
         username: String,
         password: String,
+        migrationMode: MigrationMode = MigrationMode.MIGRATE,
     ) {
         val poolSize = System.getenv("DATABASE_POOL_SIZE")?.toIntOrNull() ?: 10
         val connectionTimeoutMs = System.getenv("DATABASE_CONNECTION_TIMEOUT_MS")?.toLongOrNull() ?: 30_000L
@@ -81,16 +86,28 @@ object DatabaseFactory {
                 },
             )
 
-        runMigrations(dataSource)
+        applyMigrations(dataSource, migrationMode)
         Database.connect(dataSource)
     }
 
-    private fun runMigrations(dataSource: HikariDataSource) {
-        Flyway
-            .configure()
-            .dataSource(dataSource)
-            .locations("classpath:db/migration")
-            .load()
-            .migrate()
+    /**
+     * Apply or validate Flyway migrations against [dataSource]. Extracted
+     * (and `internal`) so tests can drive both modes without going through
+     * the full HikariCP / env-var setup.
+     */
+    internal fun applyMigrations(
+        dataSource: DataSource,
+        mode: MigrationMode,
+    ) {
+        val flyway =
+            Flyway
+                .configure()
+                .dataSource(dataSource)
+                .locations("classpath:db/migration")
+                .load()
+        when (mode) {
+            MigrationMode.MIGRATE -> flyway.migrate()
+            MigrationMode.VALIDATE -> flyway.validate()
+        }
     }
 }
