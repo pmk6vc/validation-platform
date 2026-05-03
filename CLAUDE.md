@@ -54,12 +54,11 @@ This is a **validation and release platform** that helps engineering teams valid
 - **Docker deployment** — platform, collector, and db start by default; health checks on all services
 - **Test infrastructure** with TestContainers (PostgreSQL + k3s Kubernetes)
 - **Code quality** with ktlint
-- **Adapter pattern** with ServiceAdapter interface
-- **Service discovery** via ManualSeedAdapter and KubernetesAdapter (implements `Closeable`)
 - **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES)
 - **Modular monolith** with enforced module boundaries: cross-module data access goes through REST APIs, not shared repositories; no DB-level FK between modules
 - **Validation agent** — three-loop Kotlin process deployed to customer cluster; streams traffic from Kubeshark WebSocket with server-side KFL filtering, samples, and pushes directly to platform (8080) and collector (8081) with a JWT bearer token; file-based liveness probe; non-root container; API key stored in Kubernetes Secret
-- **E2E tests** — `e2e-tests/` module tests the full platform stack (platform + collector) using TestContainers
+- **Agent Loop 1** — real K8s service discovery via Fabric8 (`K8sServiceDiscovery`), registration with platform via `PlatformClient`, sealed `RegistrationOutcome` (Success/PermanentRejection/TransientFailure) to avoid re-registering permanently rejected services
+- **E2E tests** — `e2e-tests/` module tests the full platform stack (platform + collector + agent discovery) using TestContainers; includes `AgentDiscoveryE2ETest` for the full K8s → agent → platform path
 
 ### Module Ownership
 
@@ -243,7 +242,7 @@ brew install colima docker && colima start
 
 **Module structure:**
 - `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer, `OrganizationId`, `ServiceId`), JWT auth library (`AgentIdentity`, `installJwtAuth()`, `derivePublicKey()`); exposes `java-test-fixtures` with `DatabaseTestBase`, `KubernetesWorkloadTestBase`, `TestJwtKeys` (consolidated test JWT keypair), and `authedTestApplication` (Ktor test app helper that wires JWT auth)
-- `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; JWKS endpoint; depends on `:shared`
+- `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, routes; JWKS endpoint; depends on `:shared`
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
 - `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to platform (config) and collector (traffic) directly via JWT; no dependency on `shared/`, `platform/`, or `collector/` (API contract only)
 - `e2e-tests/` — Integration tests for the full stack (platform + collector + DB) using TestContainers
@@ -400,8 +399,10 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 ```
 agent/
   src/main/kotlin/com/platform/agent/
-    AgentApplication.kt        # main, three coroutine loops; shared MutableStateFlow<DynamicConfig>
+    AgentApplication.kt        # main, three real coroutine loops; shared MutableStateFlow<DynamicConfig>
     AgentConfig.kt             # StaticConfig (env vars), DynamicConfig (polled), DurationAsMillisSerializer
+    K8sServiceDiscovery.kt     # Fabric8-based K8s service discovery (Loop 1); implements Closeable
+    PlatformClient.kt          # HTTP client for platform POST /api/services; returns sealed RegistrationOutcome
     KubesharkClient.kt         # Persistent WebSocket client; observes StateFlow for KFL query updates
     CollectorClient.kt         # HTTP client for collector POST with exponential-backoff retry
     ConfigClient.kt            # HTTP client for platform GET /api/agent/config
@@ -413,8 +414,11 @@ agent/
 
 **Deployment artifacts:**
 - `deploy/Dockerfile.agent` — multi-stage Dockerfile (non-root user via `USER agent`)
-- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest`
-- `k8s/agent/agent.yaml` — Kubernetes Deployment (namespace `validation`, single replica); `API_KEY` from `secretKeyRef: platform-api-key/jwt-token`; file-based liveness probe on `/tmp/agent-alive`
+- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest`; Fabric8 dep added (PR #104)
+- `k8s/agent/base/agent.yaml` — Kubernetes Deployment (namespace `validation`, single replica); `API_KEY` from `secretKeyRef: platform-api-key/jwt-token`; file-based liveness probe on `/tmp/agent-alive`; `KUBESHARK_URL` is a `__KUBESHARK_URL__` placeholder substituted at apply time
+- `k8s/agent/base/kustomization.yaml` — kustomize base for the agent
+- `k8s/agent/overlays/sandbox/` — sandbox GKE overlay (renamed from `gke/` in PR #103); URLs sed-substituted from Cloud Run TF outputs by `scripts/sandbox-up.sh`
+- `scripts/sandbox-up.sh` — brings up sandbox: installs Kubeshark via Helm, applies agent overlay with substituted Cloud Run URLs; `--build-local` also Jib-builds and pushes the agent image (PR #107)
 
 ### Read/Write Traffic Classification (Planned — Not Yet Implemented)
 
@@ -442,19 +446,9 @@ Message queues use built-in fan-out for safe capture: Kafka (separate consumer g
 | Endpoint classification | Optional | Mark ambiguous endpoints as safe/mutating |
 | DB reset hook | Optional | Enables full replay including writes |
 
-### Adapter Implementation Status
+### Service Discovery
 
-**ServiceAdapter Interface** (`platform/src/main/kotlin/com/platform/adapters/ServiceAdapter.kt`):
-```kotlin
-interface ServiceAdapter {
-    suspend fun discoverServices(organizationId: String): List<Service>
-}
-```
-
-**Implemented Adapters:**
-1. **ManualSeedAdapter** — 8 hardcoded services for testing without external dependencies
-2. **KubernetesAdapter** — Discovers services from Kubernetes via the API. Supports in-cluster, KUBECONFIG, and `~/.kube/config`. Implements `Closeable`.
-3. **KubesharkAdapter** — Planned
+Service discovery is handled entirely within the in-cluster agent (Loop 1). The platform-side `adapters/` package and its `ServiceAdapter` interface, `ManualSeedAdapter`, and `KubernetesAdapter` were removed in PR #102. The agent's `K8sServiceDiscovery` (Fabric8-based) discovers services from the customer's cluster and registers them with the platform via `PlatformClient.registerService()`.
 
 **Test Infrastructure:**
 
@@ -481,7 +475,7 @@ Kafka (consume: order-events) → notification-service → webhook-stub (externa
 - **Framework**: Ktor — Kotlin-native, coroutines-first, lightweight
 - **Database**: PostgreSQL with Exposed ORM + Flyway migrations
 - **Auth**: RS256 JWT — platform generates tokens, serves JWKS; both app servers validate directly via shared `installJwtAuth()` library
-- **Key Libraries**: Ktor, Exposed + PostgreSQL, Fabric8 Kubernetes Client, TestContainers
+- **Key Libraries**: Ktor, Exposed + PostgreSQL, Fabric8 Kubernetes Client (agent module only), TestContainers
 - See `build.gradle.kts` for the complete dependency list
 
 ---
@@ -523,23 +517,13 @@ Capture Kafka/PubSub messages via separate consumer groups. Only needed for "ent
 
 ---
 
-## Adapter Implementation Matrix
-
-| Adapter | Status | Services | Traffic Capture | Staging Observation |
-|---------|--------|----------|----------------|---------------------|
-| **Manual Seed** | Implemented | Yes | No | No |
-| **Kubernetes** | Implemented | Yes | No | No |
-| **Kubeshark (eBPF)** | In Progress | Yes (via observed traffic) | Yes (HTTP req/res at L7) | Yes (outbound connections, call patterns) |
-
----
-
 ## Delivery Plan
 
 ### Phase 1: Foundation — COMPLETE
 
-Project setup, Gradle, Organization + Service models, Exposed tables, repositories, pagination, Docker, Flyway, ktlint. ServiceAdapter interface, KubernetesAdapter, ManualSeedAdapter, k3s TestContainers infrastructure, Colima config.
+Project setup, Gradle, Organization + Service models, Exposed tables, repositories, pagination, Docker, Flyway, ktlint. k3s TestContainers infrastructure, Colima config. (Note: the platform-side ServiceAdapter/KubernetesAdapter/ManualSeedAdapter introduced here were later removed in PR #102; service discovery moved entirely to the agent.)
 
-**Milestone:** Adapter pattern implemented, services discoverable from Kubernetes and manual seed data.
+**Milestone:** Core platform foundation established; services discoverable.
 
 ---
 
@@ -567,10 +551,9 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 - [x] Agent: `KubesharkClient` (WebSocket), `CollectorClient`, `ConfigClient`, `TrafficTransformer`, `AgentConfig`, `AgentApplication`; uses `PLATFORM_URL` for config and `COLLECTOR_URL` for traffic ingestion
 - [x] Agent deployment: `API_KEY` sourced from Kubernetes Secret (`secretKeyRef: platform-api-key/jwt-token`)
 - [x] Agent 79+ unit/integration tests; e2e-tests module with platform + collector stack tests
-- [x] KubernetesAdapter implements `Closeable`
 - [x] Platform: `GET /api/agent/config` endpoint — returns the agent's target services (`name → serviceId`) for the JWT's organization + cluster
-- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map (stubbed as no-op)
-- [ ] HTTP gzip on agent→collector POST (wire bandwidth optimization)
+- [x] Agent Loop 1: K8s service discovery (`K8sServiceDiscovery` via Fabric8) → register with platform via `PlatformClient` → sealed `RegistrationOutcome` prevents re-registering permanently rejected services (PR #104, #105)
+- [x] HTTP gzip on agent→collector POST (wire bandwidth optimization — PR #80)
 
 **Replay Engine (Feature 2)**
 - [ ] ReplayRun model + database migration (likely in its own module)
@@ -641,7 +624,8 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 | Agent session model | Persistent WebSocket + bounded channel (1000) | Persistent session avoids replaying ~4-10s of Kubeshark history on every reconnect. Bounded channel provides backpressure without OOM risk. |
 | Agent reconnect dedup | `lastSeenTimestamp` with 5s lookback | Covers in-session out-of-order jitter without dropping live entries. Dupes per reconnect are acceptable vs complexity of ID-based LRU. |
 | Config propagation | `MutableStateFlow<DynamicConfig>` | `KubesharkClient` observes via `configWatcherJob` and triggers reconnect on `targetServices` changes. Decouples config propagation from imperative calls. |
-| KubernetesAdapter lifecycle | Implements `Closeable` | Connection pool released when adapter goes out of scope. Usable with Kotlin `use`. |
+| Registration outcome classification | Sealed `RegistrationOutcome` (Success/PermanentRejection/TransientFailure) in `PlatformClient`; per-service PermanentRejection scoped narrowly to 400/422 only | Without this, a 401 (auth failure) or 503 (transient network) would silently poison a service into the `permanentlyFailed` exclusion set even though the rejection was caller-level. Narrowing PermanentRejection to 400/422 ensures only bad service payload data is excluded permanently; everything else retries next tick. |
+| `K8sServiceDiscovery` lifecycle | Implements `Closeable` (Fabric8 client) | Fabric8 connection pool released when discovery goes out of scope. Agent's main function wraps in `use {}`. |
 
 ---
 

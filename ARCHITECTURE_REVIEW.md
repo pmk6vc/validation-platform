@@ -92,7 +92,7 @@
 
 ### OPS-2: JWT Tokens Have 365-Day Default Expiry with No Rotation Mechanism
 
-- **Location**: `platform/src/main/kotlin/com/platform/auth/JwtTokenGenerator.kt` line 28; `k8s/agent/agent.yaml` lines 58–61; `k8s/platform/secret.yaml`
+- **Location**: `platform/src/main/kotlin/com/platform/auth/JwtTokenGenerator.kt` line 28; `k8s/agent/base/agent.yaml` lines 58–61; `k8s/platform/secret.yaml`
 - **Issue**: `JwtTokenGenerator` defaults to 365-day expiry. The generated JWT is stored in a Kubernetes Secret (`platform-api-key/jwt-token`) and injected as an environment variable at pod startup. There is no rotation procedure, no revocation mechanism, and no `jti` claim that would allow the platform to track individual tokens.
 
   Rotating a compromised token requires rotating the RSA private key itself, which immediately invalidates all other agents' tokens and requires coordinated redeployment of all agents and both servers. There is no documented runbook for this.
@@ -134,7 +134,7 @@
 
 15. **App and collector containers run as non-root users.** `Dockerfile.app` and `Dockerfile.collector` create dedicated service users, matching the agent's existing security posture.
 
-16. **`KubernetesAdapter` no longer excludes `default` namespace.** Services in the `default` namespace are now discovered correctly. Only true system namespaces (`kube-system`, `kube-public`, `kube-node-lease`) are excluded.
+16. **`K8sServiceDiscovery` (agent) does not exclude `default` namespace.** Services in the `default` namespace are discovered correctly. Only true system namespaces (`kube-system`, `kube-public`, `kube-node-lease`) are excluded. (Note: the platform-side `KubernetesAdapter` was removed in PR #102; discovery now lives entirely in the agent.)
 
 17. **`ServiceRepository.upsert` post-select is documented.** The post-select after `upsert()` is necessary because on conflict the caller's ID is ignored. Comment explains the dependency on Exposed 1.x `upsertReturning()` for elimination.
 
