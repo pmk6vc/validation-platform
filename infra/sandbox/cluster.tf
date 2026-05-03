@@ -35,12 +35,14 @@ resource "google_container_node_pool" "spot" {
   node_count = var.node_count
 
   node_config {
-    # e2-medium (2 vCPU / 4 GiB) fits the test microservices alongside GKE
-    # system pods on a single node. e2-small (2 vCPU / 2 GiB) leaves only
-    # ~1.4Gi allocatable, which GKE system pods alone nearly exhaust — test
-    # workloads ended up Pending with `Insufficient memory` and the
-    # non-autoscaled node pool reported NotTriggerScaleUp.
-    machine_type = "e2-medium"
+    # e2-standard-2 (2 dedicated vCPU / 8 GiB) is the smallest E2 type with
+    # non-shared cores. The shared-core E2 family (e2-micro/small/medium) all
+    # cap GKE allocatable CPU at ~940m, of which system pods consume ~931m,
+    # leaving nothing for test workloads — pods stayed Pending with
+    # `Insufficient cpu` and the non-autoscaled pool logged NotTriggerScaleUp.
+    # Dedicated cores give ~1930m allocatable, enough headroom for the
+    # ~670m of test microservices on a single spot node.
+    machine_type = "e2-standard-2"
     spot         = true
 
     # Minimal OAuth scopes — workloads use Workload Identity, not the node SA.
