@@ -35,9 +35,6 @@ dependencies {
     // JWT (RSA key pair for JWKS endpoint)
     implementation(libs.java.jwt)
 
-    // Kubernetes
-    implementation(libs.fabric8.kubernetes.client)
-
     // Logging
     implementation(libs.logback)
     implementation(libs.logstash.logback.encoder)
@@ -51,8 +48,6 @@ dependencies {
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.mockk)
-    // BouncyCastle is required for K3s EC keys in fabric8 kubernetes-client
-    testImplementation(libs.bouncycastle)
 
     // Ktor client for integration tests
     testImplementation(libs.bundles.ktor.client)
