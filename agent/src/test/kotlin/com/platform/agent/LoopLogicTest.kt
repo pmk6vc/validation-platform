@@ -13,6 +13,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -150,12 +151,16 @@ class LoopLogicTest {
          * in the real client pulls from a Channel, the mock ignores `maxWait`
          * and just returns whatever fits.
          */
-        private fun fakeKubesharkClient(entries: List<KubesharkEntry> = emptyList()): KubesharkClient {
+        private fun fakeKubesharkClient(
+            entries: List<KubesharkEntry> = emptyList(),
+            connected: Boolean = true,
+        ): KubesharkClient {
             val client = mockk<KubesharkClient>()
             coEvery { client.drainBatch(any<Int>(), any<Duration>()) } answers {
                 val limit = firstArg<Int>()
                 entries.take(limit)
             }
+            every { client.isConnected() } returns connected
             return client
         }
 
@@ -163,6 +168,7 @@ class LoopLogicTest {
             entries: List<KubesharkEntry> = emptyList(),
             collectorStatus: HttpStatusCode = HttpStatusCode.OK,
             onCollectorRequest: ((String) -> Unit)? = null,
+            connected: Boolean = true,
         ): Triple<KubesharkClient, CollectorClient, TrafficTransformer> {
             val engine =
                 MockEngine { request ->
@@ -191,7 +197,7 @@ class LoopLogicTest {
                     ),
                 )
             return Triple(
-                fakeKubesharkClient(entries),
+                fakeKubesharkClient(entries, connected = connected),
                 CollectorClient(httpClient, "http://collector:8081", "key"),
                 TrafficTransformer(dynamicConfig),
             )
@@ -365,10 +371,13 @@ class LoopLogicTest {
             }
 
         @Test
-        fun `heartbeat does not fire when drain returns empty`() =
+        fun `heartbeat fires on empty drain when Kubeshark session is connected (idle)`() =
             runBlocking {
                 var heartbeats = 0
-                val (client, collector, transformer) = mockClients(entries = emptyList())
+                // Healthy idle: WebSocket is open, no production traffic flowing.
+                // Heartbeat must fire so the liveness probe doesn't restart a quiet pod.
+                val (client, collector, transformer) =
+                    mockClients(entries = emptyList(), connected = true)
 
                 captureOneBatch(
                     batchSize = 100,
@@ -379,8 +388,27 @@ class LoopLogicTest {
                     heartbeat = { heartbeats++ },
                 )
 
-                // Empty drain means we can't tell if Kubeshark is healthy or disconnected.
-                // Don't fake liveness — let the probe fail if quiet persists. (See QUALITY-8.)
+                assertEquals(1, heartbeats)
+            }
+
+        @Test
+        fun `heartbeat does not fire on empty drain when Kubeshark session is disconnected`() =
+            runBlocking {
+                var heartbeats = 0
+                // Broken: streamerJob is in its reconnect delay, channel is empty.
+                // Heartbeat must NOT fire so the liveness probe fails and the pod restarts.
+                val (client, collector, transformer) =
+                    mockClients(entries = emptyList(), connected = false)
+
+                captureOneBatch(
+                    batchSize = 100,
+                    maxWait = defaultMaxWait,
+                    kubesharkClient = client,
+                    collectorClient = collector,
+                    transformer = transformer,
+                    heartbeat = { heartbeats++ },
+                )
+
                 assertEquals(0, heartbeats)
             }
 
