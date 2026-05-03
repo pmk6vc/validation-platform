@@ -35,7 +35,12 @@ resource "google_container_node_pool" "spot" {
   node_count = var.node_count
 
   node_config {
-    machine_type = "e2-small"
+    # e2-medium (2 vCPU / 4 GiB) fits the test microservices alongside GKE
+    # system pods on a single node. e2-small (2 vCPU / 2 GiB) leaves only
+    # ~1.4Gi allocatable, which GKE system pods alone nearly exhaust — test
+    # workloads ended up Pending with `Insufficient memory` and the
+    # non-autoscaled node pool reported NotTriggerScaleUp.
+    machine_type = "e2-medium"
     spot         = true
 
     # Minimal OAuth scopes — workloads use Workload Identity, not the node SA.
