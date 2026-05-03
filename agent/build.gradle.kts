@@ -27,6 +27,9 @@ dependencies {
     // Serialization
     implementation(libs.kotlinx.serialization.json)
 
+    // Kubernetes (Loop 1: service discovery)
+    implementation(libs.fabric8.kubernetes.client)
+
     // Logging
     implementation(libs.logback)
     implementation(libs.logstash.logback.encoder)

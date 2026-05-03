@@ -110,6 +110,9 @@ fun main() {
         CollectorClient(collectorHttpClient, staticConfig.collectorUrl, staticConfig.apiKey)
     val configClient =
         ConfigClient(platformHttpClient, staticConfig.platformUrl, staticConfig.apiKey)
+    val platformClient =
+        PlatformClient(platformHttpClient, staticConfig.platformUrl, staticConfig.apiKey)
+    val k8sDiscovery = K8sServiceDiscovery()
     val transformer = TrafficTransformer(dynamicConfig)
 
     runBlocking {
@@ -124,7 +127,7 @@ fun main() {
                     configFlow = dynamicConfig,
                 )
 
-            launch { serviceDiscoveryLoop(dynamicConfig) }
+            launch { serviceDiscoveryLoop(k8sDiscovery, platformClient, dynamicConfig) }
             launch { configPollLoop(configClient, dynamicConfig) }
             launch {
                 trafficCaptureLoop(
@@ -140,10 +143,15 @@ fun main() {
 
 // --- Loop wrappers (while/true + delay + error handling) ---
 
-suspend fun serviceDiscoveryLoop(dynamicConfig: StateFlow<DynamicConfig>) {
+suspend fun serviceDiscoveryLoop(
+    discovery: K8sServiceDiscovery,
+    platformClient: PlatformClient,
+    dynamicConfig: StateFlow<DynamicConfig>,
+    registeredServices: MutableSet<Pair<String, String>> = mutableSetOf(),
+) {
     while (true) {
         try {
-            discoverServices()
+            discoverServices(discovery, platformClient, dynamicConfig, registeredServices)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -225,16 +233,38 @@ data class CaptureResult(
 // --- Single-iteration logic (testable without loops) ---
 
 /**
- * V1 stub — service discovery will be implemented when the platform
- * exposes a service registration endpoint.
+ * One iteration of Loop 1.
  *
- * TODO: Inject a K8s client to list services in the cluster and a
- *  platform registration client to POST /api/services. The platform
- *  returns a service ID map that populates targetServices in DynamicConfig.
- *  Until then, targetServices comes entirely from the config poll.
+ * Lists Services from the K8s API (scoped by [DynamicConfig.namespaceFilters]),
+ * diffs against [registeredServices], and POSTs each new one to the platform's
+ * `/api/services`. The platform's `GET /api/agent/config` will then include the
+ * registered services in `targetServices` on the next config poll, and the
+ * existing `MutableStateFlow<DynamicConfig>` propagates them to
+ * [KubesharkClient] (which reconnects with an updated KFL query).
+ *
+ * [registeredServices] is in-memory and per-pod; restarting the agent re-POSTs
+ * everything, but the platform's 409-on-conflict makes that idempotent. This
+ * is intentional — there's no value in persisting registration state across
+ * restarts when the platform is the source of truth.
  */
-fun discoverServices() {
-    logger.debug("Service discovery: not yet implemented")
+suspend fun discoverServices(
+    discovery: K8sServiceDiscovery,
+    platformClient: PlatformClient,
+    dynamicConfig: StateFlow<DynamicConfig>,
+    registeredServices: MutableSet<Pair<String, String>>,
+) {
+    val found = discovery.discover(dynamicConfig.value.namespaceFilters)
+    val newServices = found.filter { (it.namespace to it.name) !in registeredServices }
+    if (newServices.isEmpty()) {
+        logger.debug("Service discovery: no new services (already registered: {})", registeredServices.size)
+        return
+    }
+    for (svc in newServices) {
+        if (platformClient.registerService(svc.namespace, svc.name)) {
+            registeredServices += svc.namespace to svc.name
+            logger.info("Registered service {}/{}", svc.namespace, svc.name)
+        }
+    }
 }
 
 /**
