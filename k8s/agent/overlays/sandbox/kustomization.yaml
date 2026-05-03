@@ -1,23 +1,29 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Sandbox overlay — deploys the validation-agent into the sandbox GKE
+# cluster brought up by scripts/sandbox-up.sh. NOT a generic productized
+# overlay: it bakes in the sandbox project's Artifact Registry path, the
+# sandbox `production` namespace where the test microservices live, and the
+# sandbox Kubeshark install convention. A productized overlay (or, more
+# likely, a Helm chart) would parameterize all of these.
 resources:
   - ../../base
   - rbac.yaml
 
-# Point the agent image at Artifact Registry.
-# Registry: us-central1-docker.pkg.dev/zugzwang-381922/validation
+# Point the agent image at the sandbox project's Artifact Registry.
 images:
   - name: validation-agent
     newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/validation-agent
     newTag: latest
 
-# GKE-specific patches:
+# Sandbox-specific patches:
 #   - imagePullPolicy: Always (registry-backed cluster, mutable :latest tag)
 #   - serviceAccountName: validation-agent (so the discovery loop can list services)
-#   - PLATFORM_URL / COLLECTOR_URL set to placeholders that scripts/sandbox-up.sh
-#     replaces with the Cloud Run URLs from Terraform outputs at apply time.
-#   - KUBESHARK_URL points at the Kubeshark front Service in the kubeshark namespace.
+#   - PLATFORM_URL / COLLECTOR_URL / KUBESHARK_URL are placeholders that
+#     scripts/sandbox-up.sh substitutes from Terraform outputs (Cloud Run URLs)
+#     and the sandbox Kubeshark install location at apply time. The overlay
+#     itself is environment-agnostic for those three values.
 patches:
   - target:
       kind: Deployment
@@ -38,7 +44,7 @@ patches:
                 imagePullPolicy: Always
                 env:
                   - name: KUBESHARK_URL
-                    value: "http://kubeshark-front.kubeshark:80"
+                    value: "__KUBESHARK_URL__"
                   - name: PLATFORM_URL
                     value: "__PLATFORM_URL__"
                   - name: COLLECTOR_URL

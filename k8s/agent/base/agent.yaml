@@ -18,12 +18,14 @@
 #   minikube:
 #     minikube image load validation-agent:latest
 #     kubectl apply -k k8s/agent/base
-#   GKE (or any registry-backed cluster):
-#     kubectl apply -k k8s/agent/overlays/gke
-#     The overlay sets imagePullPolicy: Always, points the image at Artifact
-#     Registry, wires the validation-agent ServiceAccount + RBAC, and uses
-#     placeholder URLs that scripts/sandbox-up.sh substitutes from Terraform
-#     outputs at apply time.
+#   sandbox GKE cluster (brought up by scripts/sandbox-up.sh):
+#     kubectl apply -k k8s/agent/overlays/sandbox
+#     The overlay sets imagePullPolicy: Always, points the image at the sandbox
+#     project's Artifact Registry, wires the validation-agent ServiceAccount +
+#     a RoleBinding scoped to the sandbox `production` namespace, and uses
+#     placeholder URLs (PLATFORM_URL, COLLECTOR_URL, KUBESHARK_URL) that
+#     scripts/sandbox-up.sh substitutes at apply time. A productized overlay
+#     (or Helm chart) is a separate workstream — this overlay is sandbox-only.
 apiVersion: v1
 kind: Namespace
 metadata:
