@@ -167,8 +167,8 @@ class KubesharkClient(
                 kflQuery.ifEmpty { "(none — streaming all)" },
             )
 
-            connected.set(true)
             try {
+                connected.set(true)
                 for (frame in incoming) {
                     if (frame !is Frame.Text) continue
                     val entry = parseEntry(frame.readText()) ?: continue
