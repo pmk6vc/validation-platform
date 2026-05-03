@@ -3,6 +3,7 @@ package com.platform.collector
 import com.platform.collector.api.configureRouting
 import com.platform.shared.auth.installJwtAuth
 import com.platform.shared.database.DatabaseFactory
+import com.platform.shared.database.MigrationMode
 import com.platform.shared.secrets.secretsProviderFromEnvironment
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -27,7 +28,12 @@ fun Application.module(
     val secretsProvider = secretsProviderFromEnvironment()
 
     if (initDatabase) {
-        DatabaseFactory.initFromEnvironment(secretsProvider)
+        // Collector validates the schema; the platform service owns migrations.
+        // Splits Flyway lock contention on cold start and makes the schema-
+        // ownership relationship explicit. If the platform hasn't applied a
+        // pending migration yet, validate() throws and Cloud Run / k8s
+        // restarts the revision until it has.
+        DatabaseFactory.initFromEnvironment(secretsProvider, MigrationMode.VALIDATE)
     }
 
     // Decompress incoming request bodies (e.g. Content-Encoding: gzip from the agent).
