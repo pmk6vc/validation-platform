@@ -10,8 +10,6 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class PlatformClientTest {
     private fun mockClient(
@@ -33,36 +31,109 @@ class PlatformClientTest {
     }
 
     @Test
-    fun `returns true on 201 Created`() =
+    fun `Success on 201 Created`() =
         runBlocking {
-            assertTrue(mockClient(status = HttpStatusCode.Created).registerService("production", "api-gateway"))
+            assertEquals(
+                RegistrationOutcome.Success,
+                mockClient(status = HttpStatusCode.Created).registerService("production", "api-gateway"),
+            )
         }
 
     @Test
-    fun `returns true on 200 OK`() =
+    fun `Success on 200 OK`() =
         runBlocking {
-            assertTrue(mockClient(status = HttpStatusCode.OK).registerService("production", "api-gateway"))
+            assertEquals(
+                RegistrationOutcome.Success,
+                mockClient(status = HttpStatusCode.OK).registerService("production", "api-gateway"),
+            )
         }
 
     @Test
-    fun `treats 409 Conflict as success (idempotent re-registration)`() =
+    fun `Success on 409 Conflict (idempotent re-registration)`() =
         runBlocking {
-            assertTrue(mockClient(status = HttpStatusCode.Conflict).registerService("production", "api-gateway"))
+            assertEquals(
+                RegistrationOutcome.Success,
+                mockClient(status = HttpStatusCode.Conflict).registerService("production", "api-gateway"),
+            )
         }
 
     @Test
-    fun `returns false on 5xx`() =
+    fun `TransientFailure on 5xx (retry next tick)`() =
         runBlocking {
-            assertFalse(
+            assertEquals(
+                RegistrationOutcome.TransientFailure,
                 mockClient(status = HttpStatusCode.InternalServerError, body = "boom")
                     .registerService("production", "api-gateway"),
             )
         }
 
     @Test
-    fun `returns false on 401 Unauthorized`() =
+    fun `TransientFailure on 503 Service Unavailable`() =
         runBlocking {
-            assertFalse(mockClient(status = HttpStatusCode.Unauthorized).registerService("production", "api-gateway"))
+            assertEquals(
+                RegistrationOutcome.TransientFailure,
+                mockClient(status = HttpStatusCode.ServiceUnavailable)
+                    .registerService("production", "api-gateway"),
+            )
+        }
+
+    @Test
+    fun `PermanentRejection on 400 Bad Request`() =
+        runBlocking {
+            assertEquals(
+                RegistrationOutcome.PermanentRejection,
+                mockClient(status = HttpStatusCode.BadRequest, body = "invalid name")
+                    .registerService("production", "api-gateway"),
+            )
+        }
+
+    @Test
+    fun `PermanentRejection on 422 Unprocessable Entity`() =
+        runBlocking {
+            assertEquals(
+                RegistrationOutcome.PermanentRejection,
+                mockClient(status = HttpStatusCode.UnprocessableEntity)
+                    .registerService("production", "api-gateway"),
+            )
+        }
+
+    @Test
+    fun `TransientFailure on 401 Unauthorized (caller-level, not service-level)`() =
+        runBlocking {
+            // 401 affects every service equally — adding individual services
+            // to permanentlyFailed would quietly poison them so they never
+            // re-register after the token is rotated/refreshed.
+            assertEquals(
+                RegistrationOutcome.TransientFailure,
+                mockClient(status = HttpStatusCode.Unauthorized).registerService("production", "api-gateway"),
+            )
+        }
+
+    @Test
+    fun `TransientFailure on 403 Forbidden (caller-level)`() =
+        runBlocking {
+            assertEquals(
+                RegistrationOutcome.TransientFailure,
+                mockClient(status = HttpStatusCode.Forbidden).registerService("production", "api-gateway"),
+            )
+        }
+
+    @Test
+    fun `TransientFailure on 404 Not Found (wrong endpoint, not a per-service problem)`() =
+        runBlocking {
+            assertEquals(
+                RegistrationOutcome.TransientFailure,
+                mockClient(status = HttpStatusCode.NotFound).registerService("production", "api-gateway"),
+            )
+        }
+
+    @Test
+    fun `TransientFailure on 429 Too Many Requests (rate limit, retry later)`() =
+        runBlocking {
+            assertEquals(
+                RegistrationOutcome.TransientFailure,
+                mockClient(status = HttpStatusCode.TooManyRequests).registerService("production", "api-gateway"),
+            )
         }
 
     @Test
