@@ -41,3 +41,8 @@ out/
 
 ### Local script state ###
 .platform/
+
+### Local tooling binaries ###
+# cloud-sql-proxy is downloaded by bootstrap-db.sh / dev workflows and is
+# environment-specific; never check it in.
+cloud-sql-proxy
