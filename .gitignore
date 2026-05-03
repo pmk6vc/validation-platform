@@ -38,3 +38,6 @@ out/
 ### Claude Code ###
 .claude/
 .mcp.json
+
+### Local script state ###
+.platform/
