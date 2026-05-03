@@ -49,3 +49,26 @@ resource "google_service_account_iam_member" "platform_workload_identity_self" {
 # created with that workload pool — chicken-and-egg with the sandbox stack.
 # We'll re-add this (in infra/sandbox/iam.tf) when the agent actually goes
 # into the sandbox cluster as part of the customer-onboarding work.
+
+# ---------------------------------------------------------------------------
+# Developer DB access (var.dev_db_users)
+# ---------------------------------------------------------------------------
+# Each dev needs both roles to connect via the Cloud SQL Auth Proxy with
+# IAM authentication: cloudsql.client to reach the proxy, cloudsql.instanceUser
+# to authenticate to Postgres with a short-lived OAuth token. Grants are
+# project-scoped because the cloudsql.* roles are not exposed at the
+# instance level. See variables.tf for the prod-grade caveats.
+
+resource "google_project_iam_member" "dev_cloudsql_client" {
+  for_each = toset(var.dev_db_users)
+  project  = var.project
+  role     = "roles/cloudsql.client"
+  member   = "user:${each.value}"
+}
+
+resource "google_project_iam_member" "dev_cloudsql_instance_user" {
+  for_each = toset(var.dev_db_users)
+  project  = var.project
+  role     = "roles/cloudsql.instanceUser"
+  member   = "user:${each.value}"
+}

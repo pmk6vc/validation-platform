@@ -66,3 +66,22 @@ resource "google_sql_user" "platform_sa" {
   instance = google_sql_database_instance.postgres.name
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
+
+# Developer human accounts (var.dev_db_users) — see variables.tf for the
+# rationale and the list of caveats. Username for CLOUD_IAM_USER is the
+# full Google account email (no suffix trimming).
+#
+# These users have no SQL privileges by default. After `terraform apply`
+# the schema owner (platform SA) must run a one-time GRANT, scoped to
+# whatever access is intended. Example for read-only access:
+#
+#   GRANT USAGE ON SCHEMA public TO "varun@example.com";
+#   GRANT SELECT ON ALL TABLES IN SCHEMA public TO "varun@example.com";
+#   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+#     GRANT SELECT ON TABLES TO "varun@example.com";
+resource "google_sql_user" "dev_users" {
+  for_each = toset(var.dev_db_users)
+  name     = each.value
+  instance = google_sql_database_instance.postgres.name
+  type     = "CLOUD_IAM_USER"
+}
