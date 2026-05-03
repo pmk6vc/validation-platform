@@ -92,6 +92,20 @@ jobs:
               -Djib.arch=amd64
           done
 
+      # --- Build and push validation-agent image via Jib ---
+      # The agent ships as a Jib build (deploy/Dockerfile.agent is a reference
+      # for K8s manifests but Jib produces the actual image consumed by the
+      # sandbox cluster). Pushed to AR on every main merge so
+      # scripts/sandbox-up.sh can pull :latest in default mode.
+      - name: Build and push validation-agent image
+        run: |
+          ./gradlew :agent:jib \
+            -Djib.to.image="${{ env.REGISTRY }}/validation-agent" \
+            -Djib.to.tags="latest,${{ github.sha }}" \
+            -Djib.to.auth.username=oauth2accesstoken \
+            -Djib.to.auth.password="$(gcloud auth print-access-token)" \
+            -Djib.arch=amd64
+
       # --- Roll out new Cloud Run revisions ---
       # Using the SHA-tagged images (not :latest) so each revision is pinned
       # to a specific build and rollbacks are deterministic.
