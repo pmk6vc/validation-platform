@@ -79,7 +79,16 @@ fun buildAgentKubesharkHttpClient(): HttpClient = HttpClient(CIO) { configureKub
 fun buildAgentKubesharkHttpClient(engine: HttpClientEngine): HttpClient = HttpClient(engine) { configureKubeshark() }
 
 private fun HttpClientConfig<*>.configureKubeshark() {
-    install(WebSockets)
+    install(WebSockets) {
+        // Send WebSocket pings every 30s. Without this, a silently-dead
+        // connection (NAT idle timeout, kubeshark-front hung, peer process
+        // gone without FIN/RST) leaves the streamer suspended in
+        // `for (frame in incoming)` indefinitely — `connected` stays true,
+        // the heartbeat keeps firing, and the liveness probe is fooled.
+        // A missed pong throws, the for-loop exits, the finally clears
+        // `connected`, and the reconnect path takes over.
+        pingIntervalMillis = 30_000
+    }
 }
 
 fun main() {
