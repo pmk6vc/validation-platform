@@ -17,10 +17,13 @@
 # Usage:
 #   minikube:
 #     minikube image load validation-agent:latest
-#     kubectl apply -f k8s/agent/agent.yaml
+#     kubectl apply -k k8s/agent/base
 #   GKE (or any registry-backed cluster):
-#     scripts/sandbox-up.sh rewrites the image reference to point at GCR and
-#     drops imagePullPolicy: Never. See that script for the transformation.
+#     kubectl apply -k k8s/agent/overlays/gke
+#     The overlay sets imagePullPolicy: Always, points the image at Artifact
+#     Registry, wires the validation-agent ServiceAccount + RBAC, and uses
+#     placeholder URLs that scripts/sandbox-up.sh substitutes from Terraform
+#     outputs at apply time.
 apiVersion: v1
 kind: Namespace
 metadata:

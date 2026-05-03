@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - rbac.yaml
+
+# Point the agent image at Artifact Registry.
+# Registry: us-central1-docker.pkg.dev/zugzwang-381922/validation
+images:
+  - name: validation-agent
+    newName: us-central1-docker.pkg.dev/zugzwang-381922/validation/validation-agent
+    newTag: latest
+
+# GKE-specific patches:
+#   - imagePullPolicy: Always (registry-backed cluster, mutable :latest tag)
+#   - serviceAccountName: validation-agent (so the discovery loop can list services)
+#   - PLATFORM_URL / COLLECTOR_URL set to placeholders that scripts/sandbox-up.sh
+#     replaces with the Cloud Run URLs from Terraform outputs at apply time.
+#   - KUBESHARK_URL points at the Kubeshark front Service in the kubeshark namespace.
+patches:
+  - target:
+      kind: Deployment
+      namespace: validation
+      name: validation-agent
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: validation-agent
+        namespace: validation
+      spec:
+        template:
+          spec:
+            serviceAccountName: validation-agent
+            containers:
+              - name: agent
+                imagePullPolicy: Always
+                env:
+                  - name: KUBESHARK_URL
+                    value: "http://kubeshark-front.kubeshark:80"
+                  - name: PLATFORM_URL
+                    value: "__PLATFORM_URL__"
+                  - name: COLLECTOR_URL
+                    value: "__COLLECTOR_URL__"
+                  - name: API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: platform-api-key
+                        key: jwt-token
