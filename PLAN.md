@@ -1,189 +1,190 @@
-# Plan: Finish End-to-End Traffic Flow on GCP
+# Plan: Roadmap to MVP and First Customer
 
-## Context
+## Mission
 
-Most of the original GKE-based deployment plan has shipped — but the architecture pivoted twice along the way:
+PLAN.md serves two purposes:
 
-1. **Envoy was dropped** (PR #75). JWT is validated in-app via the shared `installJwtAuth()` library on both `platform` and `collector`.
-2. **Platform + collector moved to Cloud Run**, not GKE. Cloud SQL is reached via the JDBC socket factory (PR #86), not an Auth Proxy sidecar. Secrets are read directly from Secret Manager via `SecretsProvider` (PR #82) — no ESO.
+1. **MVP / core product validation.** End-to-end capture → replay → compare flow that proves the value proposition on internal demos and to early design partners. Goal: *"this works."*
+2. **Production readiness before first customer.** Security, onboarding, integrity, and compatibility hardening so a customer can deploy the agent in their cluster with confidence and pass a serious security review. Goal: *"you can trust this in production."*
 
-The deployed topology today is:
-
-- **Cloud Run** (region `us-central1`): `validation-platform`, `validation-collector` — public HTTPS, JWT-authenticated, talking to Cloud SQL via JDBC socket factory.
-- **GKE Standard sandbox cluster** (`infra/sandbox/`): on-demand, brought up by `scripts/sandbox-up.sh`. Currently runs the test microservices only.
-- **Cloud SQL** PostgreSQL 16, **Artifact Registry**, **Secret Manager**, **WIF for CI** — all Terraform-managed (`infra/platform/`).
-- **CI** (PR #66): terraform fmt/validate on PRs; on merge to main, build → push → `gcloud run update`.
-
-What's missing to close the end-to-end loop is the **agent + Kubeshark on the sandbox cluster**, plus an **org-seeding script** to mint the agent's JWT.
+Track 1 unblocks Track 2: there's no point hardening a feature that doesn't exist. But the most blocking compatibility tests (gRPC, Istio) and the most blocking security items (PII redaction, Helm chart) start the moment they don't depend on Track 1 being further along.
 
 ---
 
-## What's already done
+## Status
 
-| Area | Status | Reference |
-|------|--------|-----------|
-| Terraform for Cloud Run, Cloud SQL, Artifact Registry, Secret Manager, IAM, WIF | Done | `infra/platform/` (PRs #61, #66) |
-| Sandbox GKE cluster Terraform | Done | `infra/sandbox/cluster.tf` |
-| Public schema bootstrap for Cloud SQL IAM auth | Done | `scripts/bootstrap-db.sh` (PRs #89, #90) |
-| Lifecycle scripts | Done | `scripts/{bootstrap,platform-up,platform-down,platform-delete,sandbox-up,sandbox-down}.sh` (PRs #65, #67, #68) |
-| Cloud Run JDBC socket factory + IAM DB auth | Done | PRs #86, #87, #88 |
-| In-app RS256 JWT auth (Envoy removed) | Done | PRs #71–#75 |
-| Per-tenant authorization on `/api/*` | Done | PR #81 |
-| Agent: split `PLATFORM_URL` / `COLLECTOR_URL` | Done | PR #74 |
-| Agent → collector gzip POST | Done | PR #80 |
-| Structured JSON logging (LogstashEncoder) | Done | PR #78 |
-| Test services deploy to GKE sandbox | Done | `k8s/test-services/overlays/gke/`, `scripts/sandbox-up.sh` (PR #79) |
-| CI: build + push + deploy on merge to main | Done | `.github/workflows/push_main.yml` (PR #66) |
+### Done
 
----
+| Area | Reference |
+|------|-----------|
+| Cloud Run platform + collector with JDBC IAM auth | PRs #61, #66, #86, #87, #88 |
+| Sandbox GKE cluster Terraform | `infra/sandbox/cluster.tf` |
+| In-app RS256 JWT auth (Envoy removed) | PRs #71–#75 |
+| Per-tenant authorization on `/api/*` | PR #81 |
+| Agent → collector gzip POST | PR #80 |
+| Structured JSON logging | PR #78 |
+| Org seeding + agent JWT (`seed-org.sh`) | PR #96 |
+| Agent service discovery loop (Loop 1) | PR #104 |
+| Sandbox kustomize overlay | PR #103 |
+| e2e test K8s → agent → platform | PR #106 |
+| Registration outcome classification | PR #105 |
+| `sandbox-up.sh` wires Kubeshark + agent end-to-end | PR #107 |
+| CI: build + push + deploy on merge to main (incl. agent image) | `.github/workflows/push_main.yml` |
 
-## What's left
+What this means: production-style traffic now flows through Kubeshark → agent → Cloud Run collector on real GCP. The "money test" from the original plan is demonstrated. The capture loop is real; the replay engine is the next workstream.
 
-The "money test" from the original plan — production-style traffic flowing through Kubeshark → agent → collector — has not yet been demonstrated on real GCP. To get there, we need three things on the sandbox cluster: an agent overlay, Kubeshark, and a JWT for the agent to use.
+### Doc drift to clean up
 
-### Phase A: Org seeding + agent JWT
+A handful of merged PRs introduced doc drift that hasn't been swept yet — `claude-md-sync` follow-up:
 
-**Goal:** Create the dummy org in the platform, mint an agent JWT, and write it directly to a Kubernetes Secret in the sandbox cluster.
-
-**Why first:** The agent can't do anything without a token. The token requires an organization to exist. One small script bootstraps both.
-
-**Why not Secret Manager:** the only consumer is the agent, in one ephemeral cluster. `agent.yaml` already reads `API_KEY` from a K8s Secret called `platform-api-key`. Routing the JWT through Secret Manager would force us to add a GCP SA for the agent, a Workload Identity binding, a `secretAccessor` role, and a CSI driver or initContainer — all to deliver a value we just generated locally. `kubectl create secret` is the right tool.
-
-#### Steps
-
-1. Pull the JWT private key from Secret Manager: `gcloud secrets versions access latest --secret=validation-jwt-private-key`. Export as `JWT_PRIVATE_KEY` for the next two steps.
-2. Generate a temp admin JWT with `./gradlew :platform:generateToken --args="--org <new-uuid> --cluster validation-sandbox"`. (No org exists yet, but the platform doesn't validate the org claim against the DB on `POST /api/organizations` — see TODO in `Routes.kt`.)
-3. `POST <CLOUD_RUN_PLATFORM_URL>/api/organizations` with `{"name":"sandbox-org"}`, capture org ID from the response.
-4. Mint the real agent JWT: `./gradlew :platform:generateToken --args="--org $ORG_ID --cluster validation-sandbox"`.
-5. Write it to the sandbox cluster as a K8s Secret:
-   ```bash
-   kubectl create secret generic platform-api-key \
-     --from-literal=jwt-token="$AGENT_JWT" \
-     --namespace=validation \
-     --dry-run=client -o yaml | kubectl apply -f -
-   ```
-   Idempotent via `apply`.
-
-#### Files
-
-- `scripts/seed-org.sh` — **new**, idempotent (re-running picks up an existing org by name and re-mints the JWT).
-
-#### Verification
-
-- `curl -H "Authorization: Bearer $TOKEN" $PLATFORM_URL/api/organizations` → returns `sandbox-org`.
-- `kubectl get secret platform-api-key -n validation -o jsonpath='{.data.jwt-token}' | base64 -d` → matches the minted JWT.
-
-#### Milestone
-
-Agent JWT in place in the sandbox cluster. Re-running `seed-org.sh` is a no-op for the org and refreshes the Secret.
+- CLAUDE.md still references `KubernetesAdapter` / `ManualSeedAdapter` (deleted in #102) and the `discoverServices()` stub (replaced in #104).
+- CLAUDE.md / ARCHITECTURE_REVIEW.md reference `k8s/agent/agent.yaml` (moved to `k8s/agent/base/agent.yaml` in #103).
+- `test-services/overlays/gke/` has the same name-overload as the original `agent/overlays/gke/` (means "sandbox," not "GKE generally"); rename to `sandbox/` for consistency.
 
 ---
 
-### Phase B: Agent service discovery + agent + Kubeshark on the sandbox cluster
+## Track 1: MVP / Core Product Validation
 
-**Goal:** Implement the agent's K8s service discovery loop, deploy Kubeshark and the agent into the sandbox cluster. Agent surfaces test services to the platform via `POST /api/services`, captures their traffic from Kubeshark, and pushes it to the Cloud Run collector.
+### Replay Engine (Feature 2 from CLAUDE.md)
 
-#### B1. Implement Agent Loop 1 (service discovery)
+**Goal:** Send captured HTTP requests to a target service in the customer's staging cluster.
 
-`agent/src/main/kotlin/com/platform/agent/AgentApplication.kt:227` is a stub today. Implement it:
+#### Deliverables
 
-- Add a Fabric8 `KubernetesClient` to the agent module (it can use the in-cluster ServiceAccount automatically).
-- New file `agent/src/main/kotlin/com/platform/agent/K8sServiceDiscovery.kt`: list `Service` resources across configured namespaces (default: `production`, configurable via `DynamicConfig.namespaceFilters`), filter out headless / system services, return `(namespace, name)` pairs.
-- New file `agent/src/main/kotlin/com/platform/agent/PlatformClient.kt` (or extend `ConfigClient`): `POST /api/services` with `{namespace, name, provider: "KUBERNETES"}`. Treat 409 / already-exists as success.
-- Wire into `discoverServices()`: each tick, list current services, diff against an in-memory set of "already registered", POST new ones. The platform's `GET /api/agent/config` will then include them in `targetServices` on the next config poll, and the StateFlow propagates to `KubesharkClient`.
-- Tests: unit test the diff logic against a fake K8s client + a fake platform; integration test against `KubernetesWorkloadTestBase` (already has 7 K8s Services in 3 namespaces — perfect fixture).
+- [ ] `ReplayRun` model + DB migration (likely its own module)
+- [ ] `ReplayEngine`: fetches captured inputs from collector via `GET /api/captured-inputs`, replays against a staging target
+- [ ] Configurable fidelity: QUICK (sequential), STANDARD (10–50 concurrent), LOAD (prod-rate)
+- [ ] Read-only flag (default `true`); optional DB reset hook between runs
+- [ ] API: `POST /api/replay-runs`, `GET /api/replay-runs/{id}`
 
-The agent doesn't need GCP Workload Identity for this — the in-cluster KSA is enough to talk to the K8s API. RBAC: a ClusterRole granting `list`/`watch` on `services` in the target namespaces, bound via RoleBinding.
+**Milestone:** captured traffic replayable against staging services via API. A demo run prints "we sent 1000 captured GETs at staging, here are the response codes."
 
-#### B2. Kubeshark
+### Observation + Verdicts (Phase 4 from CLAUDE.md)
 
-Add a step to `sandbox-up.sh` that installs Kubeshark scoped to the `production` namespace:
+**Goal:** Compare baseline vs candidate replay runs with statistical rigor.
 
-```bash
-kubeshark tap --set tap.namespaces='{production}' --set tap.proxy.front.port=8899 -n kubeshark --headless
-```
+#### Deliverables
 
-Or pin a Helm chart version if `kubeshark` CLI isn't acceptable in the script. Skip if already installed.
+- [ ] `StagingObserver`: poll Kubeshark in staging during replay (outbound connections, call patterns)
+- [ ] `ResourceMonitor`: poll K8s Metrics API for pod CPU / memory
+- [ ] `ComparisonEngine`: response diffs, latency (Mann-Whitney U), error rates, outbound connection delta, memory trends (linear regression)
+- [ ] `VerdictGenerator`: PASS / FAIL / INCONCLUSIVE with cited evidence
+- [ ] API: `GET /api/validations/{id}`
 
-#### B3. Agent overlay
+**Milestone:** a merged PR can be validated end-to-end: capture → baseline → candidate → verdict, with the verdict citing specific evidence ("p99 latency increased 40%, p<0.01"). This is the demo we sell.
 
-Create `k8s/agent/overlays/gke/` mirroring the test-services overlay pattern:
+### Orchestration
 
-- Override the image to `${REGISTRY}/validation-agent:latest` (or `:dev-<sha>` for `--build-local`).
-- Patch `imagePullPolicy: Always`.
-- Set env vars: `PLATFORM_URL` and `COLLECTOR_URL` to the Cloud Run URLs (Terraform outputs), `KUBESHARK_URL=http://kubeshark-front.kubeshark:80`.
-- ServiceAccount `validation-agent` (no GCP IAM annotation — pure K8s).
-- ClusterRole + RoleBinding granting `list`/`watch` on Services in `production` (and any other discovery namespaces).
+**Goal:** Single API call wires the whole flow.
 
-The `platform-api-key` Secret is created out-of-band by `seed-org.sh` (Phase A); the overlay doesn't manage it.
+#### Deliverables
 
-#### B4. Wire into `sandbox-up.sh`
+- [ ] `ValidationOrchestrator`: `POST /api/validations` (capture → baseline → optional reset → candidate → compare → verdict)
+- [ ] Candidate deployment to staging (image tag swap, eventually Helm or kustomize for fancier deploys)
 
-Order: Terraform → test services → `seed-org.sh` (Cloud Run platform must be up first, but that's already true post platform-up) → Kubeshark → agent. Same `--build-local` flow as test services so we can iterate on agent code.
-
-#### Files
-
-- `agent/src/main/kotlin/com/platform/agent/K8sServiceDiscovery.kt` — **new**.
-- `agent/src/main/kotlin/com/platform/agent/PlatformClient.kt` — **new** (or merge into `ConfigClient.kt`).
-- `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt` — replace `discoverServices()` stub.
-- `agent/build.gradle.kts` — add Fabric8 K8s client dependency (the platform module already uses it; bump `gradle/libs.versions.toml` if pinned).
-- `agent/src/test/...` — discovery loop tests.
-- `k8s/agent/overlays/gke/kustomization.yaml` — **new**.
-- `k8s/agent/overlays/gke/rbac.yaml` — **new**, ServiceAccount + ClusterRole + RoleBinding for service-listing.
-- `scripts/sandbox-up.sh` — extend with Kubeshark install + `seed-org.sh` call + agent deploy.
-
-#### Verification
-
-1. `kubectl logs deployment/validation-agent -n validation` → discovery loop logs `Registered service api-gateway` (×3) on first run, no errors.
-2. `curl -H "Authorization: Bearer $TOKEN" $PLATFORM_URL/api/services` → returns the test services discovered by the agent (not pre-seeded).
-3. `kubectl logs deployment/validation-agent -n validation | grep "Target services updated"` → fires after the next config poll.
-4. `kubectl logs deployment/validation-agent -n validation | grep "Captured"` → entries flowing.
-5. `curl -H "Authorization: Bearer $TOKEN" $COLLECTOR_URL/api/captured-inputs` → captured inputs from the test services.
-
-#### Milestone
-
-End-to-end traffic flow on GCP: test services → agent discovers and registers them → Kubeshark → agent (sandbox GKE) → Cloud Run collector. Services and captured inputs queryable via the public API.
+**Milestone:** Track 1 MVP done — internal demos and design-partner conversations are unblocked.
 
 ---
 
-### Phase C: Tighten the sandbox loop
+## Track 2: Production Readiness Before First Customer
 
-**Goal:** Make the sandbox demo robust enough to leave running for a few hours of testing without hand-holding.
+Track 2 items are grouped by which customer maturity gate they unblock. *Customer #1* = our first paying user (or first design partner running in their own cluster). *Customer #~5* = second-tier scrutiny and scale. *Scale* = enterprise.
 
-#### Items
+### Compatibility de-risk (run in parallel with Track 1)
 
-- **Agent CI.** The `push_main.yml` pipeline builds and pushes platform + collector on merge to main. Confirm agent image is pushed to Artifact Registry on the same trigger; add it if not.
-- **Sandbox idempotency.** Re-running `sandbox-up.sh` should be safe whether the cluster already exists or not. Same for Kubeshark and the agent overlay.
-- **Cost guard.** `sandbox-down.sh` should leave Cloud Run + Cloud SQL untouched. Confirm Terraform targets in `sandbox-down.sh` only destroy the sandbox cluster, never platform infra.
-- **README pass.** Document the full bring-up (`bootstrap.sh` → `platform-up.sh` → `bootstrap-db.sh` → `seed-org.sh` → `sandbox-up.sh`) in one place. Today the sequence is implicit across multiple scripts and `CLAUDE.md` notes.
+The capture loop assumes HTTP/1.1 plaintext. These tests verify or break that assumption before customers find out the hard way.
 
-#### Verification
+| Item | What | Why |
+|------|------|-----|
+| **gRPC capture test** | Spin up a gRPC test service in the sandbox; capture with Kubeshark; observe `request.postData.text` shape (binary protobuf, base64-encoded) | gRPC is widespread. Decide: store as opaque base64 + protobuf descriptor (customer-supplied) for replay, OR drop gRPC capture until demanded. Don't speculate — run the test |
+| **Istio compatibility test** | Deploy Istio sidecar in front of one test service; verify Kubeshark captures traffic before vs. after the sidecar | Service mesh is widespread. mTLS between services may break capture; need workaround documented |
+| **DB interaction (already de-risked)** | Staging-based replay sidesteps prod DB capture. For *observation* during replay, TLS still blocks plaintext capture — fall back to "connection counts + latency from K8s metrics," not query content | Documented, no further work needed |
+| **Pub/Sub / Kafka / SNS** | Decide and document: built-in fan-out (separate consumer group, mirror sub) is the architectural answer, NOT eBPF. Capture only when a specific customer demands it | Customers with queue-driven entry points self-select |
 
-- From a clean GCP project: bootstrap + platform-up + bootstrap-db + seed-org + sandbox-up runs end-to-end without manual edits.
-- `sandbox-down.sh` deletes the sandbox cluster only; Cloud Run and Cloud SQL keep running.
+**Milestone:** capture compatibility matrix in `docs/CAPTURE_COMPATIBILITY.md`, updated with each test result. Ideally completes before customer #1 onboarding.
 
-#### Milestone
+### Customer #1 must-haves (security and integrity)
 
-One-command bring-up of the full demo from scratch, repeatable.
+These block onboarding any customer with a serious security review.
 
----
+| Item | Scope |
+|------|-------|
+| **PII / header anonymization** | Configurable agent-side redaction layer applied **before** bodies leave the customer cluster: header allow/denylist (default-deny `Authorization`, `Cookie`, `X-API-Key`, `Set-Cookie`), jsonpath-based body field stripping, regex tokenization. Default-deny on sensitive headers, opt-in per-service for the rest. Configured via the platform's per-service settings, polled by the agent in `DynamicConfig` |
+| **Helm chart (productize)** | Replace `k8s/agent/overlays/sandbox/` with a Helm chart accepting `discoveryNamespaces`, `platformUrl`, `collectorUrl`, `imageTag`, `samplingRate`, `redactionRules` values. Default `ClusterRoleBinding` with read-only on Services (same shape Datadog/New Relic agents use); per-namespace `RoleBinding` mode as a values flag for high-security tenants |
+| **NetworkPolicy** | Explicit egress allowlist: platform + collector + Kubeshark only. All other egress denied. Bundled in the Helm chart |
+| **Restricted Pod Security Standard** | Read-only root filesystem, drop all capabilities, seccomp `RuntimeDefault`, run as non-root (already done), no host networking/PID. Comply with `restricted` PSS profile |
+| **Captured data retention + auto-purge** | `retentionDays` per org (default 30); a sweep job deletes expired captured inputs. Without it, GDPR is a non-starter |
+| **Image signing + SBOM** | Cosign signature on agent + platform + collector images. SPDX or CycloneDX SBOM published with each release. Verifiable via standard tooling. Becomes table stakes the moment a customer's security team gets involved |
 
-## Phase summary
+**Milestone:** customer #1 onboarding checklist passes a typical SOC 2-aware security review. The agent can be installed via `helm install` and a Helm values file.
 
-| Phase | Deliverable | Risk de-risked |
-|-------|-------------|----------------|
-| A | `seed-org.sh` creates org and writes agent JWT to a K8s Secret in the sandbox cluster | Org bootstrap, agent auth |
-| B | Agent service discovery + Kubeshark + agent overlay on sandbox cluster | Cross-environment traffic flow (sandbox GKE → Cloud Run), agent surfacing services to the platform |
-| C | Idempotent end-to-end bring-up, README | Repeatability, cost control |
+### Customer #~5 must-haves (auth and scale)
+
+| Item | Scope |
+|------|-------|
+| **Short-lived JWTs + rotation** | Move from long-lived bearer tokens (1h per `JwtTokenGenerator` default today) to short-lived (~5–15 min) tokens with refresh, OR a customer-managed cert exchange. Long-lived bearer tokens fail enterprise security review |
+| **Postgres RLS** | Row-level security on `services` and `captured_inputs` keyed by `organization_id`. Defense in depth — JWT scoping is layer 1, RLS is layer 2 against route bugs and SQL injection. Cheap to add now, expensive to retrofit |
+| **Multi-replica agent + leader election** | Lease-based leader election for the discovery + Kubeshark drain loops. Today a single agent restart loses ~60s of capture; HA needed for production traffic |
+| **Sampling cost ceiling** | Per-org rate limit on capture volume (e.g. ≤1000 req/sec). Current `samplingRate` is per-service, no global budget. A customer with 100 services × default 1.0 sampling = collector firehose. Customer-visible cost dashboard |
+
+**Milestone:** customer #5 onboards without us hand-holding the per-cluster rollout, and the platform stays up across pod restarts and traffic spikes.
+
+### Customer interaction surfaces (highest-leverage product investments)
+
+| Item | Scope |
+|------|-------|
+| **GitHub Action wrapping the platform** | The most common interaction pattern. A `validation-platform/run-validation@v1` action: customer's PR triggers it → calls `POST /api/validations` → polls for verdict → posts a structured comment on the PR with PASS/FAIL + evidence. Single-click integration into existing CI. **Do this before custom integrations** — every customer team already has GH Actions |
+| **CLI wrapping the platform** | Second most common. `validation-cli` for ad-hoc validation runs, debugging, inspecting service topology, replaying specific captured inputs, querying validation history. Built on the same API as the GitHub Action — no parallel implementation |
+
+**Milestone:** a customer can install the GH Action in 10 minutes and have validation runs comment on every PR. Engineers can run `validation-cli replay <run-id>` to debug locally.
+
+### Scale and observability (platform-side)
+
+| Item | Scope |
+|------|-------|
+| **OLAP export for captured inputs** | Captured inputs at scale (millions per customer per day) don't belong in Postgres. Export to BigQuery / ClickHouse / S3 + parquet. Postgres holds: orgs, services, replay-run metadata, verdicts. OLAP holds: captured_inputs, replay_responses, observation_data. Replay engine reads from OLAP, not Postgres. Keeps the OLTP path fast and cheap |
+| **Telemetry on platform services** | The platform itself needs observability. Prometheus metrics (capture rate, channel depth, registration-outcome counts, replay-run latency, verdict distribution), structured logs to a queryable sink (Cloud Logging → BigQuery), traces (OpenTelemetry). Without this we can't debug customer issues without shelling into their cluster |
+
+**Milestone:** the platform's own observability is good enough that we can root-cause a customer's broken deployment without their cooperation.
+
+### Compliance and trust (begin early — evidence accrues over time)
+
+| Item | Scope |
+|------|-------|
+| **Compliance evidence trail** | Begin SOC 2 evidence collection (audit logs, access reviews, change-management records). SOC 2 Type II requires 6 months of evidence — the day to start is "before your first enterprise customer asks for it" |
+| **Reproducibility / chain-of-custody** | Cryptographic signature on captured inputs at capture time, verifiable at replay time. Tamper-evident audit log of who accessed what captured data. Worth thinking about *before* anyone treats a verdict as authoritative |
+| **Customer dashboard / agent health UI** | "Is my agent healthy? what services discovered? how much traffic captured? how lagged?" Without this, every onboarding becomes a support call. Replaces ad-hoc `kubectl logs` |
+| **Self-service onboarding** | Customer logs into platform → "Create cluster" → downloads Helm values OR `helm install` one-liner. Replaces the script-based path. ~8–12 weeks of work; defer until proof of demand |
+| **Kubeshark dependency posture** | Decide and communicate: required, optional with alternative paths, or BYO. Some customers won't accept a privileged DaemonSet doing eBPF; need to know which segments we're walking away from |
+
+**Milestone:** we can sell to an enterprise.
 
 ---
 
 ## Out of scope (for this plan)
 
-These were called out in the original plan or surfaced during the pivots, and are deliberately not on the path to the end-to-end demo:
+- Replay engine fidelity beyond MVP (concurrency tuning, full prod-rate replay, write replay with reset hooks beyond the basic flag)
+- Anomaly detection / baseline learning (Phase 6+ in CLAUDE.md)
+- Multi-cluster / multi-region federation
+- Replay against production (always staging-only by design)
+- Generic message queue capture as a first-class feature (HTTP is the wedge)
+- Web UI / dashboards beyond the customer-health view called out above
 
-- TLS / managed cert on the sandbox side (Cloud Run is already HTTPS by default).
-- Replay engine, staging observation, comparison, verdicts (Phases 4–5 in `CLAUDE.md` delivery plan — separate workstream).
-- Rich health checks (DB connectivity probes), Prometheus metrics, NetworkPolicy.
-- Short-lived JWTs / client credentials flow, RBAC role enforcement, RLS, rate limiting per org.
-- Multi-cluster / multi-region. Single sandbox cluster is enough to prove the pattern.
+---
+
+## Suggested cadence
+
+A rough sequencing — not a commitment, just a sketch of dependencies:
+
+| Phase | Theme | Output |
+|-------|-------|--------|
+| 1–2 | Replay MVP | `POST /api/replay-runs`, sequential replay against staging |
+| 3 | **Compatibility tests in parallel** | gRPC + Istio results in `docs/CAPTURE_COMPATIBILITY.md` |
+| 3–4 | Comparison + verdict MVP | `ComparisonEngine`, `VerdictGenerator`, basic statistical tests |
+| 5–6 | Customer #1 hardening | PII redaction + Helm chart + NetworkPolicy + PSS + retention + image signing |
+| 7 | Orchestration | `POST /api/validations` end-to-end |
+| 8–9 | Customer #~5 hardening | JWT rotation + RLS + agent HA + cost ceiling |
+| 10–11 | Customer surfaces | GitHub Action + CLI |
+| 12+ | Scale-out | OLAP export + telemetry + compliance prep |
+
+Roughly a 3-month plan. Compatibility tests and customer #1 hardening can run in parallel with replay MVP work since they touch different parts of the codebase.
