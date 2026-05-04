@@ -357,6 +357,9 @@ CUSTOMER'S STAGING CLUSTER
 4. **Module ownership via APIs**: Each module owns its tables and repositories. No DB-level FKs across module boundaries. Cross-module access goes through REST API calls.
 5. **eBPF for capture and observation**: Kubeshark in production for traffic capture, Kubeshark in staging for observability during replay.
 6. **Statistical rigor**: Use proper statistical tests (Mann-Whitney U, linear regression), not arbitrary thresholds.
+7. **Single-cluster scope**: Capture from one cluster, replay against one staging cluster. Multi-cluster federation is out of scope until a customer demands it. The coordination cost isn't justified by current demand.
+8. **Replay fidelity stops at LOAD mode**: REPLAY-11 (token-bucket prod-rate replay) is the ceiling for MVP. Adaptive concurrency, request-timing reconstruction beyond inter-request deltas, and latency simulation are deferred — they add complexity without unblocking a verdict.
+9. **Integration sequencing**: GitHub Action (MVP-9) is the first external integration. A CLI wrapping the API is useful but only after the Action establishes the integration pattern — don't build both in parallel.
 
 ### Staging-Based Validation (Architectural Pivot)
 
@@ -634,7 +637,7 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 
 ## Reference Documents
 
-- **`ARCHITECTURE_REVIEW.md`** — single source of truth for the MVP roadmap, go-live catalog, and tech debt items (replaces the deleted `PLAN.md`). Check here for architectural gaps (e.g. ARCH-4 connection pool, ARCH-7 Flyway migration ownership) and the ordered list of tasks toward V1.
+- **Linear** — active tracking for the MVP roadmap, customer-onboarding catalog, and tech-debt items. Three projects under the `Validation-platform` team: [Replay Engine](https://linear.app/validation-platform/project/replay-engine-a9b7d282ff76), [Customer Onboarding](https://linear.app/validation-platform/project/customer-onboarding-1d3a825ed8d6), [Tech Debt](https://linear.app/validation-platform/project/tech-debt-ff5e67ba9787). Issue titles preserve the original doc IDs (e.g. `[REPLAY-3]`, `[ARCH-4]`) for cross-reference.
 
 ---
 
@@ -667,7 +670,7 @@ The replay engine will fetch captured inputs via `GET /api/captured-inputs` from
 ### Shared Infrastructure
 
 `shared/` provides:
-- `DatabaseFactory` — Exposed `Database.connect` (direct, no explicit connection pool) + Flyway migrations. Note: uses Exposed's internal connection management, not HikariCP. See ARCHITECTURE_REVIEW.md ARCH-4 for the known gap.
+- `DatabaseFactory` — Exposed `Database.connect` (direct, no explicit connection pool) + Flyway migrations. Note: uses Exposed's internal connection management, not HikariCP. See Linear `[ARCH-4]` for the known gap.
 - `Page<T>` — cursor-based pagination model
 - `InstantSerializer` — kotlinx.serialization adapter for `java.time.Instant`
 - `DatabaseTestBase` (test fixtures) — starts a TestContainers PostgreSQL instance
