@@ -202,7 +202,7 @@ for ns in infrastructure production external; do
 done
 
 # ---------------------------------------------------------------------------
-# Bootstrap sandbox org + agent JWT (Phase A of PLAN.md)
+# Bootstrap sandbox org + agent JWT (see ARCHITECTURE_REVIEW.md)
 # ---------------------------------------------------------------------------
 #
 # seed-org.sh creates the sandbox org via the Cloud Run platform, mints an

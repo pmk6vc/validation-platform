@@ -54,12 +54,11 @@ This is a **validation and release platform** that helps engineering teams valid
 - **Docker deployment** — platform, collector, and db start by default; health checks on all services
 - **Test infrastructure** with TestContainers (PostgreSQL + k3s Kubernetes)
 - **Code quality** with ktlint
-- **Adapter pattern** with ServiceAdapter interface
-- **Service discovery** via ManualSeedAdapter and KubernetesAdapter (implements `Closeable`)
-- **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES)
+- **Provider tracking** (UNKNOWN, MANUAL_SEED, KUBERNETES) — enum values in data model; adapter classes removed after agent Loop 1 took over in-cluster discovery
 - **Modular monolith** with enforced module boundaries: cross-module data access goes through REST APIs, not shared repositories; no DB-level FK between modules
 - **Validation agent** — three-loop Kotlin process deployed to customer cluster; streams traffic from Kubeshark WebSocket with server-side KFL filtering, samples, and pushes directly to platform (8080) and collector (8081) with a JWT bearer token; file-based liveness probe; non-root container; API key stored in Kubernetes Secret
-- **E2E tests** — `e2e-tests/` module tests the full platform stack (platform + collector) using TestContainers
+- **E2E tests** — `e2e-tests/` module tests the full platform stack (platform + collector) using TestContainers; includes `AgentDiscoveryE2ETest` for the full K8s → agent → platform discovery path
+- **Agent Loop 1 (K8s service discovery)** — `K8sServiceDiscovery` + `PlatformClient` in the agent; discovers K8s Services and registers them with the platform via `POST /api/services`
 
 ### Module Ownership
 
@@ -68,7 +67,7 @@ Each module owns its tables, models, and repositories. Cross-module communicatio
 | Module | Owns | Port |
 |--------|------|------|
 | `shared/` | DatabaseFactory, Flyway migrations, shared models (Page, InstantSerializer), `AgentIdentity`, `installJwtAuth()`, `OrganizationId`/`ServiceId` value classes; test fixtures: `DatabaseTestBase`, `KubernetesWorkloadTestBase`, `TestJwtKeys`, `authedTestApplication` | — |
-| `platform/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server; JWKS endpoint; JWT token generator | 8080 |
+| `platform/` | Organizations, Services tables; OrganizationRepository, ServiceRepository; Ktor server; JWKS endpoint; JWT token generator (note: `platform/adapters/` was removed after agent Loop 1 took over K8s discovery) | 8080 |
 | `collector/` | CapturedInputs table; CapturedInputRepository; Ktor server | 8081 |
 | `agent/` | Kubeshark polling, K8s service discovery, traffic capture and forwarding directly to platform (8080) and collector (8081) | — (standalone process) |
 | `e2e-tests/` | End-to-end tests for the full platform stack (platform + collector) | — |
@@ -243,7 +242,7 @@ brew install colima docker && colima start
 
 **Module structure:**
 - `shared/` — DatabaseFactory, Flyway migrations (`V0001–V0006`), shared models (Page, InstantSerializer, `OrganizationId`, `ServiceId`), JWT auth library (`AgentIdentity`, `installJwtAuth()`, `derivePublicKey()`); exposes `java-test-fixtures` with `DatabaseTestBase`, `KubernetesWorkloadTestBase`, `TestJwtKeys` (consolidated test JWT keypair), and `authedTestApplication` (Ktor test app helper that wires JWT auth)
-- `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, adapters, routes; JWKS endpoint; depends on `:shared`
+- `platform/` — Ktor API server on port 8080; owns Organizations + Services tables, repositories, routes; JWKS endpoint; depends on `:shared` (the `adapters/` package was removed — K8s discovery now lives in the agent)
 - `collector/` — Ktor API server on port 8081; owns CapturedInputs table, repository, routes; depends on `:shared`; uses `application.yaml` (Ktor 3 YAML config)
 - `agent/` — Standalone Kotlin process deployed to customer K8s clusters; polls Kubeshark + K8s API, pushes to platform (config) and collector (traffic) directly via JWT; no dependency on `shared/`, `platform/`, or `collector/` (API contract only)
 - `e2e-tests/` — Integration tests for the full stack (platform + collector + DB) using TestContainers
@@ -373,7 +372,7 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 
 | Loop | Interval | Responsibility |
 |------|----------|----------------|
-| Service discovery | ~60s | Query K8s API for services → diff against in-memory map → register new services with platform via `POST /api/services` → receive service ID map |
+| Service discovery | ~60s | `K8sServiceDiscovery` queries K8s API → diff against in-memory map → register new services with platform via `POST /api/services` (`PlatformClient`) → update in-memory `name → serviceId` map; `RegistrationOutcome` distinguishes per-service payload errors (PermanentRejection: 400/422) from environment failures (TransientFailure: all other errors) |
 | Config polling | ~60s | `GET /api/agent/config` → update sampling rate, namespace filters, batch size, poll interval |
 | Traffic capture | continuous | Drain up to batchSize entries from `KubesharkClient`'s persistent WebSocket channel → filter by target services → sample → `POST /api/captured-inputs` to collector |
 
@@ -400,8 +399,10 @@ The agent runs in the customer's K8s cluster as a standalone Kotlin process. It 
 ```
 agent/
   src/main/kotlin/com/platform/agent/
-    AgentApplication.kt        # main, three coroutine loops; shared MutableStateFlow<DynamicConfig>
+    AgentApplication.kt        # main, three coroutine loops; shared MutableStateFlow<DynamicConfig>; HTTP client factories (gzip on collector client)
     AgentConfig.kt             # StaticConfig (env vars), DynamicConfig (polled), DurationAsMillisSerializer
+    K8sServiceDiscovery.kt     # Lists K8s Service resources (Loop 1); wraps Fabric8 KubernetesClient; implements Closeable
+    PlatformClient.kt          # HTTP client for POST /api/services (Loop 1); returns RegistrationOutcome sealed class
     KubesharkClient.kt         # Persistent WebSocket client; observes StateFlow for KFL query updates
     CollectorClient.kt         # HTTP client for collector POST with exponential-backoff retry
     ConfigClient.kt            # HTTP client for platform GET /api/agent/config
@@ -413,8 +414,18 @@ agent/
 
 **Deployment artifacts:**
 - `deploy/Dockerfile.agent` — multi-stage Dockerfile (non-root user via `USER agent`)
-- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest`
-- `k8s/agent/agent.yaml` — Kubernetes Deployment (namespace `validation`, single replica); `API_KEY` from `secretKeyRef: platform-api-key/jwt-token`; file-based liveness probe on `/tmp/agent-alive`
+- `agent/build.gradle.kts` — Jib plugin config for building `validation-agent:latest`; includes Fabric8 Kubernetes Client dependency for Loop 1
+- `k8s/agent/base/agent.yaml` — Kubernetes Deployment base manifest (namespace `validation`, single replica); `API_KEY` from `secretKeyRef: platform-api-key/jwt-token`; file-based liveness probe on `/tmp/agent-alive`; `KUBESHARK_URL` set here as default
+- `k8s/agent/base/kustomization.yaml` — Kustomize base for the agent
+- `k8s/agent/overlays/sandbox/` — Sandbox GKE overlay: sets Artifact Registry image, `imagePullPolicy: Always`, serviceAccountName, and patches `__PLATFORM_URL__` / `__COLLECTOR_URL__` / `__KUBESHARK_URL__` placeholders that `scripts/sandbox-up.sh` substitutes at deploy time
+
+**Bring-up flow (sandbox):**
+```
+scripts/platform-up.sh       # provision Cloud Run services + Cloud SQL
+scripts/bootstrap-db.sh      # grant SA ownership of public schema (one-time)
+scripts/sandbox-up.sh        # GKE cluster (Terraform) + test services + seed-org.sh + Kubeshark (Helm) + agent overlay
+```
+`sandbox-up.sh` installs Kubeshark idempotently via `helm upgrade --install` and applies `k8s/agent/overlays/sandbox/` with sed-substituted Cloud Run URLs. Pass `--build-local` to Jib-build and push the agent image from local source before deploying.
 
 ### Read/Write Traffic Classification (Planned — Not Yet Implemented)
 
@@ -442,21 +453,7 @@ Message queues use built-in fan-out for safe capture: Kafka (separate consumer g
 | Endpoint classification | Optional | Mark ambiguous endpoints as safe/mutating |
 | DB reset hook | Optional | Enables full replay including writes |
 
-### Adapter Implementation Status
-
-**ServiceAdapter Interface** (`platform/src/main/kotlin/com/platform/adapters/ServiceAdapter.kt`):
-```kotlin
-interface ServiceAdapter {
-    suspend fun discoverServices(organizationId: String): List<Service>
-}
-```
-
-**Implemented Adapters:**
-1. **ManualSeedAdapter** — 8 hardcoded services for testing without external dependencies
-2. **KubernetesAdapter** — Discovers services from Kubernetes via the API. Supports in-cluster, KUBECONFIG, and `~/.kube/config`. Implements `Closeable`.
-3. **KubesharkAdapter** — Planned
-
-**Test Infrastructure:**
+### Test Infrastructure
 
 - `KubernetesWorkloadTestBase` — spins up k3s cluster with test workloads using TestContainers
 - 3 namespaces: `infrastructure`, `production`, `external`; 7 discoverable K8s Services
@@ -481,7 +478,7 @@ Kafka (consume: order-events) → notification-service → webhook-stub (externa
 - **Framework**: Ktor — Kotlin-native, coroutines-first, lightweight
 - **Database**: PostgreSQL with Exposed ORM + Flyway migrations
 - **Auth**: RS256 JWT — platform generates tokens, serves JWKS; both app servers validate directly via shared `installJwtAuth()` library
-- **Key Libraries**: Ktor, Exposed + PostgreSQL, Fabric8 Kubernetes Client, TestContainers
+- **Key Libraries**: Ktor, Exposed + PostgreSQL, Fabric8 Kubernetes Client (agent only), TestContainers
 - See `build.gradle.kts` for the complete dependency list
 
 ---
@@ -523,23 +520,13 @@ Capture Kafka/PubSub messages via separate consumer groups. Only needed for "ent
 
 ---
 
-## Adapter Implementation Matrix
-
-| Adapter | Status | Services | Traffic Capture | Staging Observation |
-|---------|--------|----------|----------------|---------------------|
-| **Manual Seed** | Implemented | Yes | No | No |
-| **Kubernetes** | Implemented | Yes | No | No |
-| **Kubeshark (eBPF)** | In Progress | Yes (via observed traffic) | Yes (HTTP req/res at L7) | Yes (outbound connections, call patterns) |
-
----
-
 ## Delivery Plan
 
 ### Phase 1: Foundation — COMPLETE
 
-Project setup, Gradle, Organization + Service models, Exposed tables, repositories, pagination, Docker, Flyway, ktlint. ServiceAdapter interface, KubernetesAdapter, ManualSeedAdapter, k3s TestContainers infrastructure, Colima config.
+Project setup, Gradle, Organization + Service models, Exposed tables, repositories, pagination, Docker, Flyway, ktlint. k3s TestContainers infrastructure, Colima config. (ServiceAdapter / KubernetesAdapter / ManualSeedAdapter were originally built here but later removed when agent Loop 1 took over K8s discovery.)
 
-**Milestone:** Adapter pattern implemented, services discoverable from Kubernetes and manual seed data.
+**Milestone:** Foundation complete, test infrastructure in place.
 
 ---
 
@@ -566,11 +553,10 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 - [x] `JwtTokenGenerator`: CLI tool to generate signed JWTs (`./gradlew :platform:generateToken`)
 - [x] Agent: `KubesharkClient` (WebSocket), `CollectorClient`, `ConfigClient`, `TrafficTransformer`, `AgentConfig`, `AgentApplication`; uses `PLATFORM_URL` for config and `COLLECTOR_URL` for traffic ingestion
 - [x] Agent deployment: `API_KEY` sourced from Kubernetes Secret (`secretKeyRef: platform-api-key/jwt-token`)
-- [x] Agent 79+ unit/integration tests; e2e-tests module with platform + collector stack tests
-- [x] KubernetesAdapter implements `Closeable`
+- [x] Agent 79+ unit/integration tests; e2e-tests module with platform + collector stack tests (including `AgentDiscoveryE2ETest`)
 - [x] Platform: `GET /api/agent/config` endpoint — returns the agent's target services (`name → serviceId`) for the JWT's organization + cluster
-- [ ] Agent Loop 1: K8s service discovery → register with platform → receive ID map (stubbed as no-op)
-- [ ] HTTP gzip on agent→collector POST (wire bandwidth optimization)
+- [x] Agent Loop 1: `K8sServiceDiscovery` + `PlatformClient` — discovers K8s Services, registers with platform, maintains in-memory ID map; `RegistrationOutcome` sealed class (Success / PermanentRejection / TransientFailure)
+- [x] HTTP gzip on agent→collector POST (via Ktor `ContentEncoding` plugin in `buildAgentCollectorHttpClient`)
 
 **Replay Engine (Feature 2)**
 - [ ] ReplayRun model + database migration (likely in its own module)
@@ -641,7 +627,14 @@ Expanded test microservices (order-service, notification-service, Kafka KRaft, R
 | Agent session model | Persistent WebSocket + bounded channel (1000) | Persistent session avoids replaying ~4-10s of Kubeshark history on every reconnect. Bounded channel provides backpressure without OOM risk. |
 | Agent reconnect dedup | `lastSeenTimestamp` with 5s lookback | Covers in-session out-of-order jitter without dropping live entries. Dupes per reconnect are acceptable vs complexity of ID-based LRU. |
 | Config propagation | `MutableStateFlow<DynamicConfig>` | `KubesharkClient` observes via `configWatcherJob` and triggers reconnect on `targetServices` changes. Decouples config propagation from imperative calls. |
-| KubernetesAdapter lifecycle | Implements `Closeable` | Connection pool released when adapter goes out of scope. Usable with Kotlin `use`. |
+| Registration outcome classification | Sealed `RegistrationOutcome` (Success / PermanentRejection / TransientFailure); PermanentRejection scoped to 400/422 only | Without this, a 401 would silently poison every service into `permanentlyFailed` even though the rejection is caller-level (auth, rate-limit, platform down). Narrow PermanentRejection to per-service payload validation; everything else retries on the next discovery tick. |
+| K8sServiceDiscovery lifecycle | Implements `Closeable` (wraps Fabric8 `KubernetesClient`) | Connection pool released when discovery goes out of scope. Usable with Kotlin `use`. |
+
+---
+
+## Reference Documents
+
+- **`ARCHITECTURE_REVIEW.md`** — single source of truth for the MVP roadmap, go-live catalog, and tech debt items (replaces the deleted `PLAN.md`). Check here for architectural gaps (e.g. ARCH-4 connection pool, ARCH-7 Flyway migration ownership) and the ordered list of tasks toward V1.
 
 ---
 
