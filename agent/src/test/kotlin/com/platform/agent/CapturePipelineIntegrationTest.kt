@@ -5,6 +5,8 @@ import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
 import com.platform.agent.models.KubesharkHeader
+import com.platform.agent.models.KubesharkPod
+import com.platform.agent.models.KubesharkPodMetadata
 import com.platform.agent.models.KubesharkPostData
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
@@ -373,6 +375,7 @@ class CapturePipelineIntegrationTest {
         timestamp: Long,
         body: String? = null,
         dstName: String = "order-service",
+        appLabel: String = dstName,
     ): String {
         val contentField =
             if (body != null) {
@@ -386,7 +389,8 @@ class CapturePipelineIntegrationTest {
             "protocol": {"name": "http", "abbr": "HTTP"},
             "tls": false,
             "src": {"ip": "10.0.0.1", "port": "45678", "name": "client", "namespace": "production"},
-            "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production"},
+            "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production",
+                    "pod": {"metadata": {"labels": {"app": "$appLabel"}}}},
             "request": {"method": "GET", "url": "/api/$dstName/$id", "headers": []},
             "response": {"status": 200, "headers": []$contentField}
         }"""
@@ -406,7 +410,15 @@ class CapturePipelineIntegrationTest {
                 timestamp = 1000,
                 protocol = KubesharkProtocol(name = "http"),
                 src = KubesharkEndpoint(ip = "10.0.0.1"),
-                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
+                dst =
+                    KubesharkEndpoint(
+                        name = "order-service",
+                        ip = "10.0.0.2",
+                        pod =
+                            KubesharkPod(
+                                metadata = KubesharkPodMetadata(labels = mapOf("app" to "order-service")),
+                            ),
+                    ),
                 request =
                     KubesharkRequest(
                         method = "GET",
@@ -426,7 +438,15 @@ class CapturePipelineIntegrationTest {
                 timestamp = 1001,
                 protocol = KubesharkProtocol(name = "http"),
                 src = KubesharkEndpoint(ip = "10.0.0.1"),
-                dst = KubesharkEndpoint(name = "order-service", ip = "10.0.0.2"),
+                dst =
+                    KubesharkEndpoint(
+                        name = "order-service",
+                        ip = "10.0.0.2",
+                        pod =
+                            KubesharkPod(
+                                metadata = KubesharkPodMetadata(labels = mapOf("app" to "order-service")),
+                            ),
+                    ),
                 request =
                     KubesharkRequest(
                         method = "POST",

@@ -39,6 +39,23 @@ data class KubesharkEndpoint(
     val port: String? = null,
     val name: String? = null,
     val namespace: String? = null,
+    val pod: KubesharkPod? = null,
+)
+
+/**
+ * Minimal projection of Kubeshark's `dst.pod` field. Kubeshark embeds the
+ * full K8s Pod object (metadata, spec, status — large) but the agent only
+ * needs `metadata.labels` for service attribution. `ignoreUnknownKeys=true`
+ * on the `Json` instance discards everything else.
+ */
+@Serializable
+data class KubesharkPod(
+    val metadata: KubesharkPodMetadata? = null,
+)
+
+@Serializable
+data class KubesharkPodMetadata(
+    val labels: Map<String, String>? = null,
 )
 
 /**

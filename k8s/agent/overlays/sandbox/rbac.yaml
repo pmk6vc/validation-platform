@@ -21,14 +21,15 @@ rules:
     resources: ["services"]
     verbs: ["list", "watch"]
 ---
-# Bind the ClusterRole to the production namespace where the test services live.
-# To discover services in additional namespaces, add another RoleBinding scoped
-# to that namespace (or upgrade to a ClusterRoleBinding for cluster-wide read).
+# Cluster-wide read of Services. The agent's discovery loop calls
+# `inAnyNamespace().list()` when DynamicConfig.namespaceFilters is empty
+# (the default returned by /api/agent/config), which is a cluster-scoped
+# LIST and requires a ClusterRoleBinding. System namespaces are filtered
+# in the agent (see K8sServiceDiscovery.SYSTEM_NAMESPACES).
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: validation-agent-services-reader
-  namespace: production
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
