@@ -72,8 +72,8 @@ class KubesharkClientTest {
         "tls": false,
         "src": {"ip": "10.0.0.1", "port": "45678", "name": "client-pod", "namespace": "production"},
         "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production"},
-        "request": {"method": "$method", "url": "$url", "headers": []},
-        "response": {"status": $status, "headers": []},
+        "request": {"method": "$method", "url": "$url", "headers": {}},
+        "response": {"status": $status, "headers": {}},
         "requestSize": 100,
         "responseSize": 200,
         "elapsedTime": 50

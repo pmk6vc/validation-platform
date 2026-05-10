@@ -4,7 +4,6 @@ import com.platform.agent.models.BatchCapturedInputRequest
 import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
-import com.platform.agent.models.KubesharkHeader
 import com.platform.agent.models.KubesharkPod
 import com.platform.agent.models.KubesharkPodMetadata
 import com.platform.agent.models.KubesharkPostData
@@ -391,8 +390,8 @@ class CapturePipelineIntegrationTest {
             "src": {"ip": "10.0.0.1", "port": "45678", "name": "client", "namespace": "production"},
             "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production",
                     "pod": {"metadata": {"labels": {"app": "$appLabel"}}}},
-            "request": {"method": "GET", "url": "/api/$dstName/$id", "headers": []},
-            "response": {"status": 200, "headers": []$contentField}
+            "request": {"method": "GET", "url": "/api/$dstName/$id", "headers": {}},
+            "response": {"status": 200, "headers": {}$contentField}
         }"""
     }
 
@@ -423,7 +422,7 @@ class CapturePipelineIntegrationTest {
                     KubesharkRequest(
                         method = "GET",
                         url = "/api/orders/1",
-                        headers = listOf(KubesharkHeader("Accept", "application/json")),
+                        headers = mapOf("Accept" to "application/json"),
                     ),
                 response =
                     KubesharkResponse(

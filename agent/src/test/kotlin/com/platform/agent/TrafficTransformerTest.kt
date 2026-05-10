@@ -3,7 +3,6 @@ package com.platform.agent
 import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
-import com.platform.agent.models.KubesharkHeader
 import com.platform.agent.models.KubesharkPod
 import com.platform.agent.models.KubesharkPodMetadata
 import com.platform.agent.models.KubesharkPostData
@@ -46,9 +45,9 @@ class TrafficTransformerTest {
         url: String? = "/api/orders",
         status: Int? = 200,
         timestamp: Long = 1000L,
-        reqHeaders: List<KubesharkHeader>? = null,
+        reqHeaders: Map<String, String>? = null,
         reqBody: KubesharkPostData? = null,
-        respHeaders: List<KubesharkHeader>? = null,
+        respHeaders: Map<String, String>? = null,
         respContent: KubesharkContent? = null,
         srcIp: String? = "10.0.0.1",
         dstIp: String? = "10.0.0.2",
@@ -89,14 +88,8 @@ class TrafficTransformerTest {
             transformer().transform(
                 listOf(
                     httpEntry(
-                        reqHeaders =
-                            listOf(
-                                KubesharkHeader("Content-Type", "application/json"),
-                            ),
-                        respHeaders =
-                            listOf(
-                                KubesharkHeader("X-Request-Id", "abc"),
-                            ),
+                        reqHeaders = mapOf("Content-Type" to "application/json"),
+                        respHeaders = mapOf("X-Request-Id" to "abc"),
                         respContent = KubesharkContent(text = """{"id": 1}"""),
                     ),
                 ),

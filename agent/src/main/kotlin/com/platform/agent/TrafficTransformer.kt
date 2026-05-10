@@ -72,14 +72,10 @@ class TrafficTransformer(
                     inputType = "HTTP",
                     method = entry.request!!.method!!,
                     url = entry.request.url!!,
-                    requestHeaders =
-                        entry.request.headers
-                            ?.associate { it.name to it.value },
+                    requestHeaders = entry.request.headers,
                     requestBody = entry.request.postData?.text,
                     responseStatus = entry.response!!.status!!,
-                    responseHeaders =
-                        entry.response.headers
-                            ?.associate { it.name to it.value },
+                    responseHeaders = entry.response.headers,
                     responseBody = decodeContent(entry.response.content),
                     latencyMs = entry.elapsedTime,
                     sourceIp = entry.src?.ip,
