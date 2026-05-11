@@ -212,18 +212,15 @@ class KubesharkClient(
          */
         val DEDUP_LOOKBACK: Duration = 5.seconds
 
-        /** Sentinel KFL filter that won't match any real K8s Service name. */
-        private const val KFL_NO_MATCH = """http and dst.name == "__validation_agent_no_match__""""
+        /** Sentinel KFL filter that won't match any real K8s pod. */
+        private const val KFL_NO_MATCH = """http and dst.pod.metadata.labels.app == "__validation_agent_no_match__""""
 
         private val kflQueryLogger = LoggerFactory.getLogger("KubesharkClient.buildKflQuery")
 
         /**
          * A name is unsafe to embed inside a quoted KFL literal if it contains a closing
          * quote (would terminate the literal early), a backslash (KFL's escape semantics
-         * are not contractual — we don't assume), or control characters that could
-         * affect framing. This is *not* a name-validity check — the platform owns "is
-         * this a legal service name?". The agent only owns "can I embed this string
-         * without changing query semantics?".
+         * are not contractual), or control characters that could affect framing.
          */
         private fun isKflSafeToEmbed(name: String): Boolean =
             name.none { c ->
@@ -231,16 +228,23 @@ class KubesharkClient(
             }
 
         /**
-         * Build a KFL query: `http` alone (empty map) or
-         * `http and dst.name == "svc"` / `http and (dst.name == "a" or dst.name == "b")`.
+         * Build a KFL query that filters HTTP entries to those destined for pods
+         * carrying `app=<service-name>` for any registered service.
          *
-         * Empty map returns `"http"` (not empty string, which means "no filter").
-         * Only map keys (K8s service names) are used; values (platform IDs) are ignored.
+         * Empty map → `"http"` (no filter, capture everything — this is what runs
+         * before Loop 1 has registered any services). Once services are registered,
+         * we narrow to `http and dst.pod.metadata.labels.app == "X"` (single) or
+         * `http and (dst.pod.metadata.labels.app == "X" or … == "Y")` (multiple).
          *
-         * Names that can't be safely embedded as a quoted KFL literal are dropped
-         * with a warning. If every name is rejected, returns a no-match sentinel
-         * rather than the unfiltered `"http"` query — refusing to widen capture
-         * beyond what was requested.
+         * The `app=<name>` invariant is enforced at discovery time in
+         * [K8sServiceDiscovery]: services whose pod selector lacks the matching
+         * `app` label are not registered, so every key in [targetServices] is
+         * guaranteed to map to pods with `app=<key>`.
+         *
+         * Names that can't be safely embedded in a quoted KFL literal are dropped
+         * with a warning. If every name is unsafe, we return [KFL_NO_MATCH] rather
+         * than the unfiltered `"http"` — refusing to widen capture beyond what was
+         * requested.
          */
         fun buildKflQuery(targetServices: Map<String, String>): String {
             if (targetServices.isEmpty()) return "http"
@@ -260,18 +264,18 @@ class KubesharkClient(
 
             if (safeNames.isEmpty()) return KFL_NO_MATCH
 
-            val dstFilter =
+            val labelClause =
                 if (safeNames.size == 1) {
-                    """dst.name == "${safeNames[0]}""""
+                    """dst.pod.metadata.labels.app == "${safeNames[0]}""""
                 } else {
                     safeNames.joinToString(
                         separator = " or ",
                         prefix = "(",
                         postfix = ")",
-                    ) { name -> """dst.name == "$name"""" }
+                    ) { name -> """dst.pod.metadata.labels.app == "$name"""" }
                 }
 
-            return "http and $dstFilter"
+            return "http and $labelClause"
         }
     }
 }

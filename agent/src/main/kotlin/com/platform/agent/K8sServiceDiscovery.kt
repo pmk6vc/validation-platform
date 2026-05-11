@@ -61,10 +61,26 @@ class K8sServiceDiscovery(
                 }
             }
         return raw
-            .filter { it.metadata?.namespace !in SYSTEM_NAMESPACES }
+            .filter { svc -> svc.metadata?.namespace?.let { !isSystemNamespace(it) } == true }
             .mapNotNull { svc ->
                 val ns = svc.metadata?.namespace ?: return@mapNotNull null
                 val name = svc.metadata?.name ?: return@mapNotNull null
+                // Invariant: pods backing this Service must carry `app=<name>` label.
+                // The agent's traffic capture matches on `dst.pod.metadata.labels.app`
+                // both server-side (KFL) and client-side (attribution); without this
+                // label there is no stable identifier to capture against. Skip rather
+                // than register a service we can't actually capture for.
+                val appLabel = svc.spec?.selector?.get("app")
+                if (appLabel != name) {
+                    logger.warn(
+                        "Skipping service {}/{} — pod selector lacks 'app={}' label (selector: {})",
+                        ns,
+                        name,
+                        name,
+                        svc.spec?.selector,
+                    )
+                    return@mapNotNull null
+                }
                 DiscoveredService(ns, name)
             }
     }
@@ -72,7 +88,12 @@ class K8sServiceDiscovery(
     override fun close() = client.close()
 
     companion object {
-        private val SYSTEM_NAMESPACES =
-            setOf("kube-system", "kube-public", "kube-node-lease")
+        private val SYSTEM_NAMESPACE_NAMES =
+            setOf("default", "kubeshark", "validation")
+        private val SYSTEM_NAMESPACE_PREFIXES =
+            listOf("kube-", "gke-managed-", "gmp-")
+
+        private fun isSystemNamespace(ns: String): Boolean =
+            ns in SYSTEM_NAMESPACE_NAMES || SYSTEM_NAMESPACE_PREFIXES.any { ns.startsWith(it) }
     }
 }

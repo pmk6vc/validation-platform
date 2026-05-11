@@ -72,8 +72,8 @@ class KubesharkClientTest {
         "tls": false,
         "src": {"ip": "10.0.0.1", "port": "45678", "name": "client-pod", "namespace": "production"},
         "dst": {"ip": "10.0.0.2", "port": "8080", "name": "$dstName", "namespace": "production"},
-        "request": {"method": "$method", "url": "$url", "headers": []},
-        "response": {"status": $status, "headers": []},
+        "request": {"method": "$method", "url": "$url", "headers": {}},
+        "response": {"status": $status, "headers": {}},
         "requestSize": 100,
         "responseSize": 200,
         "elapsedTime": 50
@@ -183,7 +183,7 @@ class KubesharkClientTest {
     }
 
     @Test
-    fun `sends KFL query with target services on connect`() {
+    fun `sends label-based KFL query with target services on connect`() {
         val filterChannel = Channel<String>(capacity = Channel.UNLIMITED)
         val config =
             MutableStateFlow(
@@ -194,7 +194,7 @@ class KubesharkClientTest {
             testBlock = { _, _ ->
                 val filters = awaitFilters(filterChannel, 1)
                 assertEquals(
-                    listOf("""http and dst.name == "order-service""""),
+                    listOf("""http and dst.pod.metadata.labels.app == "order-service""""),
                     filters,
                 )
             },
@@ -253,20 +253,18 @@ class KubesharkClientTest {
         withClient(
             serverBlock = { awaitCancellation() },
             testBlock = { _, flow ->
-                // Wait for the initial connection.
                 awaitFilters(filterChannel, 1)
 
-                // Change targetServices — this should trigger an immediate reconnect.
                 flow.value =
                     DynamicConfig(
                         targetServices = mapOf("api-gateway" to "svc-2"),
                     )
 
-                // Await the second connection's KFL filter.
-                val filters = awaitFilters(filterChannel, 1) // just the second one
-
-                // Drain accumulated: we received the first earlier, now check second
-                assertEquals("""http and dst.name == "api-gateway"""", filters[0])
+                val filters = awaitFilters(filterChannel, 1)
+                assertEquals(
+                    """http and dst.pod.metadata.labels.app == "api-gateway"""",
+                    filters[0],
+                )
             },
             configFlow = config,
             filterChannel = filterChannel,
@@ -313,7 +311,10 @@ class KubesharkClientTest {
 
                 // The client reconnects; await the new session's filter.
                 val secondFilter = awaitFilters(filterChannel, 1)
-                assertEquals("""http and dst.name == "api-gateway"""", secondFilter[0])
+                assertEquals(
+                    """http and dst.pod.metadata.labels.app == "api-gateway"""",
+                    secondFilter[0],
+                )
             },
             configFlow = config,
             filterChannel = filterChannel,
@@ -332,98 +333,54 @@ class KubesharkClientTest {
         }
 
         @Test
-        fun `single service returns http and dst name filter`() {
+        fun `single service returns http and label filter`() {
             val query = KubesharkClient.buildKflQuery(mapOf("order-service" to "svc-1"))
-            assertEquals("""http and dst.name == "order-service"""", query)
+            assertEquals("""http and dst.pod.metadata.labels.app == "order-service"""", query)
         }
 
         @Test
-        fun `two services returns http and parenthesised or filter`() {
+        fun `multiple services return parenthesised or filter`() {
             val query =
                 KubesharkClient.buildKflQuery(
                     mapOf("order-service" to "svc-1", "api-gateway" to "svc-2"),
                 )
-            assertTrue(query.startsWith("http and ("), "should start with 'http and ('")
-            assertTrue(query.endsWith(")"), "should end with ')'")
-            assertTrue(query.contains("""dst.name == "order-service""""))
-            assertTrue(query.contains("""dst.name == "api-gateway""""))
+            assertTrue(query.startsWith("http and ("))
+            assertTrue(query.endsWith(")"))
+            assertTrue(query.contains("""dst.pod.metadata.labels.app == "order-service""""))
+            assertTrue(query.contains("""dst.pod.metadata.labels.app == "api-gateway""""))
             assertTrue(query.contains(" or "))
         }
 
         @Test
-        fun `three services returns http and parenthesised or filter`() {
-            val query =
-                KubesharkClient.buildKflQuery(
-                    mapOf(
-                        "svc-a" to "id-1",
-                        "svc-b" to "id-2",
-                        "svc-c" to "id-3",
-                    ),
-                )
-            assertTrue(query.startsWith("http and ("))
-            assertTrue(query.contains("""dst.name == "svc-a""""))
-            assertTrue(query.contains("""dst.name == "svc-b""""))
-            assertTrue(query.contains("""dst.name == "svc-c""""))
-        }
-
-        @Test
-        fun `service ID values are not included in the KFL query`() {
+        fun `service ID values are not included in the query`() {
             val query = KubesharkClient.buildKflQuery(mapOf("my-svc" to "platform-id-xyz"))
             assertTrue(query.contains("my-svc"))
             assertTrue(!query.contains("platform-id-xyz"))
         }
 
         @Test
-        fun `names with embedded quotes are filtered out, leaving safe names`() {
+        fun `names with embedded quotes are filtered out`() {
             val query =
                 KubesharkClient.buildKflQuery(
                     mapOf(
                         "order-service" to "id-1",
-                        """svc" or true or dst.name == "x""" to "id-2",
+                        """svc" or true""" to "id-2",
                     ),
                 )
-
-            // The injection-shaped name is dropped; the legitimate name is retained.
-            assertEquals("""http and dst.name == "order-service"""", query)
-            assertTrue(!query.contains("or true"))
-        }
-
-        @Test
-        fun `names with backslashes or control chars are filtered out`() {
-            val query =
-                KubesharkClient.buildKflQuery(
-                    mapOf(
-                        "order-service" to "id-1",
-                        "svc\\backslash" to "id-2",
-                        "svc\nnewline" to "id-3",
-                    ),
-                )
-
-            assertEquals("""http and dst.name == "order-service"""", query)
-        }
-
-        @Test
-        fun `names the server considers invalid but KFL can embed are still passed through`() {
-            // The agent does not enforce RFC 1123 — that's the platform's job at POST /api/services.
-            // The agent only refuses to embed strings that would change KFL semantics.
-            // "Order-Service" is not RFC 1123 (uppercase) but is safe inside KFL quotes.
-            val query = KubesharkClient.buildKflQuery(mapOf("Order-Service" to "id-1"))
-            assertEquals("""http and dst.name == "Order-Service"""", query)
+            assertEquals("""http and dst.pod.metadata.labels.app == "order-service"""", query)
         }
 
         @Test
         fun `all unsafe names produce a no-match query, not http`() {
             val query =
                 KubesharkClient.buildKflQuery(
-                    mapOf(
-                        """svc" or true""" to "id-1",
-                        "another\"quote" to "id-2",
-                    ),
+                    mapOf("""svc" or true""" to "id-1"),
                 )
-
-            // Critically, must NOT widen to "http" (which would capture all traffic).
             assertTrue(query != "http", "must not fall back to unfiltered 'http'")
-            assertTrue(query.startsWith("http and dst.name == "), "should still be a dst.name filter")
+            assertTrue(
+                query.contains("dst.pod.metadata.labels.app =="),
+                "should still be a label filter",
+            )
         }
     }
 

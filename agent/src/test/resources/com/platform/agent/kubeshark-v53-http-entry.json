@@ -1,0 +1,75 @@
+{
+  "id": "10.128.0.31:48999/000000018234.pcap-0",
+  "timestamp": 1746881859000,
+  "index": 0,
+  "stream": "000000018234.pcap",
+  "worker": "10.128.0.31:48999",
+  "node": {"ip": "10.128.0.31", "name": "gke-validation-sandbox-spot-pool"},
+  "protocol": {
+    "name": "http",
+    "version": "1.1",
+    "abbr": "HTTP",
+    "longName": "Hypertext Transfer Protocol -- HTTP/1.1",
+    "macro": "http",
+    "ports": ["80", "443", "8080"],
+    "layer4": "tcp",
+    "layer3": "ip",
+    "priority": 0
+  },
+  "tls": false,
+  "src": {
+    "ip": "10.84.0.45",
+    "port": "32772",
+    "name": "gen3",
+    "namespace": "production"
+  },
+  "dst": {
+    "ip": "10.84.0.17",
+    "port": "8080",
+    "name": "api-gateway-64cb88c4bc-xqkxj",
+    "namespace": "production",
+    "pod": {
+      "metadata": {
+        "labels": {"app": "api-gateway", "team": "backend"}
+      }
+    }
+  },
+  "request": {
+    "method": "GET",
+    "url": "http://api-gateway:8080/orders",
+    "path": "/orders",
+    "httpVersion": "HTTP/1.1",
+    "cookies": {},
+    "headers": {
+      "Accept": "*/*",
+      "Host": "api-gateway:8080",
+      "User-Agent": "curl/8.10.1"
+    },
+    "queryString": [],
+    "postData": {"text": "", "mimeType": ""},
+    "headersSize": 73,
+    "bodySize": 0
+  },
+  "response": {
+    "status": 200,
+    "statusText": "OK",
+    "httpVersion": "HTTP/1.1",
+    "cookies": {},
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "abc-123"
+    },
+    "content": {
+      "size": 17,
+      "mimeType": "application/json",
+      "text": "eyJvcmRlcnMiOiBbXX0=",
+      "encoding": "base64"
+    },
+    "redirectURL": "",
+    "headersSize": 95,
+    "bodySize": 17
+  },
+  "requestSize": 73,
+  "responseSize": 112,
+  "elapsedTime": 8
+}

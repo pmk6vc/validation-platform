@@ -24,21 +24,20 @@ class TrafficTransformer(
      *
      * Filtering logic:
      * 1. Only keep HTTP entries (protocol.name == "http")
-     * 2. Only keep entries where dst.name matches a target service name
-     *    (Kubeshark shows each call from both pod-IP and service-IP perspectives;
-     *    filtering on dst.name == service name deduplicates naturally)
+     * 2. Attribute by `dst.pod.metadata.labels.app`. The `app=<service-name>`
+     *    invariant is enforced at discovery in [K8sServiceDiscovery] — services
+     *    whose pod selector lacks `app=<name>` are skipped before registration,
+     *    so a label match here cleanly resolves to a registered serviceId.
+     *    Kubeshark's `dst.name` is the destination pod name (unstable across
+     *    rollouts), so we don't use it for attribution.
      * 3. Only keep entries with required fields (method, url, status)
      * 4. Apply sampling rate
      *
-     * Filters 1 and 2 are also pushed to Kubeshark as a KFL query via
-     * [KubesharkClient.buildKflQuery], so the server only streams entries that
-     * would pass these filters. The checks here are kept as a safety net for
-     * two cases:
-     *   - The brief window between a query change (which cancels the active
-     *     session) and the new session connecting, during which entries buffered
-     *     in the channel may still reflect the old filter.
-     *   - Any Kubeshark version or configuration where the KFL query is not
-     *     honoured as expected.
+     * The same `app` label filter is also applied server-side via
+     * [KubesharkClient.buildKflQuery] — Kubeshark only sends entries that pass
+     * it. The check here is a safety net for the brief window between a
+     * targetServices change (which cancels the WebSocket session) and the new
+     * session connecting.
      *
      * TODO: Support configurable header stripping (e.g. Authorization, Cookie)
      *       via DynamicConfig so customers can redact sensitive headers before
@@ -51,30 +50,36 @@ class TrafficTransformer(
 
         return entries
             .filter { it.protocol?.name == "http" }
-            .filter { it.dst?.name != null && it.dst.name in targetServices }
-            .filter {
-                it.request?.method != null &&
-                    it.request.url != null &&
-                    it.response?.status != null
-            }.filter { random.nextDouble() < samplingRate }
-            .map { entry ->
+            .mapNotNull { entry ->
+                val appLabel =
+                    entry.dst
+                        ?.pod
+                        ?.metadata
+                        ?.labels
+                        ?.get("app") ?: return@mapNotNull null
+                val serviceId = targetServices[appLabel] ?: return@mapNotNull null
+                if (entry.request?.method == null ||
+                    entry.request.url == null ||
+                    entry.response?.status == null
+                ) {
+                    return@mapNotNull null
+                }
+                if (random.nextDouble() >= samplingRate) return@mapNotNull null
+                entry to serviceId
+            }.map { (entry, serviceId) ->
                 CapturedInputRequest(
-                    serviceId = targetServices.getValue(entry.dst!!.name!!),
+                    serviceId = serviceId,
                     inputType = "HTTP",
                     method = entry.request!!.method!!,
                     url = entry.request.url!!,
-                    requestHeaders =
-                        entry.request.headers
-                            ?.associate { it.name to it.value },
+                    requestHeaders = entry.request.headers,
                     requestBody = entry.request.postData?.text,
                     responseStatus = entry.response!!.status!!,
-                    responseHeaders =
-                        entry.response.headers
-                            ?.associate { it.name to it.value },
+                    responseHeaders = entry.response.headers,
                     responseBody = decodeContent(entry.response.content),
                     latencyMs = entry.elapsedTime,
                     sourceIp = entry.src?.ip,
-                    destinationIp = entry.dst.ip,
+                    destinationIp = entry.dst?.ip,
                     capturedAt = Instant.ofEpochMilli(entry.timestamp).toString(),
                 )
             }

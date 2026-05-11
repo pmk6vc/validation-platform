@@ -229,8 +229,8 @@ if kubectl get deployment kubeshark-front -n kubeshark >/dev/null 2>&1; then
   info "Kubeshark already running in cluster (kubeshark-front exists); skipping install"
 else
   info "Installing Kubeshark via Helm (scoped to production namespace)..."
-  helm repo add kubeshark https://helm.kubeshark.co >/dev/null 2>&1 || true
-  helm repo update kubeshark >/dev/null
+  helm repo add kubeshark https://helm.kubeshark.com --force-update
+  helm repo update kubeshark
   helm upgrade --install kubeshark kubeshark/kubeshark \
     --namespace kubeshark \
     --create-namespace \

@@ -39,19 +39,41 @@ data class KubesharkEndpoint(
     val port: String? = null,
     val name: String? = null,
     val namespace: String? = null,
+    val pod: KubesharkPod? = null,
+)
+
+/**
+ * Minimal projection of Kubeshark's `dst.pod` field. Kubeshark embeds the
+ * full K8s Pod object (metadata, spec, status — large) but the agent only
+ * needs `metadata.labels` for service attribution. `ignoreUnknownKeys=true`
+ * on the `Json` instance discards everything else.
+ */
+@Serializable
+data class KubesharkPod(
+    val metadata: KubesharkPodMetadata? = null,
+)
+
+@Serializable
+data class KubesharkPodMetadata(
+    val labels: Map<String, String>? = null,
 )
 
 /**
  * HTTP request from the WebSocket stream.
- * Headers are in HAR format: list of {name, value} objects.
- * Request body is in `postData.text` (HAR format, plaintext).
+ *
+ * Kubeshark v53 emits headers as a JSON object (`{"Accept":"...","Host":"..."}`),
+ * not the HAR-spec list-of-{name,value} pairs the docs imply. We mirror the wire
+ * format directly — coercing into HAR shape would just be lossy round-tripping
+ * since the collector stores headers as a map anyway.
+ *
+ * Request body is in `postData.text` (plaintext, not base64 like response bodies).
  */
 @Serializable
 data class KubesharkRequest(
     val method: String? = null,
     val url: String? = null,
     val path: String? = null,
-    val headers: List<KubesharkHeader>? = null,
+    val headers: Map<String, String>? = null,
     val postData: KubesharkPostData? = null,
     val bodySize: Long? = null,
 )
@@ -79,21 +101,18 @@ data class KubesharkPostData(
 
 /**
  * HTTP response from the WebSocket stream.
- * Body is in `content.text` (HAR format).
+ *
+ * Headers are a JSON object — see [KubesharkRequest] for why. Body is in
+ * `content.text`; Kubeshark base64-encodes it (set [KubesharkContent.encoding]
+ * to `"base64"`) so non-UTF-8 payloads survive the wire.
  */
 @Serializable
 data class KubesharkResponse(
     val status: Int? = null,
     val statusText: String? = null,
-    val headers: List<KubesharkHeader>? = null,
+    val headers: Map<String, String>? = null,
     val content: KubesharkContent? = null,
     val bodySize: Long? = null,
-)
-
-@Serializable
-data class KubesharkHeader(
-    val name: String,
-    val value: String,
 )
 
 /**

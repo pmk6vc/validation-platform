@@ -3,6 +3,8 @@ package com.platform.agent
 import com.platform.agent.models.BatchCapturedInputRequest
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
+import com.platform.agent.models.KubesharkPod
+import com.platform.agent.models.KubesharkPodMetadata
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
 import com.platform.agent.models.KubesharkResponse
@@ -211,7 +213,15 @@ class LoopLogicTest {
                 id = "e-$timestamp",
                 timestamp = timestamp,
                 protocol = KubesharkProtocol(name = "http"),
-                dst = KubesharkEndpoint(name = dstName, ip = "10.0.0.2"),
+                dst =
+                    KubesharkEndpoint(
+                        name = dstName,
+                        ip = "10.0.0.2",
+                        pod =
+                            KubesharkPod(
+                                metadata = KubesharkPodMetadata(labels = mapOf("app" to dstName)),
+                            ),
+                    ),
                 request = KubesharkRequest(method = "GET", url = "/api/test"),
                 response = KubesharkResponse(status = 200),
             )

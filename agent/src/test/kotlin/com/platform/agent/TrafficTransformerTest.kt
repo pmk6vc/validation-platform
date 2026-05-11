@@ -3,7 +3,8 @@ package com.platform.agent
 import com.platform.agent.models.KubesharkContent
 import com.platform.agent.models.KubesharkEndpoint
 import com.platform.agent.models.KubesharkEntry
-import com.platform.agent.models.KubesharkHeader
+import com.platform.agent.models.KubesharkPod
+import com.platform.agent.models.KubesharkPodMetadata
 import com.platform.agent.models.KubesharkPostData
 import com.platform.agent.models.KubesharkProtocol
 import com.platform.agent.models.KubesharkRequest
@@ -38,14 +39,15 @@ class TrafficTransformerTest {
 
     private fun httpEntry(
         id: String = "entry-1",
-        dstName: String? = "order-service",
+        dstName: String? = "order-service-abc-xyz",
+        appLabel: String? = "order-service",
         method: String? = "GET",
         url: String? = "/api/orders",
         status: Int? = 200,
         timestamp: Long = 1000L,
-        reqHeaders: List<KubesharkHeader>? = null,
+        reqHeaders: Map<String, String>? = null,
         reqBody: KubesharkPostData? = null,
-        respHeaders: List<KubesharkHeader>? = null,
+        respHeaders: Map<String, String>? = null,
         respContent: KubesharkContent? = null,
         srcIp: String? = "10.0.0.1",
         dstIp: String? = "10.0.0.2",
@@ -54,7 +56,17 @@ class TrafficTransformerTest {
         timestamp = timestamp,
         protocol = KubesharkProtocol(name = "http"),
         src = KubesharkEndpoint(ip = srcIp),
-        dst = KubesharkEndpoint(name = dstName, ip = dstIp),
+        dst =
+            KubesharkEndpoint(
+                name = dstName,
+                ip = dstIp,
+                pod =
+                    appLabel?.let {
+                        KubesharkPod(
+                            metadata = KubesharkPodMetadata(labels = mapOf("app" to it)),
+                        )
+                    },
+            ),
         request =
             KubesharkRequest(
                 method = method,
@@ -76,14 +88,8 @@ class TrafficTransformerTest {
             transformer().transform(
                 listOf(
                     httpEntry(
-                        reqHeaders =
-                            listOf(
-                                KubesharkHeader("Content-Type", "application/json"),
-                            ),
-                        respHeaders =
-                            listOf(
-                                KubesharkHeader("X-Request-Id", "abc"),
-                            ),
+                        reqHeaders = mapOf("Content-Type" to "application/json"),
+                        respHeaders = mapOf("X-Request-Id" to "abc"),
                         respContent = KubesharkContent(text = """{"id": 1}"""),
                     ),
                 ),
@@ -233,8 +239,8 @@ class TrafficTransformerTest {
     }
 
     @Test
-    fun `filters out entries with no dst name`() {
-        val result = transformer().transform(listOf(httpEntry(dstName = null)))
+    fun `filters out entries with no app label`() {
+        val result = transformer().transform(listOf(httpEntry(appLabel = null)))
 
         assertTrue(result.isEmpty())
     }
@@ -243,7 +249,7 @@ class TrafficTransformerTest {
     fun `filters out entries for non-target services`() {
         val result =
             transformer().transform(
-                listOf(httpEntry(dstName = "unknown-service")),
+                listOf(httpEntry(appLabel = "unknown-service")),
             )
 
         assertTrue(result.isEmpty())
@@ -271,8 +277,8 @@ class TrafficTransformerTest {
     fun `maps correct service ID for each target service`() {
         val entries =
             listOf(
-                httpEntry(id = "e1", dstName = "order-service"),
-                httpEntry(id = "e2", dstName = "api-gateway"),
+                httpEntry(id = "e1", appLabel = "order-service"),
+                httpEntry(id = "e2", appLabel = "api-gateway"),
             )
 
         val result = transformer().transform(entries)
