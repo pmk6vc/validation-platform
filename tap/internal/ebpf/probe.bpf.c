@@ -21,6 +21,23 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
+// Per-event payload size, in bytes. Three constraints drive the choice:
+//
+//   1. An HTTP/1.1 request line and a few headers fit comfortably in 256 B
+//      (typical request line is < 100 B). That's all the TAP-1 foundation
+//      gate needs to prove.
+//   2. Older kernels cap the BPF program stack at 512 B; keeping per-event
+//      buffers small leaves room for locals and helper-call frames.
+//   3. Power-of-two sizes let the verifier prove `count & (SIZE-1)` is in
+//      range without dataflow analysis — see the mask trick below.
+//
+// Behaviour at the limit: silent truncation. e->len is clamped to
+// MAX_DATA_SIZE and the tail of the buffer is discarded. For TAP-1 that's
+// acceptable (the request line is intact). TAP-3 will need larger captures
+// (~1 MiB body coverage) which means a per-CPU scratch map for the read,
+// multiple ringbuf events per write, AND TCP-stream reassembly in
+// userspace — HTTP messages can be split across write() syscalls by
+// Nagle, app-level buffering, or chunked transfer encoding.
 #define MAX_DATA_SIZE 256
 
 struct event {
@@ -54,6 +71,38 @@ struct sys_enter_write_args {
     __u64 count;
 };
 
+// TAP-1 only — a 4-byte content sniff that filters in-kernel so userspace
+// only sees writes that *look* like HTTP/1.1. It is deliberately the
+// cheapest possible filter to prove the capture pipeline end-to-end.
+//
+// Known weaknesses:
+//
+//   - False positives: any write whose first 4 bytes happen to match an
+//     HTTP method or "HTTP". Harmless; userspace re-checks the request
+//     line and drops what doesn't parse.
+//   - False negatives: anything that isn't HTTP/1.1 in plaintext gets
+//     dropped. gRPC (binary HTTP/2 frames), TLS (encrypted), Postgres /
+//     Redis / Kafka wire protocols — all invisible.
+//   - Adversarial input is *not* a concern at this layer: the tap is a
+//     passive observer that never gates anything, so a crafted "GET "
+//     prefix just produces a noisy log line. Trust of captured data is a
+//     downstream replay-engine concern.
+//
+// TAP-3 replaces this with socket-based attribution that is independent
+// of payload contents:
+//
+//   1. eBPF hooks on sys_enter_accept4 / sys_enter_connect record live
+//      (pid, fd) → (peer addr, sock type) pairs in a BPF hash map.
+//   2. Userspace populates an "interesting sockets" map by resolving
+//      pid → pod → service-name and checking against the registered
+//      target services from the platform's /api/agent/config response.
+//   3. On sys_enter_write the kernel program does a single map lookup
+//      on (pid, fd). Match → capture; miss → drop. No content sniff.
+//
+// Protocol detection (HTTP/1.1 vs HTTP/2 vs gRPC vs raw) then moves to
+// userspace where being wrong cannot crash the kernel, and a real parser
+// (e.g. golang.org/x/net/http2 with HPACK) can be used. The function
+// below disappears when TAP-3 lands.
 static __always_inline int looks_like_http(const __u8 *p) {
     // First 4 bytes of an HTTP/1.1 request line are:
     //   "GET ", "POST", "PUT ", "HEAD", "DELE", "PATC", "OPTI", "CONN", "TRAC"
