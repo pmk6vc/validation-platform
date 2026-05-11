@@ -35,7 +35,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
-	"vp-tap/internal/bpf"
+	bpf "vp-tap/internal/ebpf"
 	"vp-tap/internal/pod"
 )
 

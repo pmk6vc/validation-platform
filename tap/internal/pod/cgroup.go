@@ -59,8 +59,13 @@ func parseCgroupFile(path string) Info {
 	if err != nil {
 		return Info{}
 	}
-	s := string(data)
+	return parseCgroupBytes(data)
+}
 
+// parseCgroupBytes does the actual regex work — split out so tests can drive
+// it with fixtures instead of files on disk.
+func parseCgroupBytes(data []byte) Info {
+	s := string(data)
 	var info Info
 	if m := podRE.FindStringSubmatch(s); len(m) > 1 {
 		info.PodUID = strings.ReplaceAll(m[1], "_", "-")

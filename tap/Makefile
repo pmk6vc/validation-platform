@@ -17,10 +17,13 @@ REGISTRY ?= us-central1-docker.pkg.dev/zugzwang-381922/validation
 IMAGE    ?= $(REGISTRY)/vp-tap
 TAG      ?= prototype
 
-.PHONY: generate build docker-build push deploy logs undeploy
+.PHONY: generate test build docker-build push deploy logs undeploy
 
 generate:
-	cd internal/bpf && go generate
+	cd internal/ebpf && go generate
+
+test:
+	go test ./...
 
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o vp-tap ./cmd/vp-tap

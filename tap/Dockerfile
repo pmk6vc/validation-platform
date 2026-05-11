@@ -30,16 +30,20 @@ WORKDIR /src
 # must be populated before `go generate` executes.
 COPY . .
 RUN go mod tidy
-RUN go generate ./internal/bpf/...
+RUN go generate ./internal/ebpf/...
+RUN go test ./...
 RUN go build -trimpath -ldflags="-s -w" -o /vp-tap ./cmd/vp-tap
 
-# Use distroless/base instead of static — distroless/static doesn't have
-# /proc, but the kernel mounts /proc inside any container regardless of
-# the image. The reason for base is that some bpf2go-generated paths
-# resolve via libc; but with CGO_ENABLED=0 we're fine on static. Stick
-# with static for the smallest image.
-FROM gcr.io/distroless/static-debian12
+# Pluck ca-certificates from the builder so the runtime image can do TLS
+# (TAP-5 will POST to the Cloud Run collector). The static Go binary
+# bundles everything else.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
+# FROM scratch + ca-certs per TAP-2 spec. Smallest possible runtime — the
+# Go binary is self-contained. /proc is mounted by the kubelet inside the
+# pod regardless of image contents.
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /vp-tap /vp-tap
-
 ENTRYPOINT ["/vp-tap"]

@@ -6,8 +6,6 @@ Makefile
 *.md
 
 # bpf2go-generated artifacts (regenerated inside the build).
-internal/bpf/probe_bpfel_x86.go
-internal/bpf/probe_bpfel_x86.o
-internal/bpf/probe_bpfeb_x86.go
-internal/bpf/probe_bpfeb_x86.o
+internal/ebpf/probe_x86_bpfel.go
+internal/ebpf/probe_x86_bpfel.o
 /vp-tap
