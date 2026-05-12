@@ -37,20 +37,13 @@ import (
 	"vp-tap/internal/pod"
 )
 
-const (
-	maxDataSize       = 256
-	heartbeatInterval = 30 * time.Second
-)
+const heartbeatInterval = 30 * time.Second
 
-// event mirrors `struct event` in probe.bpf.c. Field order and types must
-// match exactly. The verifier uses native (little-endian on amd64) layout.
-type event struct {
-	PID  uint32
-	TGID uint32
-	Len  uint32
-	FD   uint32
-	Data [maxDataSize]byte
-}
+// The per-event struct is bpf.ProbeEvent — bpf2go generates it from the
+// BTF debug info in probe.bpf.c (the `-type event` flag in gen.go). One
+// source of truth: edit the C struct and the Go mirror updates on the
+// next `go generate`. The matching MAX_DATA_SIZE constant lives in the
+// C source; userspace derives the bound from len(e.Data).
 
 func main() {
 	setupLogger()
@@ -201,7 +194,7 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, ca
 	defer wg.Done()
 	log.Printf("ringbuf reader open; waiting for HTTP traffic on this node...")
 
-	var e event
+	var e bpf.ProbeEvent
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -219,8 +212,8 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, ca
 		}
 
 		n := int(e.Len)
-		if n > maxDataSize {
-			n = maxDataSize
+		if n > len(e.Data) {
+			n = len(e.Data)
 		}
 		line := firstHTTPLine(e.Data[:n])
 		if line == "" {
@@ -229,11 +222,11 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, ca
 			continue
 		}
 
-		info := cache.Lookup(e.TGID)
+		info := cache.Lookup(e.Tgid)
 		atomic.AddUint64(captured, 1)
 
 		log.Printf("[tgid=%d pid=%d fd=%d pod=%s container=%s] %s",
-			e.TGID, e.PID, e.FD, orQ(info.PodUID), orQ(info.ContainerID), line)
+			e.Tgid, e.Pid, e.Fd, orQ(info.PodUID), orQ(info.ContainerID), line)
 	}
 }
 
