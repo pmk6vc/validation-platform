@@ -51,8 +51,14 @@
 #define MAX_DATA_SIZE 256
 
 struct event {
-    __u32 pid;          // kernel pid (thread id)
-    __u32 tgid;         // userspace getpid() value
+    // cgroup_id is the primary attribution key for TAP-3 onward. It identifies
+    // the cgroup of the task that performed the write at the instant the
+    // syscall fired — race-free across PID reuse, container restart, and
+    // userspace eviction lag. See VAL-55 §1 for the full rationale. Placed
+    // first (8-byte aligned) to avoid struct padding.
+    __u64 cgroup_id;
+    __u32 pid;          // kernel pid (thread id) — diagnostic only post-TAP-3
+    __u32 tgid;         // userspace getpid() value — diagnostic only post-TAP-3
     __u32 len;          // bytes actually copied into data[]
     __u32 fd;           // fd from the write() call
     __u8  data[MAX_DATA_SIZE];
@@ -142,6 +148,13 @@ int trace_sys_enter_write(struct sys_enter_write_args *ctx) {
 
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) return 0;
+
+    // bpf_get_current_cgroup_id() returns the cgroup ID of the task that
+    // triggered this tracepoint, captured atomically with the syscall. This
+    // is the foundation of cgroup-ID-based attribution: subsequent TAP-3 PRs
+    // will join this against a userspace cgroup_id → pod map populated by a
+    // K8s informer, replacing the current PID-keyed /proc-lookup cache.
+    e->cgroup_id = bpf_get_current_cgroup_id();
 
     __u64 id = bpf_get_current_pid_tgid();
     e->pid  = (__u32)id;

@@ -225,8 +225,14 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, ca
 		info := cache.Lookup(e.Tgid)
 		atomic.AddUint64(captured, 1)
 
-		log.Printf("[tgid=%d pid=%d fd=%d pod=%s container=%s] %s",
-			e.Tgid, e.Pid, e.Fd, orQ(info.PodUID), orQ(info.ContainerID), line)
+		// cgroup_id is the future primary attribution key (TAP-3 §1) but the
+		// userspace cgroup_id → pod informer doesn't exist yet, so we still
+		// resolve pod via /proc/<tgid>/cgroup for human readability. Log
+		// cgroup_id alongside so TAP-3 PR3 can be verified against this
+		// baseline (the cgroup_id printed here must equal what the informer
+		// publishes for the same pod).
+		log.Printf("[cgroup=%d tgid=%d pid=%d fd=%d pod=%s container=%s] %s",
+			e.CgroupId, e.Tgid, e.Pid, e.Fd, orQ(info.PodUID), orQ(info.ContainerID), line)
 	}
 }
 
