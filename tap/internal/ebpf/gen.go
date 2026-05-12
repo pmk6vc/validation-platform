@@ -4,4 +4,4 @@
 // list to amd64 since GKE COS in the sandbox is amd64).
 package ebpf
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" Probe probe.bpf.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event -type socket_event -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" Probe probe.bpf.c

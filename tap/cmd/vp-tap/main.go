@@ -1,17 +1,21 @@
-// vp-tap is the TAP-1 prototype: prove eBPF L7 capture on GKE COS.
+// vp-tap is the BPF-based traffic capture daemon for the validation platform.
 //
-// Loads the probe.bpf.o object built by bpf2go, attaches it to the
-// sys_enter_write tracepoint, and drains a ring buffer. Every event is
-// expected to begin with an HTTP/1.1 request or response prefix (filtered
-// in-kernel by the eBPF program). For each event we log:
-//   - timestamp
-//   - first line of the buffer (request line or status line)
-//   - PID and TGID
-//   - pod UID + container ID resolved from /proc/<tgid>/cgroup
+// Loads the probe.bpf.o object built by bpf2go, attaches to a set of syscall
+// tracepoints, and drains two ring buffers in parallel:
 //
-// Stop with SIGINT or SIGTERM. main() is pure orchestration: it sets up
-// BPF state, then launches three cooperating goroutines (shutdown
-// handler, heartbeat, capture loop) and blocks until shutdown drains.
+//   - `events`         — HTTP-data writes (per syscall, content-pre-filtered)
+//   - `socket_events`  — socket lifecycle (connect / accept4 / close)
+//
+// For each HTTP event we log timestamp, first line, PID/TGID, fd, cgroup_id,
+// and pod UID + container ID resolved from /proc/<tgid>/cgroup (the latter is
+// transitional — PR3 replaces it with a K8s informer keyed by cgroup_id).
+// For each socket event we log the lifecycle kind (CONNECT / ACCEPT / CLOSE)
+// and the peer address/port.
+//
+// Stop with SIGINT or SIGTERM. main() is pure orchestration: it sets up BPF
+// state, then launches four cooperating goroutines (shutdown handler,
+// heartbeat, HTTP capture loop, socket-event loop) and blocks until shutdown
+// drains.
 
 package main
 
@@ -20,7 +24,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -29,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -39,11 +46,10 @@ import (
 
 const heartbeatInterval = 30 * time.Second
 
-// The per-event struct is bpf.ProbeEvent — bpf2go generates it from the
-// BTF debug info in probe.bpf.c (the `-type event` flag in gen.go). One
-// source of truth: edit the C struct and the Go mirror updates on the
-// next `go generate`. The matching MAX_DATA_SIZE constant lives in the
-// C source; userspace derives the bound from len(e.Data).
+// Per-event structs are bpf.ProbeEvent and bpf.ProbeSocketEvent — bpf2go
+// generates them from the BTF debug info in probe.bpf.c (`-type event` and
+// `-type socket_event` flags in gen.go). One source of truth: edit the C
+// struct and the Go mirrors update on the next `go generate`.
 
 func main() {
 	setupLogger()
@@ -52,45 +58,45 @@ func main() {
 	objs := mustLoadBPFObjects()
 	defer objs.Close()
 
-	tp := mustAttachTracepoint(objs)
-	defer tp.Close()
+	links := mustAttachTracepoints(objs)
+	defer closeLinks(links)
 
-	rd := mustOpenRingbuf(objs)
-	defer rd.Close()
+	httpRd := mustOpenRingbuf(objs.Events, "events")
+	defer httpRd.Close()
+
+	sockRd := mustOpenRingbuf(objs.SocketEvents, "socket_events")
+	defer sockRd.Close()
 
 	ctx, cancel := installSignalHandler()
 	defer cancel()
 
 	cache := pod.NewCache()
-	var captured uint64
+	var capturedHTTP, capturedSock uint64
 
-	// Launch the three cooperating goroutines and block on their
-	// completion. They each exit on ctx cancellation; the shutdown
-	// handler is the one that actually closes the ringbuf so the
-	// capture loop can unwind. main does no work itself — wg.Wait()
-	// is the join point.
+	// Four cooperating goroutines: shutdown handler (closes both ringbufs),
+	// heartbeat, HTTP capture loop, socket-event loop. Each exits on ctx
+	// cancellation propagated through the closed ringbufs.
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go runShutdownHandler(ctx, &wg, rd)
-	go runHeartbeat(ctx, &wg, &captured)
-	go runCaptureLoop(&wg, rd, cache, &captured)
+	wg.Add(4)
+	go runShutdownHandler(ctx, &wg, httpRd, sockRd)
+	go runHeartbeat(ctx, &wg, &capturedHTTP, &capturedSock)
+	go runCaptureLoop(&wg, httpRd, cache, &capturedHTTP)
+	go runSocketEventLoop(&wg, sockRd, cache, &capturedSock)
 	wg.Wait()
 }
 
 // setupLogger configures the stdlib logger to prepend UTC date+time and
-// emits the initial startup line. Centralised so every entrypoint sees
-// the same log format.
+// emits the initial startup line.
 func setupLogger() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
-	log.Printf("vp-tap TAP-1 prototype starting (pid=%d)", os.Getpid())
+	log.Printf("vp-tap starting (pid=%d)", os.Getpid())
 }
 
 // mustRaiseMemlock removes the RLIMIT_MEMLOCK cap so BPF maps can be
 // allocated. On kernels < 5.11 the default 64 KiB ceiling rejects our
-// 8 MiB ringbuf; on newer kernels the call is a harmless no-op (BPF
-// memory has separate accounting). Requires CAP_SYS_RESOURCE, which the
-// DaemonSet's privileged: true provides. Fatal on failure — without
-// this the BPF load further down is guaranteed to fail.
+// ringbufs; on newer kernels the call is a harmless no-op (BPF memory
+// has separate accounting). Requires CAP_SYS_RESOURCE, which the
+// DaemonSet's privileged: true provides.
 func mustRaiseMemlock() {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("removing memlock: %v", err)
@@ -99,12 +105,9 @@ func mustRaiseMemlock() {
 
 // mustLoadBPFObjects parses the bpf2go-generated ELF blob, makes the
 // bpf(BPF_PROG_LOAD) and bpf(BPF_MAP_CREATE) syscalls to install our
-// program and ringbuf in the kernel, and returns a ProbeObjects struct
-// populated with the resulting kernel file descriptors. The caller must
-// defer objs.Close() — closing releases the kernel fds.
-//
-// The program is loaded but NOT attached to any hook at this point;
-// attachment happens in mustAttachTracepoint.
+// programs and maps in the kernel, and returns a ProbeObjects struct
+// populated with the resulting kernel file descriptors. The caller
+// must defer objs.Close() — closing releases the kernel fds.
 func mustLoadBPFObjects() bpf.ProbeObjects {
 	objs := bpf.ProbeObjects{}
 	if err := bpf.LoadProbeObjects(&objs, nil); err != nil {
@@ -113,60 +116,73 @@ func mustLoadBPFObjects() bpf.ProbeObjects {
 	return objs
 }
 
-// mustAttachTracepoint wires the loaded BPF program to the
-// syscalls/sys_enter_write tracepoint. After this returns, every
-// write() syscall on the host runs our filter. The returned *link.Link
-// owns the perf-event fd; closing it detaches.
-func mustAttachTracepoint(objs bpf.ProbeObjects) link.Link {
-	tp, err := link.Tracepoint("syscalls", "sys_enter_write", objs.TraceSysEnterWrite, nil)
-	if err != nil {
-		log.Fatalf("attaching tracepoint sys_enter_write: %v", err)
+// mustAttachTracepoints wires every BPF program in `objs` to its kernel
+// hook. Returns a slice of link.Link the caller must close on shutdown
+// (closing a link detaches its program from the tracepoint).
+func mustAttachTracepoints(objs bpf.ProbeObjects) []link.Link {
+	type entry struct {
+		group, name string
+		prog        *ebpf.Program
 	}
-	log.Printf("attached tracepoint syscalls/sys_enter_write")
-	return tp
+	specs := []entry{
+		{"syscalls", "sys_enter_write", objs.TraceSysEnterWrite},
+		{"syscalls", "sys_enter_connect", objs.TraceSysEnterConnect},
+		{"syscalls", "sys_enter_accept4", objs.TraceSysEnterAccept4},
+		{"syscalls", "sys_exit_accept4", objs.TraceSysExitAccept4},
+		{"syscalls", "sys_enter_close", objs.TraceSysEnterClose},
+	}
+	links := make([]link.Link, 0, len(specs))
+	for _, s := range specs {
+		tp, err := link.Tracepoint(s.group, s.name, s.prog, nil)
+		if err != nil {
+			log.Fatalf("attaching tracepoint %s/%s: %v", s.group, s.name, err)
+		}
+		links = append(links, tp)
+	}
+	log.Printf("attached %d syscall tracepoints", len(links))
+	return links
 }
 
-// mustOpenRingbuf opens the userspace end of the BPF ringbuf map. The
+// closeLinks closes every attached BPF link in reverse order.
+func closeLinks(links []link.Link) {
+	for i := len(links) - 1; i >= 0; i-- {
+		_ = links[i].Close()
+	}
+}
+
+// mustOpenRingbuf opens the userspace end of a BPF ringbuf map. The
 // returned *ringbuf.Reader mmaps the ringbuf data region into our
 // address space (zero-copy reads) and sets up epoll so rd.Read() can
 // block efficiently when the buffer is empty.
-func mustOpenRingbuf(objs bpf.ProbeObjects) *ringbuf.Reader {
-	rd, err := ringbuf.NewReader(objs.Events)
+func mustOpenRingbuf(m *ebpf.Map, name string) *ringbuf.Reader {
+	rd, err := ringbuf.NewReader(m)
 	if err != nil {
-		log.Fatalf("opening ringbuf reader: %v", err)
+		log.Fatalf("opening ringbuf reader for %s: %v", name, err)
 	}
 	return rd
 }
 
 // installSignalHandler returns a context that is cancelled on SIGINT or
-// SIGTERM, plus the manual cancel function for use in defer. The
-// cancellation propagates through the three runX goroutines so they
-// shut down cleanly; cancel() in defer also covers the case where main
-// returns through an unexpected path. SIGTERM is what `kubectl delete
-// pod` sends (SIGKILL follows 30s later if we haven't exited).
+// SIGTERM. SIGTERM is what `kubectl delete pod` sends (SIGKILL follows
+// 30s later if we haven't exited).
 func installSignalHandler() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
-// runShutdownHandler waits for SIGTERM/SIGINT (delivered through ctx) and
-// closes the ringbuf reader. Closing the reader unblocks runCaptureLoop
-// with a ringbuf.ErrClosed sentinel, which is the only graceful way out
-// of the otherwise-blocking rd.Read() call. The goroutine exits as soon
-// as the close happens, regardless of whether the capture loop is still
-// processing events — the deferred rd.Close() in main is idempotent.
-func runShutdownHandler(ctx context.Context, wg *sync.WaitGroup, rd *ringbuf.Reader) {
+// runShutdownHandler waits for SIGTERM/SIGINT and closes both ringbufs so
+// the capture loops unblock with a ringbuf.ErrClosed sentinel. Idempotent
+// with main's deferred closes.
+func runShutdownHandler(ctx context.Context, wg *sync.WaitGroup, rds ...*ringbuf.Reader) {
 	defer wg.Done()
 	<-ctx.Done()
-	log.Printf("shutdown signal received, closing ringbuf")
-	_ = rd.Close()
+	log.Printf("shutdown signal received, closing ringbufs")
+	for _, rd := range rds {
+		_ = rd.Close()
+	}
 }
 
-// runHeartbeat logs a "still alive" line with the running capture count
-// every heartbeatInterval. Useful when traffic is sparse — a silent log
-// file makes it hard to tell "no traffic" from "tap is wedged." Reads
-// the counter atomically because the capture loop writes it without
-// holding any lock.
-func runHeartbeat(ctx context.Context, wg *sync.WaitGroup, captured *uint64) {
+// runHeartbeat logs HTTP + socket capture counts every heartbeatInterval.
+func runHeartbeat(ctx context.Context, wg *sync.WaitGroup, http *uint64, sock *uint64) {
 	defer wg.Done()
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
@@ -175,39 +191,31 @@ func runHeartbeat(ctx context.Context, wg *sync.WaitGroup, captured *uint64) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Printf("heartbeat captured=%d", atomic.LoadUint64(captured))
+			log.Printf("heartbeat http=%d sock=%d",
+				atomic.LoadUint64(http), atomic.LoadUint64(sock))
 		}
 	}
 }
 
-// runCaptureLoop is the hot path. It blocks on rd.Read() for each ringbuf
-// event, decodes the raw bytes into a Go `event` struct (same byte layout
-// as the C struct in probe.bpf.c), pulls the first HTTP line out of the
-// payload, resolves the source pod from /proc/<tgid>/cgroup via the
-// cache, and emits one log line per captured event.
-//
-// Returns when rd.Read() yields ringbuf.ErrClosed, which the shutdown
-// handler arranges by closing the reader. Other read errors are logged
-// and the loop continues — a transient verifier or memory error on one
-// event shouldn't kill the whole tap.
+// runCaptureLoop drains the HTTP-data ringbuf. Same shape as TAP-1.
 func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, captured *uint64) {
 	defer wg.Done()
-	log.Printf("ringbuf reader open; waiting for HTTP traffic on this node...")
+	log.Printf("events ringbuf open; waiting for HTTP traffic on this node...")
 
 	var e bpf.ProbeEvent
 	for {
 		record, err := rd.Read()
 		if err != nil {
 			if errors.Is(err, ringbuf.ErrClosed) {
-				log.Printf("ringbuf closed, exiting (total captured=%d)", atomic.LoadUint64(captured))
+				log.Printf("events ringbuf closed, exiting (total http=%d)", atomic.LoadUint64(captured))
 				return
 			}
-			log.Printf("ringbuf read error: %v", err)
+			log.Printf("events ringbuf read error: %v", err)
 			continue
 		}
 
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &e); err != nil {
-			log.Printf("decode error: %v", err)
+			log.Printf("events decode error: %v", err)
 			continue
 		}
 
@@ -217,29 +225,90 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, ca
 		}
 		line := firstHTTPLine(e.Data[:n])
 		if line == "" {
-			// In-kernel filter said it looked like HTTP, but the first line
-			// didn't survive the check (e.g. truncated). Skip but count it.
 			continue
 		}
 
 		info := cache.Lookup(e.Tgid)
 		atomic.AddUint64(captured, 1)
 
-		// cgroup_id is the future primary attribution key (TAP-3 §1) but the
-		// userspace cgroup_id → pod informer doesn't exist yet, so we still
-		// resolve pod via /proc/<tgid>/cgroup for human readability. Log
-		// cgroup_id alongside so TAP-3 PR3 can be verified against this
-		// baseline (the cgroup_id printed here must equal what the informer
-		// publishes for the same pod).
-		log.Printf("[cgroup=%d tgid=%d pid=%d fd=%d pod=%s container=%s] %s",
+		log.Printf("[http cgroup=%d tgid=%d pid=%d fd=%d pod=%s container=%s] %s",
 			e.CgroupId, e.Tgid, e.Pid, e.Fd, orQ(info.PodUID), orQ(info.ContainerID), line)
 	}
 }
 
+// runSocketEventLoop drains the socket lifecycle ringbuf. Logs each
+// CONNECT / ACCEPT / CLOSE event with the peer addr:port and the cgroup
+// of the originating task. PR4 will consume this same stream to populate
+// the per-socket filter set.
+func runSocketEventLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, captured *uint64) {
+	defer wg.Done()
+	log.Printf("socket_events ringbuf open; waiting for connect/accept/close events...")
+
+	var s bpf.ProbeSocketEvent
+	for {
+		record, err := rd.Read()
+		if err != nil {
+			if errors.Is(err, ringbuf.ErrClosed) {
+				log.Printf("socket_events ringbuf closed, exiting (total sock=%d)", atomic.LoadUint64(captured))
+				return
+			}
+			log.Printf("socket_events ringbuf read error: %v", err)
+			continue
+		}
+
+		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &s); err != nil {
+			log.Printf("socket_events decode error: %v", err)
+			continue
+		}
+
+		atomic.AddUint64(captured, 1)
+		info := cache.Lookup(s.Tgid)
+
+		log.Printf("[sock %s cgroup=%d tgid=%d pid=%d fd=%d pod=%s peer=%s]",
+			socketEventKindName(s.Kind), s.CgroupId, s.Tgid, s.Pid, s.Fd,
+			orQ(info.PodUID), formatPeer(s.Family, s.PeerAddr, s.PeerPort))
+	}
+}
+
+// socketEventKindName maps the BPF socket_event_kind enum to a human
+// label. Must stay in sync with probe.bpf.c's enum.
+func socketEventKindName(k uint32) string {
+	switch k {
+	case 1:
+		return "CONNECT"
+	case 2:
+		return "ACCEPT"
+	case 3:
+		return "CLOSE"
+	default:
+		return fmt.Sprintf("kind=%d", k)
+	}
+}
+
+// formatPeer renders the (family, addr, port) tuple into a human-readable
+// "ip:port" string. The port comes from BPF in network byte order (we
+// copied sin_port verbatim); addr is 4 bytes for AF_INET in network
+// order. AF_INET6 surfaces as "[v6]:port" — full IPv6 decode deferred.
+func formatPeer(family uint32, addr [16]byte, portNet uint16) string {
+	// portNet is the raw 16-bit network-byte-order value as stored in
+	// memory. binary.BigEndian.Uint16 over its 2 bytes yields host order.
+	pb := []byte{byte(portNet), byte(portNet >> 8)}
+	port := binary.BigEndian.Uint16(pb)
+	switch family {
+	case 2: // AF_INET
+		ip := net.IPv4(addr[0], addr[1], addr[2], addr[3])
+		return fmt.Sprintf("%s:%d", ip.String(), port)
+	case 10: // AF_INET6
+		return fmt.Sprintf("[v6]:%d", port)
+	case 0:
+		return "-"
+	default:
+		return fmt.Sprintf("family=%d", family)
+	}
+}
+
 // httpLinePrefixes is the set of accepted leading tokens for an HTTP/1.1
-// request line or status line. Trailing space on each method prefix
-// rejects false positives like "POSTFIX" or "HEADER:" that the 4-byte
-// in-kernel sniff in probe.bpf.c can't distinguish on its own.
+// request line or status line.
 var httpLinePrefixes = []string{
 	"HTTP/", // response status line
 	"GET ", "POST ", "PUT ", "DELETE ",
@@ -248,9 +317,6 @@ var httpLinePrefixes = []string{
 
 // firstHTTPLine extracts the request line or status line from a write
 // buffer that the in-kernel filter already pre-screened as HTTP-shaped.
-// Returns "" if userspace can't confirm the prefix — the in-kernel sniff
-// is a 4-byte check on raw bytes, this re-validates after we have the
-// full line.
 func firstHTTPLine(b []byte) string {
 	idx := bytes.IndexAny(b, "\r\n")
 	if idx < 0 {

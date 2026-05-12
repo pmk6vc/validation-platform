@@ -74,6 +74,152 @@ struct {
     __uint(max_entries, 8 * 1024 * 1024); // 8 MiB
 } events SEC(".maps");
 
+// ============================================================================
+// PR2: socket lifecycle tracking
+//
+// Hooks sys_enter_connect, sys_enter_accept4 + sys_exit_accept4, and
+// sys_enter_close to learn which (pid, fd) pairs correspond to live TCP
+// sockets and the peer addresses they're connected to. Stores the mapping in
+// the `sockets` hash map for PR4 to read at write/read time as the new
+// content-agnostic filter ("is this (pid, fd) on our interesting list?").
+//
+// Lifecycle events are also emitted on a separate ringbuf (`socket_events`)
+// so userspace can log them and validate the BPF tracking against expected
+// connection patterns. PR4 will read this ringbuf to populate the
+// `interesting_cgroups` filter set as new sockets appear.
+//
+// IPv4 only for the prototype — we capture sa_family for IPv6 but skip
+// the 16-byte address parse to keep this PR small. IPv6 follow-up if needed.
+// ============================================================================
+
+#define AF_INET 2
+#define AF_INET6 10
+
+// User-visible sockaddr_in layout (matches glibc / kernel uapi). We don't
+// include the header to keep the build hermetic; the layout is stable ABI.
+struct sockaddr_in_ {
+    __u16 sin_family;
+    __u16 sin_port;     // network byte order — userspace converts to host
+    __u32 sin_addr;     // network byte order — store the 4 bytes as-is
+};
+
+// conn_info is the value stored in the sockets map. Identifies the peer at
+// connection-establishment time so PR4 can join by cgroup_id without
+// re-reading sockaddr per write.
+struct conn_info {
+    __u64 cgroup_id;     // cgroup of the task that opened the socket
+    __u64 ts_ns;         // monotonic ns timestamp at connect/accept time
+    __u32 family;        // AF_INET or AF_INET6
+    __u32 _pad;
+    __u16 peer_port;     // network byte order; userspace decodes
+    __u8  _pad2[2];
+    __u8  peer_addr[16]; // IPv4 in first 4 bytes; full 16 for IPv6 (future)
+};
+
+const struct conn_info *unused_conn_info __attribute__((unused));
+
+// socket_event is the per-lifecycle-event userspace payload. Carried on a
+// separate ringbuf so the data-flow ringbuf (`events`) isn't polluted by
+// connect/close churn that's small and bursty rather than per-syscall.
+enum socket_event_kind {
+    SOCK_EVT_CONNECT = 1, // outbound connect()
+    SOCK_EVT_ACCEPT  = 2, // inbound accept4() returned a new fd
+    SOCK_EVT_CLOSE   = 3, // close() of a tracked fd
+};
+
+struct socket_event {
+    __u64 cgroup_id;
+    __u64 ts_ns;
+    __u32 pid;
+    __u32 tgid;
+    __u32 fd;
+    __u32 kind;          // socket_event_kind
+    __u32 family;
+    __u32 _pad;
+    __u16 peer_port;     // network byte order
+    __u8  _pad2[6];
+    __u8  peer_addr[16];
+};
+
+const struct socket_event *unused_socket_event __attribute__((unused));
+
+// sockets: keyed by (pid << 32 | fd) so different processes' fd numbers can't
+// collide. Populated on connect/accept, removed on close. 64 K capacity is a
+// generous upper bound for a single node's live socket count.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64);
+    __type(value, struct conn_info);
+} sockets SEC(".maps");
+
+// socket_events: lifecycle ringbuf. Small (1 MiB) because socket open/close
+// volume is orders of magnitude lower than write/read syscall volume.
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 * 1024 * 1024);
+} socket_events SEC(".maps");
+
+// accept_args: per-thread temporary that bridges sys_enter_accept4 (where we
+// see the sockaddr * out-pointer the kernel will write to) and
+// sys_exit_accept4 (where the return value gives us the new fd and the
+// sockaddr * has been populated). Keyed by pid_tgid because accept4 is a
+// blocking syscall and we need to associate the enter/exit pair on the
+// same thread.
+struct accept_args {
+    __u64 sockaddr_ptr;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u64);
+    __type(value, struct accept_args);
+} accept_pending SEC(".maps");
+
+// Helpers ---------------------------------------------------------------------
+
+// Read an AF_INET sockaddr from user memory into ci. Returns 0 on success,
+// -1 if the family isn't AF_INET (caller decides whether to drop or keep
+// with empty addr).
+static __always_inline int read_sockaddr_in(struct conn_info *ci, void *uaddr) {
+    struct sockaddr_in_ sa = {};
+    if (bpf_probe_read_user(&sa, sizeof(sa), uaddr) != 0) return -1;
+    ci->family = sa.sin_family;
+    if (sa.sin_family != AF_INET) {
+        // Mark family but leave addr/port zeroed. IPv6 path lands here today.
+        return 0;
+    }
+    ci->peer_port = sa.sin_port;
+    __builtin_memcpy(ci->peer_addr, &sa.sin_addr, 4);
+    return 0;
+}
+
+// Emit one socket_event from a conn_info. Drops silently on ringbuf overflow
+// (lifecycle events are best-effort; userspace can rebuild from periodic
+// dumps if we ever need stricter delivery).
+static __always_inline void emit_socket_event(__u32 kind, __u32 fd,
+                                              struct conn_info *ci) {
+    struct socket_event *e = bpf_ringbuf_reserve(&socket_events, sizeof(*e), 0);
+    if (!e) return;
+    __u64 id = bpf_get_current_pid_tgid();
+    e->cgroup_id = ci->cgroup_id;
+    e->ts_ns     = ci->ts_ns;
+    e->pid       = (__u32)id;
+    e->tgid      = (__u32)(id >> 32);
+    e->fd        = fd;
+    e->kind      = kind;
+    e->family    = ci->family;
+    e->peer_port = ci->peer_port;
+    __builtin_memcpy(e->peer_addr, ci->peer_addr, 16);
+    bpf_ringbuf_submit(e, 0);
+}
+
+// Compose the sockets-map key from (pid, fd). The Go side mirrors this.
+static __always_inline __u64 sockets_key(__u32 pid, __u32 fd) {
+    return ((__u64)pid << 32) | (__u64)fd;
+}
+
 // Context layout for tracepoint/syscalls/sys_enter_write. Matches the format
 // at /sys/kernel/debug/tracing/events/syscalls/sys_enter_write/format. The
 // common-fields preamble (first 8 bytes) and the syscall_nr / args[] layout
@@ -169,6 +315,114 @@ int trace_sys_enter_write(struct sys_enter_write_args *ctx) {
     bpf_probe_read_user(&e->data, to_read, (void *)ctx->buf);
 
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+// ============================================================================
+// PR2: socket lifecycle tracepoints
+// ============================================================================
+
+// sys_enter_connect args layout: (int fd, struct sockaddr __user *uservaddr,
+// int addrlen). connect() takes an existing socket fd and a peer sockaddr.
+struct sys_enter_connect_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __u64 fd;
+    __u64 uservaddr;
+    __u64 addrlen;
+};
+
+SEC("tracepoint/syscalls/sys_enter_connect")
+int trace_sys_enter_connect(struct sys_enter_connect_args *ctx) {
+    struct conn_info ci = {};
+    ci.cgroup_id = bpf_get_current_cgroup_id();
+    ci.ts_ns     = bpf_ktime_get_ns();
+    if (read_sockaddr_in(&ci, (void *)ctx->uservaddr) != 0) return 0;
+
+    __u64 id = bpf_get_current_pid_tgid();
+    __u32 tgid = (__u32)(id >> 32);
+    __u64 k = sockets_key(tgid, (__u32)ctx->fd);
+    bpf_map_update_elem(&sockets, &k, &ci, BPF_ANY);
+    emit_socket_event(SOCK_EVT_CONNECT, (__u32)ctx->fd, &ci);
+    return 0;
+}
+
+// sys_enter_accept4 args layout: (int fd, struct sockaddr __user *upeer_sockaddr,
+// int __user *upeer_addrlen, int flags). The sockaddr is an *output* pointer
+// the kernel populates with the peer's address; we have to wait until exit
+// to read it. Stash the pointer between enter and exit.
+struct sys_enter_accept4_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __u64 fd;
+    __u64 upeer_sockaddr;
+    __u64 upeer_addrlen;
+    __u64 flags;
+};
+
+SEC("tracepoint/syscalls/sys_enter_accept4")
+int trace_sys_enter_accept4(struct sys_enter_accept4_args *ctx) {
+    __u64 id = bpf_get_current_pid_tgid();
+    struct accept_args a = { .sockaddr_ptr = ctx->upeer_sockaddr };
+    bpf_map_update_elem(&accept_pending, &id, &a, BPF_ANY);
+    return 0;
+}
+
+// sys_exit_accept4: return value is the new fd (or -errno). Look up the
+// stashed sockaddr pointer, read the now-populated peer address.
+struct sys_exit_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __s64 ret;
+};
+
+SEC("tracepoint/syscalls/sys_exit_accept4")
+int trace_sys_exit_accept4(struct sys_exit_args *ctx) {
+    __u64 id = bpf_get_current_pid_tgid();
+    struct accept_args *a = bpf_map_lookup_elem(&accept_pending, &id);
+    if (!a) return 0;
+    __u64 sockaddr_ptr = a->sockaddr_ptr;
+    bpf_map_delete_elem(&accept_pending, &id);
+
+    if (ctx->ret < 0) return 0; // accept failed
+    __u32 new_fd = (__u32)ctx->ret;
+
+    struct conn_info ci = {};
+    ci.cgroup_id = bpf_get_current_cgroup_id();
+    ci.ts_ns     = bpf_ktime_get_ns();
+    if (sockaddr_ptr) {
+        if (read_sockaddr_in(&ci, (void *)sockaddr_ptr) != 0) return 0;
+    }
+
+    __u32 tgid = (__u32)(id >> 32);
+    __u64 k = sockets_key(tgid, new_fd);
+    bpf_map_update_elem(&sockets, &k, &ci, BPF_ANY);
+    emit_socket_event(SOCK_EVT_ACCEPT, new_fd, &ci);
+    return 0;
+}
+
+// sys_enter_close args layout: (unsigned int fd). Evict the (pid, fd) entry
+// from the sockets map and emit a CLOSE event so userspace can mirror.
+// Stale entries are harmless for filtering but cap the map's size.
+struct sys_enter_close_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __u64 fd;
+};
+
+SEC("tracepoint/syscalls/sys_enter_close")
+int trace_sys_enter_close(struct sys_enter_close_args *ctx) {
+    __u64 id = bpf_get_current_pid_tgid();
+    __u32 tgid = (__u32)(id >> 32);
+    __u64 k = sockets_key(tgid, (__u32)ctx->fd);
+    struct conn_info *ci = bpf_map_lookup_elem(&sockets, &k);
+    if (!ci) return 0; // not a tracked socket fd
+    emit_socket_event(SOCK_EVT_CLOSE, (__u32)ctx->fd, ci);
+    bpf_map_delete_elem(&sockets, &k);
     return 0;
 }
 
