@@ -53,33 +53,19 @@ type event struct {
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.LUTC)
-	log.Printf("vp-tap TAP-1 prototype starting (pid=%d)", os.Getpid())
+	setupLogger()
+	mustRaiseMemlock()
 
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatalf("removing memlock: %v", err)
-	}
-
-	objs := bpf.ProbeObjects{}
-	if err := bpf.LoadProbeObjects(&objs, nil); err != nil {
-		log.Fatalf("loading bpf objects: %v", err)
-	}
+	objs := mustLoadBPFObjects()
 	defer objs.Close()
 
-	tp, err := link.Tracepoint("syscalls", "sys_enter_write", objs.TraceSysEnterWrite, nil)
-	if err != nil {
-		log.Fatalf("attaching tracepoint sys_enter_write: %v", err)
-	}
+	tp := mustAttachTracepoint(objs)
 	defer tp.Close()
-	log.Printf("attached tracepoint syscalls/sys_enter_write")
 
-	rd, err := ringbuf.NewReader(objs.Events)
-	if err != nil {
-		log.Fatalf("opening ringbuf reader: %v", err)
-	}
+	rd := mustOpenRingbuf(objs)
 	defer rd.Close()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := installSignalHandler()
 	defer cancel()
 
 	cache := pod.NewCache()
@@ -96,6 +82,77 @@ func main() {
 	go runHeartbeat(ctx, &wg, &captured)
 	go runCaptureLoop(&wg, rd, cache, &captured)
 	wg.Wait()
+}
+
+// setupLogger configures the stdlib logger to prepend UTC date+time and
+// emits the initial startup line. Centralised so every entrypoint sees
+// the same log format.
+func setupLogger() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
+	log.Printf("vp-tap TAP-1 prototype starting (pid=%d)", os.Getpid())
+}
+
+// mustRaiseMemlock removes the RLIMIT_MEMLOCK cap so BPF maps can be
+// allocated. On kernels < 5.11 the default 64 KiB ceiling rejects our
+// 8 MiB ringbuf; on newer kernels the call is a harmless no-op (BPF
+// memory has separate accounting). Requires CAP_SYS_RESOURCE, which the
+// DaemonSet's privileged: true provides. Fatal on failure — without
+// this the BPF load further down is guaranteed to fail.
+func mustRaiseMemlock() {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		log.Fatalf("removing memlock: %v", err)
+	}
+}
+
+// mustLoadBPFObjects parses the bpf2go-generated ELF blob, makes the
+// bpf(BPF_PROG_LOAD) and bpf(BPF_MAP_CREATE) syscalls to install our
+// program and ringbuf in the kernel, and returns a ProbeObjects struct
+// populated with the resulting kernel file descriptors. The caller must
+// defer objs.Close() — closing releases the kernel fds.
+//
+// The program is loaded but NOT attached to any hook at this point;
+// attachment happens in mustAttachTracepoint.
+func mustLoadBPFObjects() bpf.ProbeObjects {
+	objs := bpf.ProbeObjects{}
+	if err := bpf.LoadProbeObjects(&objs, nil); err != nil {
+		log.Fatalf("loading bpf objects: %v", err)
+	}
+	return objs
+}
+
+// mustAttachTracepoint wires the loaded BPF program to the
+// syscalls/sys_enter_write tracepoint. After this returns, every
+// write() syscall on the host runs our filter. The returned *link.Link
+// owns the perf-event fd; closing it detaches.
+func mustAttachTracepoint(objs bpf.ProbeObjects) link.Link {
+	tp, err := link.Tracepoint("syscalls", "sys_enter_write", objs.TraceSysEnterWrite, nil)
+	if err != nil {
+		log.Fatalf("attaching tracepoint sys_enter_write: %v", err)
+	}
+	log.Printf("attached tracepoint syscalls/sys_enter_write")
+	return tp
+}
+
+// mustOpenRingbuf opens the userspace end of the BPF ringbuf map. The
+// returned *ringbuf.Reader mmaps the ringbuf data region into our
+// address space (zero-copy reads) and sets up epoll so rd.Read() can
+// block efficiently when the buffer is empty.
+func mustOpenRingbuf(objs bpf.ProbeObjects) *ringbuf.Reader {
+	rd, err := ringbuf.NewReader(objs.Events)
+	if err != nil {
+		log.Fatalf("opening ringbuf reader: %v", err)
+	}
+	return rd
+}
+
+// installSignalHandler returns a context that is cancelled on SIGINT or
+// SIGTERM, plus the manual cancel function for use in defer. The
+// cancellation propagates through the three runX goroutines so they
+// shut down cleanly; cancel() in defer also covers the case where main
+// returns through an unexpected path. SIGTERM is what `kubectl delete
+// pod` sends (SIGKILL follows 30s later if we haven't exited).
+func installSignalHandler() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
 // runShutdownHandler waits for SIGTERM/SIGINT (delivered through ctx) and
