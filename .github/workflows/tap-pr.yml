@@ -1,0 +1,50 @@
+name: tap PR checks
+
+# Pre-merge tests for the vp-tap Go + eBPF module. Mirrors pr_main.yml's
+# pattern: tests only, no image build, no push. Path-filtered to tap/**
+# so Kotlin-only PRs aren't blocked by the eBPF toolchain install.
+
+on:
+  pull_request:
+    paths:
+      - 'tap/**'
+      - '.github/workflows/tap-pr.yml'
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: tap/go.sum
+
+      - name: Install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm libbpf-dev libelf-dev linux-libc-dev
+
+      - name: Tidy modules
+        working-directory: tap
+        run: go mod tidy
+
+      - name: Generate BPF bindings
+        working-directory: tap
+        run: go generate ./internal/ebpf/...
+
+      - name: Go vet
+        working-directory: tap
+        run: go vet ./...
+
+      - name: Go test
+        working-directory: tap
+        run: go test -race ./...

@@ -1,4 +1,14 @@
+//go:build ignore
+
 // SPDX-License-Identifier: BSD-2-Clause
+//
+// Build constraint above tells Go's toolchain to skip this file entirely.
+// Without it, `go test ./...` with cgo enabled (the default outside our
+// Dockerfile) sees a .c file in a Go package and errors with "C source
+// files not allowed when not using cgo or SWIG". The actual BPF
+// compilation goes through bpf2go → clang -target bpf and ignores this
+// constraint, so the file still gets compiled correctly into BPF
+// bytecode by `go generate`.
 //
 // vp-tap TAP-1 prototype eBPF program.
 //

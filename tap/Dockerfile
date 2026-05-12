@@ -31,7 +31,9 @@ WORKDIR /src
 COPY . .
 RUN go mod tidy
 RUN go generate ./internal/ebpf/...
-RUN go test ./...
+# Tests are gated by .github/workflows/tap-pr.yml — the image build path
+# is for production artifact production only, mirroring how push_main.yml
+# builds the Kotlin images without re-running tests.
 RUN go build -trimpath -ldflags="-s -w" -o /vp-tap ./cmd/vp-tap
 
 # Pluck ca-certificates from the builder so the runtime image can do TLS
