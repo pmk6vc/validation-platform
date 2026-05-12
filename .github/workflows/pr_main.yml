@@ -106,3 +106,61 @@ jobs:
         run: |
           terraform -chdir=infra/sandbox init -backend=false
           terraform -chdir=infra/sandbox validate
+
+  tap-test:
+    # The vp-tap Go + eBPF module's pre-merge gate. Independent from the
+    # Kotlin jobs above because the toolchain is different (Go + clang +
+    # libbpf) but lives in the same workflow file so all PR checks are in
+    # one place.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: tap/go.sum
+
+      - name: Install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm libbpf-dev libelf-dev linux-libc-dev
+
+      - name: Install gotestsum
+        # gotestsum runs `go test` and emits JUnit XML alongside the
+        # normal stdout so the Test report step below can attach
+        # per-test results to the PR check, same shape as the Kotlin
+        # unit-tests job uses for Gradle's JUnit output.
+        run: go install gotest.tools/gotestsum@latest
+
+      - name: Tidy modules
+        working-directory: tap
+        run: go mod tidy
+
+      - name: Generate BPF bindings
+        working-directory: tap
+        run: go generate ./internal/ebpf/...
+
+      - name: Go vet
+        working-directory: tap
+        run: go vet ./...
+
+      - name: Go test
+        working-directory: tap
+        # --format=testname: print each PASS/FAIL line in CI log
+        # --junitfile: write JUnit XML for the Test report step
+        # -race: enable the data-race detector
+        # -count=1: defeat the test result cache so re-runs of the same
+        #   commit actually re-execute the tests
+        run: gotestsum --format=testname --junitfile=junit.xml -- -race -count=1 ./...
+
+      - name: Test report
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          comment_mode: off
+          check_name: Tap Test Results
+          files: tap/junit.xml
