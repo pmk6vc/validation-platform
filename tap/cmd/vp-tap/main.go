@@ -237,6 +237,16 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, cache *pod.Cache, ca
 	}
 }
 
+// httpLinePrefixes is the set of accepted leading tokens for an HTTP/1.1
+// request line or status line. Trailing space on each method prefix
+// rejects false positives like "POSTFIX" or "HEADER:" that the 4-byte
+// in-kernel sniff in probe.bpf.c can't distinguish on its own.
+var httpLinePrefixes = []string{
+	"HTTP/", // response status line
+	"GET ", "POST ", "PUT ", "DELETE ",
+	"HEAD ", "PATCH ", "OPTIONS ", "CONNECT ", "TRACE ",
+}
+
 // firstHTTPLine extracts the request line or status line from a write
 // buffer that the in-kernel filter already pre-screened as HTTP-shaped.
 // Returns "" if userspace can't confirm the prefix — the in-kernel sniff
@@ -248,19 +258,10 @@ func firstHTTPLine(b []byte) string {
 		idx = len(b)
 	}
 	s := string(b[:idx])
-	switch {
-	case strings.HasPrefix(s, "HTTP/"):
-		return s
-	case strings.HasPrefix(s, "GET "),
-		strings.HasPrefix(s, "POST "),
-		strings.HasPrefix(s, "PUT "),
-		strings.HasPrefix(s, "DELETE "),
-		strings.HasPrefix(s, "HEAD "),
-		strings.HasPrefix(s, "PATCH "),
-		strings.HasPrefix(s, "OPTIONS "),
-		strings.HasPrefix(s, "CONNECT "),
-		strings.HasPrefix(s, "TRACE "):
-		return s
+	for _, p := range httpLinePrefixes {
+		if strings.HasPrefix(s, p) {
+			return s
+		}
 	}
 	return ""
 }
