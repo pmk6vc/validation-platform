@@ -122,3 +122,23 @@ jobs:
             --image=${{ env.REGISTRY }}/collector:${{ github.sha }} \
             --region=${{ env.REGION }} \
             --quiet
+
+      # --- Build and push vp-tap image ---
+      # The Go + eBPF tap ships as a multi-stage Docker build (clang +
+      # libbpf at build time, FROM scratch + ca-certificates at runtime).
+      # Pushed to AR on every main merge so sandbox-up / Kustomize
+      # manifests can pull :latest, mirroring the Kotlin images above.
+      # No deploy step — vp-tap is a per-customer DaemonSet, not a
+      # Cloud Run service.
+      - name: Build vp-tap image
+        working-directory: tap
+        run: |
+          docker build \
+            -t ${{ env.REGISTRY }}/vp-tap:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/vp-tap:latest \
+            .
+
+      - name: Push vp-tap image
+        run: |
+          docker push ${{ env.REGISTRY }}/vp-tap:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/vp-tap:latest

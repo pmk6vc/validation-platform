@@ -1,0 +1,76 @@
+# TAP-1 prototype DaemonSet — one privileged vp-tap pod per node in the
+# sandbox cluster. Tracepoints + ring buffer need CAP_BPF and CAP_PERFMON
+# at minimum; the prototype uses `privileged: true` for simplicity. TAP-6
+# will swap this for the narrow capability set.
+#
+# hostPID: true is essential — without it /proc inside the pod only shows
+# the tap binary's own PID, so PID→pod resolution would always fail.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vp-tap
+  namespace: validation
+  labels:
+    app: vp-tap
+spec:
+  selector:
+    matchLabels:
+      app: vp-tap
+  template:
+    metadata:
+      labels:
+        app: vp-tap
+    spec:
+      hostPID: true
+      hostNetwork: false
+      # tolerate the sandbox's spot node taint so the DaemonSet schedules
+      # on every node (there's only one, but be explicit).
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: vp-tap
+          image: us-central1-docker.pkg.dev/zugzwang-381922/validation/vp-tap:prototype
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            # /sys/fs/bpf for the BPF filesystem (pinned maps/programs).
+            - name: bpffs
+              mountPath: /sys/fs/bpf
+            # tracefs — modern path for tracepoint metadata. cilium/ebpf's
+            # link.Tracepoint reads /sys/kernel/tracing/events/<grp>/<n>/id
+            # to discover the tracepoint ID.
+            - name: tracefs
+              mountPath: /sys/kernel/tracing
+            # debugfs — legacy fallback path for the same tracepoint metadata.
+            # Mount best-effort: COS may not always expose debugfs.
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+            # COS exposes BTF at /sys/kernel/btf for CO-RE relocations.
+            - name: btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+      volumes:
+        - name: bpffs
+          hostPath:
+            path: /sys/fs/bpf
+            type: Directory
+        - name: tracefs
+          hostPath:
+            path: /sys/kernel/tracing
+            type: DirectoryOrCreate
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+            type: DirectoryOrCreate
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: DirectoryOrCreate
