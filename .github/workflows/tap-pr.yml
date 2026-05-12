@@ -47,4 +47,9 @@ jobs:
 
       - name: Go test
         working-directory: tap
-        run: go test -race ./...
+        # -v: print each test's PASS/FAIL so a CI viewer can see exactly
+        #   what executed, not just an aggregate "ok" line.
+        # -race: enable the data-race detector.
+        # -count=1: defeat the test result cache so re-runs of the same
+        #   commit actually re-execute the tests.
+        run: go test -v -race -count=1 ./...
