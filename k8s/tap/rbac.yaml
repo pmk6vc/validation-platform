@@ -1,0 +1,38 @@
+# RBAC for the vp-tap K8s pod informer (VAL-55 PR2 onward).
+#
+# The informer watches pods cluster-wide with a server-side
+# field selector spec.nodeName=$(NODE_NAME), so only events for pods on
+# the local node reach the agent. Even with the field filter the API
+# request is cluster-scoped, so the RBAC has to be a ClusterRoleBinding —
+# a namespace-scoped Role wouldn't authorise the cluster-list call.
+#
+# The platform-api-key Secret used by the Kotlin agent is intentionally
+# NOT referenced here — vp-tap doesn't make platform-side HTTP calls yet
+# (TAP-4 will).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vp-tap
+  namespace: validation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vp-tap-pods-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vp-tap-pods-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vp-tap-pods-reader
+subjects:
+  - kind: ServiceAccount
+    name: vp-tap
+    namespace: validation
