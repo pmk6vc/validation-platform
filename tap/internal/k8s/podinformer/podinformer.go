@@ -102,10 +102,15 @@ func (i *Index) Run(ctx context.Context) {
 		log.Printf("podinformer: initial cache sync did not complete (ctx cancelled?)")
 		return
 	}
+	// Read map length while still holding the lock; informer event
+	// handlers (onAdd / onUpdate / onDelete) write under the same mutex
+	// from other goroutines, and an unlocked len() races with their
+	// map mutations — caught by `go test -race` in CI.
 	i.mu.Lock()
 	i.synced = true
+	indexed := len(i.cgroupToPod)
 	i.mu.Unlock()
-	log.Printf("podinformer: initial sync complete, %d cgroup ids indexed", len(i.cgroupToPod))
+	log.Printf("podinformer: initial sync complete, %d cgroup ids indexed", indexed)
 
 	<-ctx.Done()
 }
