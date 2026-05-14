@@ -670,10 +670,326 @@ The replay engine will fetch captured inputs via `GET /api/captured-inputs` from
 ### Shared Infrastructure
 
 `shared/` provides:
-- `DatabaseFactory` — Exposed `Database.connect` (direct, no explicit connection pool) + Flyway migrations. Note: uses Exposed's internal connection management, not HikariCP. See Linear `[ARCH-4]` for the known gap.
+- `DatabaseFactory` — HikariCP `DataSource` passed to both Flyway and Exposed `Database.connect`. Pool size configurable via `DATABASE_POOL_SIZE` (default 10). See Linear `[ARCH-4]` for pool-size calibration vs. Cloud Run instance count.
 - `Page<T>` — cursor-based pagination model
 - `InstantSerializer` — kotlinx.serialization adapter for `java.time.Instant`
 - `DatabaseTestBase` (test fixtures) — starts a TestContainers PostgreSQL instance
 - `KubernetesWorkloadTestBase` (test fixtures) — starts a k3s cluster with test workloads
 - `TestJwtKeys` (test fixtures) — single consolidated RSA test keypair + signed-token helpers used by all module tests
 - `authedTestApplication` (test fixtures) — Ktor test app helper that installs `installJwtAuth()` with the test private key, removing per-module JWT setup boilerplate
+
+<!-- GSD:project-start source:PROJECT.md -->
+## Project
+
+**Validation Platform v1**
+
+A hosted B2B SaaS that lets engineering teams validate every change against real production traffic before deployment: capture live req/res traffic with eBPF, replay it against a staging cluster, and return a PASS / FAIL / INCONCLUSIVE verdict with per-dimension evidence (response diffs, latency, error rate, memory trend). v1 ships as a design-partner beta with fully self-serve onboarding, a web dashboard as the primary surface, PR Check Runs as the decision touch point, and Slack notifications for alerts.
+
+**Core Value:** **Replay real production traffic against staging and return a trustworthy go/no-go decision — within a self-serve developer experience that a design partner installs and gets value from in under 30 minutes.** Everything else in the product exists to make this single loop fast, accurate, and safe.
+
+### Constraints
+
+- **Tech stack** — backend stays Kotlin (Ktor 3, Exposed, Flyway, JDK 21); capture stack is Go (`cilium/ebpf`, `bpf2go`, `client-go`, stdlib `net/http`); frontend is Vite + React + TypeScript + Tailwind. PostgreSQL is the default storage backend.
+- **Hosting** — GCP-native: Cloud Run (platform, collector, web dashboard), Cloud SQL (Postgres), GKE (customer-side agent + tap; sandbox cluster), Artifact Registry. UI ships as a static bundle on Cloud Run with nginx (or GCS + CDN — TBD by the team).
+- **Wire contracts** — existing platform/collector REST API stays stable. The pluggable storage backend lives behind the collector's repository layer; external contract unchanged. The Go agent speaks the existing contracts byte-for-byte during the cutover.
+- **Performance** — design and benchmark to the medium envelope (50 services, ~1k RPS captured, ~50 validation runs/day, 30-day retention per design partner). Sandbox cluster is the realistic benchmark rig.
+- **Security** — RLS retrofit must not break existing app-layer tenancy or the public REST API; JWT key rotation must not break existing sessions; redaction must not destroy captured-input fidelity for safe content (validation-run accuracy depends on it).
+- **Self-serve onboarding** — sub-30-minute time-to-first-verdict for a developer with no prior context. This is a product metric, not a vibe — it constrains how the dashboard, Helm install, and agent registration flow are designed.
+- **Schedule** — design-partner beta is the v1 done bar. No specific deadline named; the project ships when the loop works end-to-end on a real design partner's cluster + PRs and the team is comfortable inviting more.
+- **PR shape** — small, reviewable PRs. The capture-cutover phase in particular has a hard constraint on chunked deletion; later phases inherit this norm.
+- **Reversibility** — feature flags or clean revert paths for cutover-style changes (sandbox swap, RLS retrofit, JWT rotation) until they're validated.
+- **Brand / UX** — ergonomic user experience is paramount; the dashboard is the differentiated surface, not an admin console. Investments in motion, copy, and empty states are not nice-to-haves.
+<!-- GSD:project-end -->
+
+<!-- GSD:stack-start source:codebase/STACK.md -->
+## Technology Stack
+
+## Languages
+- Kotlin 2.2.21 - All application code (platform, collector, agent, test services, integration tests)
+- Bash - Deployment and bootstrap scripts (`scripts/*.sh`)
+- SQL - Database migrations and schema definitions (`shared/src/main/resources/db/migration/V*.sql`)
+- HCL/Terraform - Infrastructure as Code (`infra/platform/*.tf`)
+- YAML - Kubernetes manifests (`k8s/**/*.yaml`) and Ktor application config (`application.yaml`)
+## Runtime
+- JVM - OpenJDK 21 (Eclipse Temurin)
+- Gradle 8.11 - Build system
+- Gradle 8.11 with Kotlin DSL (`build.gradle.kts`)
+- Lockfile: `gradle/wrapper/gradle-wrapper.jar` (Gradle wrapper for reproducible builds)
+- Version catalog: `gradle/libs.versions.toml` (centralized dependency management)
+## Frameworks
+- Ktor 3.3.3 - Kotlin-native web framework (async/coroutines-first)
+- Exposed 0.57.0 - Kotlin ORM and query DSL
+- PostgreSQL 42.7.7 - JDBC driver
+- Flyway 9.22.3 - Database schema migrations (V0001–V0007 in `shared/src/main/resources/db/migration/`)
+- HikariCP 5.1.0 - Connection pooling (max pool size configurable via `DATABASE_POOL_SIZE` env var, default 10)
+- Fabric8 Kubernetes Client 6.10.0 - K8s API access for agent service discovery (Loop 1)
+- java-jwt (Auth0) 4.4.0 - RS256 JWT generation and validation
+- BouncyCastle 1.79 - Cryptographic operations for RSA key handling and K3s EC key support
+- kotlinx-serialization-json 1.7.3 - JSON serialization/deserialization (ignoreUnknownKeys = true for schema evolution)
+- google-cloud-secretmanager 2.54.0 - Cloud Secret Manager SDK (runtime secret resolution)
+- cloud-sql-postgres-socket-factory 1.21.0 - Cloud SQL JDBC socket factory for IAM authentication (Cloud Run only)
+- Logback 1.5.26 - Logging framework
+- logstash-logback-encoder 8.1 - JSON logging for structured log aggregation
+- JUnit 5 (Jupiter) 5.10.0 - Test runner
+- Kotlin test 2.2.21 - Kotlin testing utilities with JUnit 5 integration
+- TestContainers 2.0.3 - Docker-based integration testing
+- MockK 1.13.9 - Kotlin mocking framework
+- Ktor client mock - Mock HTTP responses for testing
+- Jib 3.4.4 - Containerized JAR builds (multi-architecture amd64/arm64 support)
+- ktlint 1.5.0 (plugin 12.1.2) - Kotlin code formatter and linter (applied to all modules except `test-services`)
+## Key Dependencies
+- Ktor 3.3.3 - Foundation of all HTTP communication (platform, collector, agent, tests)
+- PostgreSQL 16 - Transactional data store (organizations, services, captured inputs)
+- Exposed 0.57.0 - Type-safe ORM queries (critical for data model integrity)
+- Flyway 9.22.3 - Schema versioning and migrations
+- java-jwt 4.4.0 - RS256 JWT validation in both platform and collector servers
+- Fabric8 Kubernetes Client 6.10.0 - Enables agent Loop 1 (K8s service discovery)
+- kotlinx-serialization-json 1.7.3 - Shared serialization for all API contracts
+- HikariCP 5.1.0 - Connection pool management (tunable for Cloud Run concurrency)
+- google-cloud-secretmanager 2.54.0 - Secure secret delivery in GCP production
+- cloud-sql-postgres-socket-factory 1.21.0 - IAM-authenticated DB connections (Cloud Run)
+- logback + logstash-logback-encoder - Structured logging for observability
+- TestContainers 2.0.3 - Isolated integration tests without external services
+- MockK 1.13.9 - Unit test mocking
+- Gradle 8.11 - Reproducible builds via wrapper
+## Configuration
+- `DATABASE_URL` - JDBC URL (default: `jdbc:postgresql://localhost:5432/platform`)
+- `DATABASE_USER` - Postgres username (default: `postgres`)
+- `DATABASE_PASSWORD` - Postgres password (read via SecretsProvider)
+- `DATABASE_AUTH_MODE` - `password` (default) or `iam` (Cloud Run with Workload Identity)
+- `DATABASE_POOL_SIZE` - HikariCP max pool size (default: 10)
+- `DATABASE_CONNECTION_TIMEOUT_MS` - Connection timeout (default: 30,000 ms)
+- `JWT_PRIVATE_KEY` - PEM-encoded RSA private key (pipes used for newlines in env vars)
+- `SECRETS_PROVIDER` - `literal` (default, env vars) or `gcp` (Cloud Secret Manager)
+- `PLATFORM_URL` - Platform server URL for config polling (default: `http://platform.validation.svc.cluster.local:8080`)
+- `COLLECTOR_URL` - Collector server URL for traffic ingestion (default: falls back to `PLATFORM_URL`)
+- `API_KEY` - JWT bearer token for authentication (sourced from Kubernetes Secret `platform-api-key/jwt-token`)
+- `KUBESHARK_URL` - Kubeshark WebSocket endpoint (default: `http://kubeshark-front.default:80`)
+- Ktor application modules configured in `application.yaml` per module:
+## Platform Requirements
+- Java 21 (Eclipse Temurin JRE)
+- Gradle 8.11 (via wrapper)
+- Docker + Docker Compose (for `dockerUp` / `dockerDown`)
+- Colima or Docker Desktop (macOS; TestContainers auto-detects Colima socket at `~/.colima/docker.sock`)
+- kubectl (for Kubernetes test deployments and TAP/agent management)
+- Terraform (for GCP infrastructure via `scripts/platform-up.sh`)
+- gcloud CLI (for GCP authentication and Secret Manager access)
+- GCP Project with:
+- GKE cluster for agent + vp-tap DaemonSet deployment (Kubeshark integration)
+- Docker Compose (spins up PostgreSQL + platform + collector containers)
+- k3s (TestContainers k3s cluster for integration tests)
+- Local Kubernetes via minikube or Colima cluster
+## Container Images
+- `validation-platform:test` - Built locally for e2e tests via `deploy/Dockerfile.platform`
+- `validation-collector:test` - Built locally for e2e tests via `deploy/Dockerfile.collector`
+- `validation-agent:latest` - Built via Jib from `agent/build.gradle.kts`
+- `vp-tap:prototype` - Privileged DaemonSet pod for eBPF traffic capture
+- Artifact Registry: `us-central1-docker.pkg.dev/[PROJECT]/validation/`
+<!-- GSD:stack-end -->
+
+<!-- GSD:conventions-start source:CONVENTIONS.md -->
+## Conventions
+
+## Language and Linting
+- **Kotlin** on the JVM (Java 21 toolchain), Gradle Kotlin DSL build (`build.gradle.kts`).
+- **ktlint** enforces style across all Kotlin modules. Configured at root `build.gradle.kts`. Run via `./gradlew ktlintCheck`.
+- Conventional `.editorconfig` (when present) sets 4-space indent and ~120-char line length consistent with `ktlint_official` style.
+- The Go `tap/` module is a separate ecosystem with its own conventions and tooling (see `tap/go.mod`). It is not subject to the Kotlin rules here.
+## Package Structure
+- `com.platform.shared.*` — `auth`, `database`, `models`, `secrets` (and `testing` fixtures).
+- `com.platform.*` (platform) — `api`, `auth`, `database`, `models`.
+- `com.platform.collector.*` — `api`, `database`, `models`.
+- `com.platform.agent.*` — flat package with a nested `models/` subpackage for wire DTOs.
+- `com.platform.e2e.*` — full-stack test cases.
+## Naming Conventions
+| Element | Convention | Examples |
+|---------|------------|----------|
+| Files / classes | PascalCase | `Routes.kt`, `ServiceRepository.kt`, `KubesharkClient.kt` |
+| Functions | camelCase | `registerService`, `fetchConfig`, `drainBatch` |
+| Local vars / params | camelCase | `organizationId`, `targetServices` |
+| Constants (`const val`) | UPPER_SNAKE_CASE | `DEFAULT_PAGE_SIZE = 20`, `MAX_PAGE_SIZE = 100`, `MAX_BATCH_SIZE = 1000` |
+| Test method names | backtick strings | `` `GET services should return empty page when no services`() `` |
+| Exposed tables | plural `object` | `object Organizations : Table("organizations")` |
+| Value classes | suffix with `Id` | `OrganizationId`, `ServiceId`, `CapturedInputId` |
+| Sealed outcomes | `*Outcome` | `RegistrationOutcome` |
+| HTTP client facades | `*Client` | `PlatformClient`, `CollectorClient`, `ConfigClient`, `KubesharkClient` |
+| Discovery / pipeline | role-suffixed | `K8sServiceDiscovery`, `TrafficTransformer`, `JwtTokenGenerator` |
+## Type Patterns
+- All domain models and DTOs are `data class`.
+- Wire DTOs are `@Serializable` (kotlinx.serialization).
+- Optional fields default to `null` or sensible defaults — additive evolution friendly.
+- Example: `data class Service(val id: ServiceId, val organizationId: OrganizationId, ... , val metadata: Map<String, String>? = null)`.
+- `@JvmInline value class OrganizationId(val value: String)` (similarly `ServiceId`, `CapturedInputId`).
+- `init` block validates UUID format — throws at construction, not at use.
+- Companion `generate()` factory provides random UUID v4 values.
+- `@Serializable` so they round-trip through JSON as plain strings.
+- `sealed class RegistrationOutcome` with `data object Success`, `data class PermanentRejection(...)`, `data class TransientFailure(...)`.
+- Used for branching retry/abort logic without exceptions on the happy path.
+- `enum class InputType { HTTP, UNKNOWN }`, `enum class Provider { UNKNOWN, MANUAL_SEED, KUBERNETES }`.
+- Always include an `UNKNOWN` variant on enums that cross the wire — forward compatibility for additive deploys.
+## Serialization
+- **kotlinx.serialization** for all JSON.
+- All HTTP clients (agent and test code) configure `Json { ignoreUnknownKeys = true; encodeDefaults = true }` to make the agent↔platform contract additive.
+- Custom serializers:
+- Apply via `@Serializable(with = InstantSerializer::class)` at the property site, not globally.
+## HTTP Clients (Agent)
+- `buildAgentPlatformHttpClient()` — base Ktor client for `/api/services`, `/api/agent/config`.
+- `buildAgentCollectorHttpClient()` — adds `ContentEncoding` plugin (gzip request bodies).
+- `buildAgentKubesharkHttpClient()` — adds WebSockets plugin; no auth.
+- Bearer auth applied per call via `bearerAuth(apiKey)` (not a default plugin) so the same client can talk to multiple targets.
+- All clients accept an optional `HttpClientEngine` parameter to enable `MockEngine` in tests.
+- `Json { ignoreUnknownKeys = true }` consistently.
+## Repository Pattern
+- Repositories are Kotlin `object` (singletons), not classes.
+- Every public function is `suspend` and wraps work in `newSuspendedTransaction { ... }` (Exposed coroutine bridge).
+- Private extension `ResultRow.toService()` (or equivalent) maps DB rows to domain models — one mapper per repository.
+- Pagination uses cursor-based `Page<T>` from `shared/`: `find(...)` accepts `cursor: String?`, `limit: Int`, clamps limit to `[1, MAX_PAGE_SIZE]`, fetches `limit + 1` rows, encodes `nextCursor` from the last row.
+- All queries are scoped to `organizationId` from the JWT principal — tenant isolation lives at this layer, not the route.
+## Exposed ORM
+- Tables defined as `object Foo : Table("foos") { val id = ...; init { uniqueIndex(...) } }`.
+- Always use `newSuspendedTransaction { ... }`; never raw `transaction { }` in production code.
+- Cursor helpers `encodeCursor(timestamp, id)` / `decodeCursor(cursor)` shared in repositories.
+- Unique constraints (`uniqueIndex`) enforce business invariants at the DB layer — e.g., `(organizationId, cluster, namespace, name)` on `services`.
+## JWT and Auth
+- Single shared installer: `installJwtAuth(privateKeyPem)` from `shared/src/main/kotlin/com/platform/shared/auth/JwtAuth.kt`.
+- Both platform and collector call it once in their `Application.module()`.
+- Required claims: `organizationId` (UUID string), `cluster` (string). Optional: `role`.
+- Principal: `AgentIdentity(organizationId, cluster, role?)`. Routes obtain it via `call.principal<AgentIdentity>()`.
+- Unauthenticated routes: `/health`, `/.well-known/*`. Everything under `/api/*` requires a valid bearer token.
+- Body fields for tenancy (`organizationId`, `cluster`) are never trusted — they come from the principal.
+## Coroutine Patterns
+- All I/O is suspending.
+- Agent uses structured concurrency: `runBlocking { coroutineScope { launch(...) launch(...) launch(...) } }` in `AgentApplication.main`.
+- Shared mutable state in the agent flows through a `MutableStateFlow<DynamicConfig>` — observers `.collect()` or read `.value`.
+- `CancellationException` is always re-thrown when caught generically; otherwise structured concurrency breaks.
+- Backpressure is propagated via bounded `Channel`s (`Channel<KubesharkEntry>(capacity = 1000)` in `KubesharkClient`).
+## Error Handling
+- API routes: validation errors → 400; uniqueness violations → 409; not-found → 404 (also for tenant-mismatch — never 403, to avoid leaking existence).
+- Ktor `StatusPages` plugin centralizes unhandled exception → 500 mapping.
+- Repositories let Exposed exceptions bubble; routes translate.
+- Agent uses outcomes (`RegistrationOutcome`) instead of exceptions for predictable failure modes; exceptions reserved for truly exceptional cases.
+- Loops catch broadly, log, sleep, retry — but always re-throw `CancellationException`.
+## Logging
+- SLF4J + Logback. Per-class instance:
+- Object loggers use a named string: `LoggerFactory.getLogger("ServiceDiscoveryLoop")`.
+- Parameterized messages: `logger.info("Registered service {} → {}", name, id)` — no string interpolation.
+- Levels: INFO for state transitions, WARN for transient failures, ERROR for unrecoverable errors.
+## Comments
+- KDoc on public types and non-obvious functions, focused on the *why* (constraints, invariants, design rationale).
+- Inline `//` comments reserved for subtle invariants or callouts (e.g., "Drop entries older than `lastSeen - 5s` — covers reconnect-replay noise").
+- Trailing-summary or change-log comments are avoided; CLAUDE.md and git history are authoritative.
+## File-Level Conventions
+- One public class per file; helpers can live alongside if they're tightly coupled.
+- Route files (`Routes.kt`) group endpoints by resource: `route("/api/services") { get { ... } post { ... } }`.
+- Wire DTOs for an HTTP API live next to their consuming routes (`api/Requests.kt`) — not in `models/`. `models/` is for domain types.
+## Cross-Module Contracts
+- No compile-time imports across modules except `:shared` ← anyone, and tests.
+- Agent does not depend on `:platform` or `:collector` — wire DTOs are duplicated and kept in sync via `ignoreUnknownKeys`.
+- New endpoints introduced on platform/collector must be additive: optional fields with defaults; never remove or rename fields without a versioning plan.
+<!-- GSD:conventions-end -->
+
+<!-- GSD:architecture-start source:ARCHITECTURE.md -->
+## Architecture
+
+## System Overview
+```text
+```
+## Component Responsibilities
+| Component | Responsibility | Location |
+|-----------|----------------|----------|
+| **platform** | Organizations + Services + JWKS + agent config | `platform/src/main/kotlin/com/platform/` |
+| **collector** | CapturedInputs ingestion + list/delete | `collector/src/main/kotlin/com/platform/collector/` |
+| **agent** | K8s discovery + Kubeshark polling + traffic forwarding | `agent/src/main/kotlin/com/platform/agent/` |
+| **shared** | JWT auth + DatabaseFactory + value classes + test fixtures | `shared/src/main/kotlin/com/platform/shared/` |
+| **e2e-tests** | Full-stack integration tests | `e2e-tests/` |
+| **test-services** | Standalone microservices for k3s integration testing | `test-services/*/` |
+| **tap** (Go) | Experimental eBPF traffic-attribution tap (separate ecosystem) | `tap/` |
+## Pattern Overview
+- Each module owns its database tables and repositories — no cross-module shared repositories.
+- Cross-module data access flows exclusively through REST HTTP calls. No DB-level foreign keys across modules (V0006 dropped the last one).
+- Shared infrastructure (`shared/`) provides JWT auth, DB connection pooling, Flyway migrations, and test fixtures via `java-test-fixtures`.
+- Agent is a standalone Kotlin process (Jib-built container) deployed independently to customer clusters; it has no compile-time dependency on `platform/` or `collector/` — only the API contract.
+- Platform and collector both run as Ktor 3 servers with in-app RS256 JWT validation (no Envoy / reverse proxy in the request path).
+- Authentication via `AgentIdentity` principal populated directly from JWT claims (`organizationId`, `cluster`, `role`).
+## Layers (per module)
+- Purpose: Ktor route handlers — validate input, apply pagination, enforce tenant isolation via JWT principal.
+- Location: `platform/src/main/kotlin/com/platform/api/Routes.kt`, `collector/src/main/kotlin/com/platform/collector/api/Routes.kt`.
+- Contains: route definitions, request/response DTOs, HTTP status mapping.
+- Depends on: database layer, shared auth (`installJwtAuth`, `AgentIdentity`).
+- Purpose: Data access via Exposed ORM, query builders, cursor pagination, tenant scoping.
+- Location: `platform/src/main/kotlin/com/platform/database/`, `collector/src/main/kotlin/com/platform/collector/database/`.
+- Contains: Repository singletons (`ServiceRepository`, `OrganizationRepository`, `CapturedInputRepository`), Exposed `Table` definitions, ResultRow → domain mappers.
+- Depends on: Exposed ORM, PostgreSQL JDBC, shared `Page<T>`.
+- Purpose: Domain models, value classes, serialization adapters.
+- Location: `platform/src/main/kotlin/com/platform/models/`, `collector/src/main/kotlin/com/platform/collector/models/`.
+- Contains: `Organization`, `Service`, `CapturedInput`, `InputType`, `Provider`, value class IDs.
+- Depends on: kotlinx.serialization, shared value classes.
+- Purpose: cross-module utilities — auth, DB pool, migrations, test fixtures.
+- Location: `shared/src/main/kotlin/com/platform/shared/`.
+- Contains: `DatabaseFactory`, `installJwtAuth()`, `derivePublicKey()`, `Page<T>`, `InstantSerializer`, `OrganizationId`, `ServiceId`.
+- Depends on: Ktor, Exposed, Flyway, HikariCP, `com.auth0:java-jwt`, kotlinx.serialization.
+- Purpose: three independent coroutine loops coordinating via a shared `MutableStateFlow<DynamicConfig>`.
+- Location: `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt`.
+- Loop 1 (Service Discovery): `K8sServiceDiscovery` (Fabric8) → `PlatformClient.registerService()` → `RegistrationOutcome`.
+- Loop 2 (Config Polling): `ConfigClient.fetchConfig()` → updates `MutableStateFlow<DynamicConfig>`.
+- Loop 3 (Traffic Capture): `KubesharkClient` (persistent WebSocket, observes config) → `TrafficTransformer` (filter + decode + sample) → `CollectorClient.sendBatch()`.
+## Data Flow
+### Primary Path: Agent Captures and Forwards Traffic
+### Loop 1: K8s Service Discovery → Registration
+### Loop 2: Config Polling
+### State Management
+- **DynamicConfig**: `MutableStateFlow<DynamicConfig>` shared across all three loops via parameter injection.
+- **Static Configuration**: env vars read once at startup (`PLATFORM_URL`, `COLLECTOR_URL`, `KUBESHARK_URL`, `API_KEY`).
+- **Registered Services / Permanently Failed**: in-memory sets local to `serviceDiscoveryLoop()`.
+- **No global mutable state** in platform/collector — routes are stateless; tenancy comes from the JWT principal on each call.
+## Key Abstractions
+## Entry Points
+- **Platform server** — `platform/src/main/kotlin/com/platform/Application.kt`. Ktor Netty engine, reads `platform/src/main/resources/application.yaml`, calls `Application.module()`: JWT auth, DatabaseFactory init, routing, exception handling, JSON content negotiation.
+- **Collector server** — `collector/src/main/kotlin/com/platform/collector/CollectorApplication.kt`. Reads `collector/src/main/resources/application.yaml`. Same shape as platform, plus the `Compression` plugin for gzip-decoded ingest.
+- **Validation agent** — `agent/src/main/kotlin/com/platform/agent/AgentApplication.kt::main`. `runBlocking { coroutineScope { launch(...) } }` spawns three loops, touches `/tmp/agent-alive` for liveness, runs until cancelled.
+- **JWT token generator** — `platform/src/main/kotlin/com/platform/auth/JwtTokenGenerator.kt`. CLI invoked via `./gradlew :platform:generateToken --args="--org <uuid> --cluster <name>"`.
+## Architectural Constraints
+- **Threading model**: coroutines-first. Agent uses structured concurrency (`coroutineScope { launch { ... } }`). Platform/collector use Ktor's Netty thread pool plus Exposed `newSuspendedTransaction` for DB I/O.
+- **DB connection pool**: singleton `HikariCP` initialized once at `DatabaseFactory.init()`. Pool size set by `DATABASE_POOL_SIZE` (default 10). Agent has no DB access.
+- **JWT key material**: shared `JWT_PRIVATE_KEY` env var, PEM-encoded RSA private key (newlines replaced with `|` for env compatibility). Public key derived in-process by `derivePublicKey()`.
+- **Tenant isolation**: every repository scopes queries to `organizationId` from the JWT principal. Routes return 404 (not 403) when a resource belongs to a different tenant, to avoid leaking existence.
+- **Module lifecycle**: `K8sServiceDiscovery` implements `Closeable` (wraps Fabric8 `KubernetesClient`). HTTP clients are `Closeable` and released on shutdown.
+## Anti-Patterns to Avoid
+## Error Handling Strategy
+- **API routes**: validation errors map to 400; unique-constraint violations to 409; not-found to 404 (also used for tenant-mismatch). Unexpected exceptions surface to Ktor's `StatusPages` for centralized formatting.
+- **Repositories**: Exposed exceptions bubble up; routes convert to status codes.
+- **Agent loops**: catch, log, sleep, retry. `CancellationException` is always re-thrown to respect structured concurrency.
+- **WebSocket sessions**: `KubesharkClient` catches connection/protocol errors, closes the channel cleanly, waits `reconnectDelay`, then opens a fresh session.
+## Cross-Cutting Concerns
+- **Logging**: SLF4J + Logback. INFO for normal operation, WARN for transient errors, ERROR for unrecoverable failures. Parameterized messages with `{}` placeholders.
+- **Validation**: routes validate input (RFC1123 labels, UUID format, non-blank strings); DB uniqueness via Exposed `uniqueIndex`; JWT required claims checked in `installJwtAuth`.
+- **Authentication**: shared `installJwtAuth(privateKeyPem)` in both servers; agent attaches `Authorization: Bearer <JWT>` on every `/api/*` call; JWKS at `/.well-known/jwks.json` unauthenticated.
+- **Secrets**: `JWT_PRIVATE_KEY` and DB creds via env vars in Docker/Compose; via Secret Manager + IAM in GCP; via Kubernetes `Secret` (`platform-api-key/jwt-token`) for the agent.
+- **Deployment topology**: platform + collector → Cloud Run (Cloud SQL via private IP); agent + Kubeshark → GKE; test workloads → GKE namespaces (infrastructure / production / external).
+<!-- GSD:architecture-end -->
+
+<!-- GSD:skills-start source:skills/ -->
+## Project Skills
+
+No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
+<!-- GSD:skills-end -->
+
+<!-- GSD:workflow-start source:GSD defaults -->
+## GSD Workflow Enforcement
+
+Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
+
+Use these entry points:
+- `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
+- `/gsd-debug` for investigation and bug fixing
+- `/gsd-execute-phase` for planned phase work
+
+Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
+<!-- GSD:workflow-end -->
+
+<!-- GSD:profile-start -->
+## Developer Profile
+
+> Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
+> This section is managed by `generate-claude-profile` -- do not edit manually.
+<!-- GSD:profile-end -->
