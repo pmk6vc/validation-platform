@@ -5,7 +5,7 @@
 # Go binary. Stage 2 is a minimal runtime — `distroless/static` works
 # because Go's net dependencies are pure Go and we set CGO_ENABLED=0.
 
-FROM golang:1.23-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 # clang + libbpf-dev provide everything bpf2go needs: clang for the BPF
 # target compilation and libbpf headers (bpf_helpers.h). libelf-dev is for

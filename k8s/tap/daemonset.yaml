@@ -1,10 +1,15 @@
-# TAP-1 prototype DaemonSet — one privileged vp-tap pod per node in the
-# sandbox cluster. Tracepoints + ring buffer need CAP_BPF and CAP_PERFMON
-# at minimum; the prototype uses `privileged: true` for simplicity. TAP-6
-# will swap this for the narrow capability set.
+# vp-tap DaemonSet — one privileged pod per node. Tracepoints + ring
+# buffer need CAP_BPF and CAP_PERFMON at minimum; the prototype uses
+# `privileged: true` for simplicity. TAP-6 will swap this for the narrow
+# capability set.
 #
-# hostPID: true is essential — without it /proc inside the pod only shows
-# the tap binary's own PID, so PID→pod resolution would always fail.
+# hostPID: true is needed by the BPF capture loop so /proc inside the pod
+# reflects host PIDs. The pod informer (VAL-55 PR2) requires:
+#   - serviceAccountName: vp-tap (see rbac.yaml in this directory)
+#   - NODE_NAME env from the downward API (spec.nodeName) so the informer
+#     can scope its watch via a server-side field selector.
+#   - /sys/fs/cgroup hostPath mount so the cgroup resolver can stat() pod
+#     slice directories to learn container cgroup IDs.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -21,6 +26,7 @@ spec:
       labels:
         app: vp-tap
     spec:
+      serviceAccountName: vp-tap
       hostPID: true
       hostNetwork: false
       # tolerate the sandbox's spot node taint so the DaemonSet schedules
@@ -33,6 +39,14 @@ spec:
           imagePullPolicy: Always
           securityContext:
             privileged: true
+          env:
+            # Downward API: pin NODE_NAME so the informer can field-select
+            # pods on this node only. Without this the agent has no way of
+            # knowing which node it landed on.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           resources:
             requests:
               cpu: 50m
@@ -57,6 +71,11 @@ spec:
             - name: btf
               mountPath: /sys/kernel/btf
               readOnly: true
+            # Cgroup v2 root — the informer stat()s pod-slice directories
+            # here to map pod UID → container cgroup IDs.
+            - name: cgroupfs
+              mountPath: /sys/fs/cgroup
+              readOnly: true
       volumes:
         - name: bpffs
           hostPath:
@@ -74,3 +93,7 @@ spec:
           hostPath:
             path: /sys/kernel/btf
             type: DirectoryOrCreate
+        - name: cgroupfs
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
