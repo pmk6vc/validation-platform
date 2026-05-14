@@ -112,23 +112,58 @@ Deferred to a future milestone, tracked but not in current roadmap.
 
 ## Traceability
 
-Filled by the roadmapper. Empty for now.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TAP-01..07 | TBD | Pending |
-| GOAGENT-01..06 | TBD | Pending |
-| PIPELINE-01..06 | TBD | Pending |
-| HARDEN-01..07 | TBD | Pending |
-| CUTOVER-01..06 | TBD | Pending |
-| DECOM-01..07 | TBD | Pending |
-| TEST-01..05 | TBD | Pending |
+| TAP-01 | Phase 1 | Pending |
+| TAP-02 | Phase 1 | Pending |
+| TAP-03 | Phase 1 | Pending |
+| TAP-04 | Phase 1 | Pending |
+| TAP-05 | Phase 1 | Pending |
+| TAP-06 | Phase 1 | Pending |
+| TAP-07 | Phase 1 | Pending |
+| GOAGENT-01 | Phase 2 | Pending |
+| GOAGENT-02 | Phase 2 | Pending |
+| GOAGENT-03 | Phase 2 | Pending |
+| GOAGENT-04 | Phase 2 | Pending |
+| GOAGENT-05 | Phase 2 | Pending |
+| GOAGENT-06 | Phase 2 | Pending |
+| TEST-04 | Phase 2 | Pending |
+| PIPELINE-01 | Phase 3 | Pending |
+| PIPELINE-02 | Phase 3 | Pending |
+| PIPELINE-03 | Phase 3 | Pending |
+| PIPELINE-04 | Phase 3 | Pending |
+| PIPELINE-05 | Phase 3 | Pending |
+| PIPELINE-06 | Phase 3 | Pending |
+| HARDEN-01 | Phase 4 | Pending |
+| HARDEN-02 | Phase 4 | Pending |
+| HARDEN-03 | Phase 4 | Pending |
+| HARDEN-04 | Phase 4 | Pending |
+| HARDEN-05 | Phase 4 | Pending |
+| HARDEN-06 | Phase 4 | Pending |
+| HARDEN-07 | Phase 4 | Pending |
+| CUTOVER-01 | Phase 5 | Pending |
+| CUTOVER-02 | Phase 5 | Pending |
+| CUTOVER-03 | Phase 5 | Pending |
+| CUTOVER-04 | Phase 5 | Pending |
+| CUTOVER-05 | Phase 5 | Pending |
+| CUTOVER-06 | Phase 5 | Pending |
+| TEST-02 | Phase 5 | Pending |
+| TEST-03 | Phase 5 | Pending |
+| TEST-05 | Phase 5 | Pending |
+| DECOM-01 | Phase 6 | Pending |
+| DECOM-02 | Phase 6 | Pending |
+| DECOM-03 | Phase 6 | Pending |
+| DECOM-04 | Phase 6 | Pending |
+| DECOM-05 | Phase 6 | Pending |
+| DECOM-06 | Phase 6 | Pending |
+| DECOM-07 | Phase 6 | Pending |
+| TEST-01 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 44 total
-- Mapped to phases: 0
-- Unmapped: 44 (roadmapper will resolve)
+- Mapped to phases: 44
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-05-14*
-*Last updated: 2026-05-14 after initial definition*
+*Last updated: 2026-05-14 — traceability filled by roadmapper*
