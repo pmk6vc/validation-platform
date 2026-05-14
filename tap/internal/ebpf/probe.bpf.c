@@ -22,7 +22,7 @@
 // versions, do not depend on the kernel's symbol naming convention
 // (`__x64_sys_write` vs `sys_write`), and work without vmlinux.h / CO-RE for
 // this minimal context-struct shape. Behavioural coverage is identical for
-// the validation criteria. TAP-3 can revisit if needed.
+// the validation criteria.
 //
 // We only hook sys_enter_write: clients write requests, servers write
 // responses — both surface as a write() with HTTP-shaped bytes. That's
@@ -43,22 +43,23 @@
 //
 // Behaviour at the limit: silent truncation. e->len is clamped to
 // MAX_DATA_SIZE and the tail of the buffer is discarded. For TAP-1 that's
-// acceptable (the request line is intact). TAP-3 will need larger captures
-// (~1 MiB body coverage) which means a per-CPU scratch map for the read,
-// multiple ringbuf events per write, AND TCP-stream reassembly in
-// userspace — HTTP messages can be split across write() syscalls by
-// Nagle, app-level buffering, or chunked transfer encoding.
+// acceptable (the request line is intact). Larger captures (~1 MiB body
+// coverage) will need a per-CPU scratch map for the read, multiple ringbuf
+// events per write, AND TCP-stream reassembly in userspace — HTTP messages
+// can be split across write() syscalls by Nagle, app-level buffering, or
+// chunked transfer encoding.
 #define MAX_DATA_SIZE 256
 
 struct event {
-    // cgroup_id is the primary attribution key for TAP-3 onward. It identifies
-    // the cgroup of the task that performed the write at the instant the
-    // syscall fired — race-free across PID reuse, container restart, and
-    // userspace eviction lag. See VAL-55 §1 for the full rationale. Placed
-    // first (8-byte aligned) to avoid struct padding.
+    // cgroup_id is the sole attribution key. It identifies the cgroup of the
+    // task that performed the write at the instant the syscall fired — race-
+    // free across PID reuse, container restart, and userspace eviction lag.
+    // Userspace joins this against a K8s-informer-backed cgroup_id → pod map
+    // (see internal/k8s/podinformer). Placed first (8-byte aligned) to avoid
+    // struct padding. See VAL-55 §1 for the full rationale.
     __u64 cgroup_id;
-    __u32 pid;          // kernel pid (thread id) — diagnostic only post-TAP-3
-    __u32 tgid;         // userspace getpid() value — diagnostic only post-TAP-3
+    __u32 pid;          // kernel pid (thread id) — diagnostic only
+    __u32 tgid;         // userspace getpid() value — diagnostic only
     __u32 len;          // bytes actually copied into data[]
     __u32 fd;           // fd from the write() call
     __u8  data[MAX_DATA_SIZE];
@@ -87,9 +88,9 @@ struct sys_enter_write_args {
     __u64 count;
 };
 
-// TAP-1 only — a 4-byte content sniff that filters in-kernel so userspace
-// only sees writes that *look* like HTTP/1.1. It is deliberately the
-// cheapest possible filter to prove the capture pipeline end-to-end.
+// A 4-byte content sniff that filters in-kernel so userspace only sees
+// writes that *look* like HTTP/1.1. It is deliberately the cheapest
+// possible filter to prove the capture pipeline end-to-end.
 //
 // Known weaknesses:
 //
@@ -104,21 +105,19 @@ struct sys_enter_write_args {
 //     prefix just produces a noisy log line. Trust of captured data is a
 //     downstream replay-engine concern.
 //
-// TAP-3 replaces this with socket-based attribution that is independent
-// of payload contents:
+// Note: this is content-based pre-filtering, NOT attribution. Attribution
+// is done by cgroup_id (see `bpf_get_current_cgroup_id()` below) and joined
+// in userspace against a K8s informer that maintains a cgroup_id → pod map.
+// We deliberately rejected a (pid,fd) socket-tracking design (eBPF hooks on
+// accept4/connect populating an "interesting sockets" BPF map): cgroup_id is
+// captured atomically with the syscall, race-free, and doesn't require
+// keeping a side-channel map in sync across separate kernel hooks.
 //
-//   1. eBPF hooks on sys_enter_accept4 / sys_enter_connect record live
-//      (pid, fd) → (peer addr, sock type) pairs in a BPF hash map.
-//   2. Userspace populates an "interesting sockets" map by resolving
-//      pid → pod → service-name and checking against the registered
-//      target services from the platform's /api/agent/config response.
-//   3. On sys_enter_write the kernel program does a single map lookup
-//      on (pid, fd). Match → capture; miss → drop. No content sniff.
-//
-// Protocol detection (HTTP/1.1 vs HTTP/2 vs gRPC vs raw) then moves to
-// userspace where being wrong cannot crash the kernel, and a real parser
-// (e.g. golang.org/x/net/http2 with HPACK) can be used. The function
-// below disappears when TAP-3 lands.
+// Future work: target-service filtering (drop captures for pods not in the
+// platform's /api/agent/config target list) lives in userspace, after the
+// cgroup_id → pod join — being wrong there cannot crash the kernel. Larger
+// payloads and protocols beyond HTTP/1.1 are likewise deferred to userspace
+// with real parsers (e.g. golang.org/x/net/http2 with HPACK).
 static __always_inline int looks_like_http(const __u8 *p) {
     // First 4 bytes of an HTTP/1.1 request line are:
     //   "GET ", "POST", "PUT ", "HEAD", "DELE", "PATC", "OPTI", "CONN", "TRAC"
@@ -151,9 +150,9 @@ int trace_sys_enter_write(struct sys_enter_write_args *ctx) {
 
     // bpf_get_current_cgroup_id() returns the cgroup ID of the task that
     // triggered this tracepoint, captured atomically with the syscall. This
-    // is the foundation of cgroup-ID-based attribution: subsequent TAP-3 PRs
-    // will join this against a userspace cgroup_id → pod map populated by a
-    // K8s informer, replacing the current PID-keyed /proc-lookup cache.
+    // is the foundation of cgroup-ID-based attribution: userspace joins this
+    // value against a cgroup_id → pod map maintained by a K8s informer in
+    // internal/k8s/podinformer.
     e->cgroup_id = bpf_get_current_cgroup_id();
 
     __u64 id = bpf_get_current_pid_tgid();
