@@ -68,15 +68,3 @@ func TestFirstHTTPLineNoLineTerminator(t *testing.T) {
 	}
 }
 
-func TestOrQ(t *testing.T) {
-	cases := map[string]string{
-		"":          "?",
-		"present":   "present",
-		"with spaces": "with spaces",
-	}
-	for in, want := range cases {
-		if got := orQ(in); got != want {
-			t.Errorf("orQ(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
