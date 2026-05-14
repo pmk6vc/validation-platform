@@ -15,6 +15,7 @@ package podinformer
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -195,4 +196,58 @@ func (i *Index) Size() int {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return len(i.cgroupToPod)
+}
+
+// CheckInvariant verifies internal consistency between the forward
+// (cgroup_id → pod) and reverse (pod_uid → [cgroup_ids]) maps. Returns
+// nil if both maps agree on every entry, or a descriptive error if they
+// don't. Cheap (O(N) over the index); intended to be called periodically
+// from a sweep goroutine (PR3) or from tests.
+//
+// The two maps SHOULD always agree because every write goes through
+// resolveAndInsert or removeByUID, both of which update both maps under
+// the same lock. A violation here means a bug somewhere in our code, not
+// a runtime race or external corruption. Treat as "loud failure" rather
+// than "auto-heal."
+func (i *Index) CheckInvariant() error {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	// Every reverse-map entry must point at a forward-map entry for the
+	// same pod UID. No two reverse entries may claim the same cgroup_id.
+	claimed := make(map[uint64]types.UID, len(i.cgroupToPod))
+	for uid, ids := range i.podUIDToCgIDs {
+		for _, id := range ids {
+			if prev, dup := claimed[id]; dup {
+				return invariantErrorf(
+					"cgroup %d claimed by both pods %s and %s in reverse map",
+					id, prev, uid)
+			}
+			claimed[id] = uid
+			pod, ok := i.cgroupToPod[id]
+			if !ok {
+				return invariantErrorf(
+					"cgroup %d in reverse map for pod %s but missing from forward map",
+					id, uid)
+			}
+			if pod.UID != uid {
+				return invariantErrorf(
+					"cgroup %d → pod %s in forward map but reverse map claims pod %s",
+					id, pod.UID, uid)
+			}
+		}
+	}
+	// Every forward-map entry must be claimed by exactly one reverse entry.
+	for id, pod := range i.cgroupToPod {
+		if _, ok := claimed[id]; !ok {
+			return invariantErrorf(
+				"cgroup %d → pod %s in forward map but has no reverse entry",
+				id, pod.UID)
+		}
+	}
+	return nil
+}
+
+func invariantErrorf(format string, args ...interface{}) error {
+	return fmt.Errorf("podinformer index invariant violated: "+format, args...)
 }
