@@ -681,22 +681,24 @@ The replay engine will fetch captured inputs via `GET /api/captured-inputs` from
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
-**Validation Platform — Native eBPF Traffic Capture Cutover**
+**Validation Platform v1**
 
-The validation platform captures real production traffic with eBPF and replays it against staging to catch regressions before they ship — memory leaks, latency drift, behavioral changes, the things unit tests miss. This milestone replaces the existing Kubeshark + Kotlin agent capture stack with our own Go eBPF tap and a Go agent, so capture works under sustained production load and the team owns every layer of the data path.
+A hosted B2B SaaS that lets engineering teams validate every change against real production traffic before deployment: capture live req/res traffic with eBPF, replay it against a staging cluster, and return a PASS / FAIL / INCONCLUSIVE verdict with per-dimension evidence (response diffs, latency, error rate, memory trend). v1 ships as a design-partner beta with fully self-serve onboarding, a web dashboard as the primary surface, PR Check Runs as the decision touch point, and Slack notifications for alerts.
 
-**Core Value:** **The tap and Go agent capture production traffic stably on the sandbox cluster that previously broke Kubeshark — and then Kubeshark + the Kotlin agent are gone from the repo.** If everything else slips, this must land.
+**Core Value:** **Replay real production traffic against staging and return a trustworthy go/no-go decision — within a self-serve developer experience that a design partner installs and gets value from in under 30 minutes.** Everything else in the product exists to make this single loop fast, accurate, and safe.
 
 ### Constraints
 
-- **Tech stack** — Go ≥ 1.22 (per `tap/go.mod`), `cilium/ebpf` + `bpf2go`, `client-go`, standard library `net/http`. Compile with CO-RE so binaries portable across kernels ≥ 5.10 (target: GKE COS, kernel 6.12). Kotlin platform/collector stay on JDK 21 + Ktor 3.
-- **Performance** — must hold steady at the load Kubeshark broke on (exact target lives in TAP-6 benchmarks; sandbox cluster is the bench rig). Memory + CPU footprint per node must fit comfortably inside whatever node-pool sizing the sandbox already runs with — retuning Terraform is allowed but should be a last resort.
-- **Compatibility** — Go agent must speak the existing platform/collector wire contracts byte-for-byte (the platform side is not changing). `BatchCreateCapturedInputRequest` shape, `AgentConfigResponse` shape, JWT claim contract (`organizationId`, `cluster`, `role?`), RS256 signature, gzip request bodies on collector POSTs — all preserved.
-- **Auth** — JWT bearer tokens minted by the existing platform `JwtTokenGenerator` work unchanged. No new key material, no new endpoints. Go-side libraries (e.g. `github.com/golang-jwt/jwt`) only need to *attach* the token; the platform/collector do all validation.
-- **Test coverage** — integration / e2e coverage for any behavior the Go module owns cannot regress when the Kotlin agent is deleted. Bilingual e2e (Kotlin `e2e-tests/` driving the Go agent binary/container) is the chosen mechanism.
-- **PR shape** — every cutover/tear-out PR must be reviewable in one sitting. No "delete the world" mega-PR. Tag the PR series so reviewers can follow the order.
-- **Schedule** — "validate ASAP." No hard deadline named, but stretch scope (TAP-9 / TAP-10) is out, and "good enough" on the sandbox load test is the trigger to start tearing out.
-- **Reversibility** — TAP-7 (cutover) must be reversible until TAP-8 lands. If the sandbox swap reveals a regression, we should be able to flip back to Kubeshark while we fix forward. After TAP-8, reversal becomes a git revert exercise — acceptable.
+- **Tech stack** — backend stays Kotlin (Ktor 3, Exposed, Flyway, JDK 21); capture stack is Go (`cilium/ebpf`, `bpf2go`, `client-go`, stdlib `net/http`); frontend is Vite + React + TypeScript + Tailwind. PostgreSQL is the default storage backend.
+- **Hosting** — GCP-native: Cloud Run (platform, collector, web dashboard), Cloud SQL (Postgres), GKE (customer-side agent + tap; sandbox cluster), Artifact Registry. UI ships as a static bundle on Cloud Run with nginx (or GCS + CDN — TBD by the team).
+- **Wire contracts** — existing platform/collector REST API stays stable. The pluggable storage backend lives behind the collector's repository layer; external contract unchanged. The Go agent speaks the existing contracts byte-for-byte during the cutover.
+- **Performance** — design and benchmark to the medium envelope (50 services, ~1k RPS captured, ~50 validation runs/day, 30-day retention per design partner). Sandbox cluster is the realistic benchmark rig.
+- **Security** — RLS retrofit must not break existing app-layer tenancy or the public REST API; JWT key rotation must not break existing sessions; redaction must not destroy captured-input fidelity for safe content (validation-run accuracy depends on it).
+- **Self-serve onboarding** — sub-30-minute time-to-first-verdict for a developer with no prior context. This is a product metric, not a vibe — it constrains how the dashboard, Helm install, and agent registration flow are designed.
+- **Schedule** — design-partner beta is the v1 done bar. No specific deadline named; the project ships when the loop works end-to-end on a real design partner's cluster + PRs and the team is comfortable inviting more.
+- **PR shape** — small, reviewable PRs. The capture-cutover phase in particular has a hard constraint on chunked deletion; later phases inherit this norm.
+- **Reversibility** — feature flags or clean revert paths for cutover-style changes (sandbox swap, RLS retrofit, JWT rotation) until they're validated.
+- **Brand / UX** — ergonomic user experience is paramount; the dashboard is the differentiated surface, not an admin console. Investments in motion, copy, and empty states are not nice-to-haves.
 <!-- GSD:project-end -->
 
 <!-- GSD:stack-start source:codebase/STACK.md -->

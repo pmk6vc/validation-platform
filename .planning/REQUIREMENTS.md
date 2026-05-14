@@ -193,28 +193,109 @@ Deferred to a future milestone. Tracked but not in current roadmap.
 
 ## Traceability
 
-Filled by the roadmapper. Empty for now.
+Every v1 requirement maps to exactly one phase. Phase numbers track the 12-phase structure in `.planning/ROADMAP.md`.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CAPTURE-01..12 | TBD | Pending |
-| GRPC-01..06 | TBD | Pending |
-| SEC-01..09 | TBD | Pending |
-| REPLAY-01..08 | TBD | Pending |
-| VERDICT-01..10 | TBD | Pending |
-| ORCH-01..06 | TBD | Pending |
-| UI-01..10 | TBD | Pending |
-| ONBOARD-01..07 | TBD | Pending |
-| PR-01..08 | TBD | Pending |
-| SLACK-01..05 | TBD | Pending |
-| STORE-01..06 | TBD | Pending |
-| OPS-01..06 | TBD | Pending |
+| CAPTURE-01 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-02 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-03 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-04 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-05 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-06 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-07 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-08 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-09 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-10 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-11 | Phase 1 — Native Capture Cutover | Pending |
+| CAPTURE-12 | Phase 1 — Native Capture Cutover | Pending |
+| GRPC-01 | Phase 2 — gRPC + HTTP/2 Capture | Pending |
+| GRPC-02 | Phase 2 — gRPC + HTTP/2 Capture | Pending |
+| GRPC-03 | Phase 2 — gRPC + HTTP/2 Capture | Pending |
+| GRPC-04 | Phase 2 — gRPC + HTTP/2 Capture | Pending |
+| GRPC-05 | Phase 2 — gRPC + HTTP/2 Capture | Pending |
+| GRPC-06 | Phase 2 — gRPC + HTTP/2 Capture | Pending |
+| SEC-01 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-02 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-03 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-04 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-05 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-06 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-07 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-08 | Phase 3 — Security Hardening Foundation | Pending |
+| SEC-09 | Phase 3 — Security Hardening Foundation | Pending |
+| REPLAY-01 | Phase 4 — Replay Engine | Pending |
+| REPLAY-02 | Phase 4 — Replay Engine | Pending |
+| REPLAY-03 | Phase 4 — Replay Engine | Pending |
+| REPLAY-04 | Phase 4 — Replay Engine | Pending |
+| REPLAY-05 | Phase 4 — Replay Engine | Pending |
+| REPLAY-06 | Phase 4 — Replay Engine | Pending |
+| REPLAY-07 | Phase 4 — Replay Engine | Pending |
+| REPLAY-08 | Phase 4 — Replay Engine | Pending |
+| VERDICT-01 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-02 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-03 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-04 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-05 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-06 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-07 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-08 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-09 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| VERDICT-10 | Phase 5 — Observation + Comparison + Verdict | Pending |
+| ORCH-01 | Phase 6 — Orchestration Saga | Pending |
+| ORCH-02 | Phase 6 — Orchestration Saga | Pending |
+| ORCH-03 | Phase 6 — Orchestration Saga | Pending |
+| ORCH-04 | Phase 6 — Orchestration Saga | Pending |
+| ORCH-05 | Phase 6 — Orchestration Saga | Pending |
+| ORCH-06 | Phase 6 — Orchestration Saga | Pending |
+| UI-01 | Phase 7 — Web Dashboard | Pending |
+| UI-02 | Phase 7 — Web Dashboard | Pending |
+| UI-03 | Phase 7 — Web Dashboard | Pending |
+| UI-04 | Phase 7 — Web Dashboard | Pending |
+| UI-05 | Phase 7 — Web Dashboard | Pending |
+| UI-06 | Phase 7 — Web Dashboard | Pending |
+| UI-07 | Phase 7 — Web Dashboard | Pending |
+| UI-08 | Phase 7 — Web Dashboard | Pending |
+| UI-09 | Phase 7 — Web Dashboard | Pending |
+| UI-10 | Phase 7 — Web Dashboard | Pending |
+| ONBOARD-01 | Phase 8 — Self-Serve Onboarding | Pending |
+| ONBOARD-02 | Phase 8 — Self-Serve Onboarding | Pending |
+| ONBOARD-03 | Phase 8 — Self-Serve Onboarding | Pending |
+| ONBOARD-04 | Phase 8 — Self-Serve Onboarding | Pending |
+| ONBOARD-05 | Phase 8 — Self-Serve Onboarding | Pending |
+| ONBOARD-06 | Phase 8 — Self-Serve Onboarding | Pending |
+| ONBOARD-07 | Phase 8 — Self-Serve Onboarding | Pending |
+| PR-01 | Phase 9 — GitHub PR Integration | Pending |
+| PR-02 | Phase 9 — GitHub PR Integration | Pending |
+| PR-03 | Phase 9 — GitHub PR Integration | Pending |
+| PR-04 | Phase 9 — GitHub PR Integration | Pending |
+| PR-05 | Phase 9 — GitHub PR Integration | Pending |
+| PR-06 | Phase 9 — GitHub PR Integration | Pending |
+| PR-07 | Phase 9 — GitHub PR Integration | Pending |
+| PR-08 | Phase 9 — GitHub PR Integration | Pending |
+| SLACK-01 | Phase 10 — Slack Notifications | Pending |
+| SLACK-02 | Phase 10 — Slack Notifications | Pending |
+| SLACK-03 | Phase 10 — Slack Notifications | Pending |
+| SLACK-04 | Phase 10 — Slack Notifications | Pending |
+| SLACK-05 | Phase 10 — Slack Notifications | Pending |
+| STORE-01 | Phase 11 — Pluggable Storage Backend | Pending |
+| STORE-02 | Phase 11 — Pluggable Storage Backend | Pending |
+| STORE-03 | Phase 11 — Pluggable Storage Backend | Pending |
+| STORE-04 | Phase 11 — Pluggable Storage Backend | Pending |
+| STORE-05 | Phase 11 — Pluggable Storage Backend | Pending |
+| STORE-06 | Phase 11 — Pluggable Storage Backend | Pending |
+| OPS-01 | Phase 12 — Beta Operations | Pending |
+| OPS-02 | Phase 12 — Beta Operations | Pending |
+| OPS-03 | Phase 12 — Beta Operations | Pending |
+| OPS-04 | Phase 12 — Beta Operations | Pending |
+| OPS-05 | Phase 12 — Beta Operations | Pending |
+| OPS-06 | Phase 12 — Beta Operations | Pending |
 
 **Coverage:**
-- v1 requirements: 87 total
-- Mapped to phases: 0
-- Unmapped: 87 (roadmapper will resolve)
+- v1 requirements: 93 total (12+6+9+8+10+6+10+7+8+5+6+6 across CAPTURE/GRPC/SEC/REPLAY/VERDICT/ORCH/UI/ONBOARD/PR/SLACK/STORE/OPS) — actual count per file enumeration, supersedes the earlier 87 estimate
+- Mapped to phases: 93
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-05-14*
-*Last updated: 2026-05-14 after initial definition*
+*Last updated: 2026-05-13 — traceability populated by roadmapper (12 phases, 93/93 mapped)*
