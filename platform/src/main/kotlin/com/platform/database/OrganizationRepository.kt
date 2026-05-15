@@ -16,6 +16,7 @@ import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import java.security.SecureRandom
 import java.util.UUID
 
 /**
@@ -25,15 +26,37 @@ object OrganizationRepository {
     const val DEFAULT_PAGE_SIZE = 20
     const val MAX_PAGE_SIZE = 100
 
+    /**
+     * Length of the per-org redaction salt in bytes (V0008). 32 bytes →
+     * 64 hex chars. Matches gen_random_bytes(32) used in the migration.
+     */
+    private const val REDACTION_SALT_BYTES = 32
+    private val secureRandom = SecureRandom()
+
+    /**
+     * Create a new organization. If [Organization.redactionSalt] is blank,
+     * a fresh 32-byte hex-encoded salt is generated for it (so callers can
+     * construct from REST input without minting a salt themselves).
+     */
     suspend fun create(organization: Organization): Organization =
         newSuspendedTransaction {
+            val salt =
+                organization.redactionSalt.ifBlank { generateHexSalt() }
+            val effective = if (salt == organization.redactionSalt) organization else organization.copy(redactionSalt = salt)
             Organizations.insert {
-                it[id] = UUID.fromString(organization.id.value)
-                it[name] = organization.name
-                it[createdAt] = organization.createdAt
+                it[id] = UUID.fromString(effective.id.value)
+                it[name] = effective.name
+                it[createdAt] = effective.createdAt
+                it[redactionSalt] = effective.redactionSalt
             }
-            organization
+            effective
         }
+
+    private fun generateHexSalt(): String {
+        val bytes = ByteArray(REDACTION_SALT_BYTES)
+        secureRandom.nextBytes(bytes)
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
 
     suspend fun findById(id: OrganizationId): Organization? =
         newSuspendedTransaction {
@@ -108,5 +131,6 @@ object OrganizationRepository {
             id = OrganizationId(this[Organizations.id].toString()),
             name = this[Organizations.name],
             createdAt = this[Organizations.createdAt],
+            redactionSalt = this[Organizations.redactionSalt],
         )
 }

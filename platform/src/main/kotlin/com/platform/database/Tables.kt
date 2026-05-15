@@ -14,6 +14,11 @@ object Organizations : Table("organizations") {
     val name = varchar("name", 255)
     val createdAt = timestamp("created_at")
 
+    // V0008: per-org redaction salt for deterministic typed placeholders
+    // emitted by the Go agent's redaction engine (CONTEXT.md D-15).
+    // 32 random bytes hex-encoded = 64 chars.
+    val redactionSalt = text("redaction_salt")
+
     override val primaryKey = PrimaryKey(id)
 }
 
