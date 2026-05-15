@@ -1,18 +1,21 @@
 // vp-tap is the BPF-based traffic capture daemon for the validation platform.
 //
-// Loads the probe.bpf.o object built by bpf2go, attaches four syscall
-// tracepoints (sys_enter_write, sys_enter_read, sys_exit_read,
-// sys_enter_close), and drains a ring buffer of three event kinds:
-// KIND_WRITE / KIND_READ (carry payload bytes) and KIND_CLOSE (fd
-// invalidation, zero payload). Each event carries cgroup_id (canonical
-// attribution key per VAL-55) plus (pid, fd) for connection correlation
-// in userspace reassembly.
+// Pipeline (CONTEXT.md D-01 / D-03 / RESEARCH §6):
 //
-// Stop with SIGINT or SIGTERM. main() is pure orchestration: it sets up
-// BPF state and the informer, then launches cooperating goroutines and
-// blocks until shutdown drains. Userspace reassembly (Plan 01-04) and the
-// rest of the pipeline (Plans 01-02, 01-05, 01-06) plug into the channel
-// drained by runCaptureLoop.
+//   BPF tracepoints  →  ringbuf  →  reassembler (Plan 01-04)
+//                                    └─ transformer (Plan 01-05: redact + sample + filter)
+//                                          └─ batcher  →  collectorclient (Plan 01-05)
+//
+// Plus two sibling goroutines coordinated by atomic.Pointer[DynamicConfig]:
+//
+//   serviceDiscoveryLoop (Plan 01-06)   — K8s Service informer → POST /api/services
+//   configPollLoop       (Plan 01-05)   — GET /api/agent/config → swap DynamicConfig
+//
+// Plan 01-02 lands the *shell* of this pipeline: config loaders, structured
+// logging, /metrics + /ready + /healthz HTTP endpoints, and the goroutine
+// scaffolding with TODO placeholders for the loops that other plans fill in.
+//
+// Stop with SIGINT or SIGTERM.
 
 package main
 
@@ -21,7 +24,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -38,8 +43,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"vp-tap/internal/config"
 	bpf "vp-tap/internal/ebpf"
 	"vp-tap/internal/k8s/podinformer"
+	"vp-tap/internal/logging"
+	"vp-tap/internal/metrics"
 )
 
 const (
@@ -49,10 +57,12 @@ const (
 	// /sys/fs/cgroup from the host so the informer can stat() pod-cgroup
 	// slice directories to learn cgroup IDs.
 	cgroupRoot = "/sys/fs/cgroup"
+
+	// Default ConfigMap mount path (D-02). Overridden via BEHAVIORAL_CONFIG_PATH env.
+	defaultBehavioralPath = "/etc/vp-tap/config.yaml"
 )
 
-// Event kinds emitted by probe.bpf.c. Keep in sync with the constants in
-// the BPF program.
+// Event kinds emitted by probe.bpf.c.
 const (
 	kindWrite uint8 = 1
 	kindRead  uint8 = 2
@@ -60,18 +70,46 @@ const (
 )
 
 func main() {
-	setupLogger()
+	logging.Setup(logging.MustLevel(os.Getenv("LOG_LEVEL")))
+	slog.Info("vp-tap starting", "pid", os.Getpid())
+
 	mustRaiseMemlock()
 
-	nodeName := mustGetNodeName()
+	staticCfg, err := config.LoadStatic()
+	if err != nil {
+		slog.Error("static config load failed", "err", err)
+		os.Exit(1)
+	}
+	behavioralPath := os.Getenv("BEHAVIORAL_CONFIG_PATH")
+	if behavioralPath == "" {
+		behavioralPath = defaultBehavioralPath
+	}
+	behavioral, err := config.LoadBehavioral(behavioralPath)
+	if err != nil {
+		slog.Error("behavioral config load failed", "path", behavioralPath, "err", err)
+		os.Exit(1)
+	}
+	slog.Info("config loaded",
+		"node", staticCfg.NodeName,
+		"platform_url", staticCfg.PlatformURL,
+		"collector_url", staticCfg.CollectorURL,
+		"max_body_bytes", behavioral.MaxBodyBytes,
+		"reassembly_idle_ttl", behavioral.ReassemblyIdleTTL,
+		"metrics_port", behavioral.MetricsPort,
+	)
+
+	// DynamicConfig is shared across goroutines via atomic.Pointer.
+	// configPollLoop (Plan 01-05) overwrites; transformer/reassembler/
+	// collectorclient read by Load() each time they need a snapshot.
+	dyncfg := &atomic.Pointer[config.DynamicConfig]{}
+	dyncfg.Store(config.DefaultDynamicConfig())
+
+	ctx, cancel := installSignalHandler()
+	defer cancel()
 
 	objs := mustLoadBPFObjects()
 	defer objs.Close()
 
-	// Attach all four tracepoints. The read side needs both enter (to stash
-	// the buffer pointer) and exit (to consume + emit), since sys_exit_read
-	// carries args->ret but not the buffer pointer that lived on the entry
-	// context.
 	links := mustAttachAllTracepoints(objs)
 	for _, l := range links {
 		defer l.Close()
@@ -80,28 +118,23 @@ func main() {
 	rd := mustOpenRingbuf(objs)
 	defer rd.Close()
 
-	ctx, cancel := installSignalHandler()
-	defer cancel()
-
-	index := mustBuildPodIndex(nodeName)
+	index := mustBuildPodIndex(staticCfg.NodeName)
 	var captured uint64
 
-	// Four cooperating goroutines: shutdown handler, heartbeat,
-	// informer Run, capture loop. Each exits on ctx cancellation
-	// (the shutdown handler propagates by closing the ringbuf).
+	// Goroutine fleet. Each exits on ctx cancellation; shutdown handler
+	// propagates by closing the ringbuf so the capture loop unblocks.
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(7)
 	go runShutdownHandler(ctx, &wg, rd)
 	go runHeartbeat(ctx, &wg, &captured, index)
 	go runPodInformer(ctx, &wg, index)
-	go runCaptureLoop(&wg, rd, index, &captured)
-	wg.Wait()
-}
+	go runCaptureLoop(ctx, &wg, rd, index, &captured)
+	go runMetricsServer(ctx, &wg, behavioral.MetricsPort, index)
+	go runServiceDiscoveryLoop(ctx, &wg, staticCfg, dyncfg)
+	go runConfigPollLoop(ctx, &wg, staticCfg, dyncfg)
 
-// setupLogger configures the stdlib logger to prepend UTC date+time.
-func setupLogger() {
-	log.SetFlags(log.LstdFlags | log.LUTC)
-	log.Printf("vp-tap starting (pid=%d)", os.Getpid())
+	wg.Wait()
+	slog.Info("vp-tap shutdown complete")
 }
 
 // mustRaiseMemlock removes the RLIMIT_MEMLOCK cap so BPF maps can be
@@ -109,20 +142,9 @@ func setupLogger() {
 // 32 MiB ringbuf; on newer kernels the call is a harmless no-op.
 func mustRaiseMemlock() {
 	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatalf("removing memlock: %v", err)
+		slog.Error("removing memlock", "err", err)
+		os.Exit(1)
 	}
-}
-
-// mustGetNodeName returns the K8s node name the agent is running on.
-// Sourced from the NODE_NAME env var, injected by the DaemonSet via the
-// downward API (spec.nodeName). Fatal if missing — without it we can't
-// scope the informer to local-node pods.
-func mustGetNodeName() string {
-	name := os.Getenv("NODE_NAME")
-	if name == "" {
-		log.Fatalf("NODE_NAME env var is required (set via downward API in the DaemonSet)")
-	}
-	return name
 }
 
 // mustLoadBPFObjects parses the bpf2go-generated ELF blob, makes the
@@ -130,7 +152,8 @@ func mustGetNodeName() string {
 func mustLoadBPFObjects() bpf.ProbeObjects {
 	objs := bpf.ProbeObjects{}
 	if err := bpf.LoadProbeObjects(&objs, nil); err != nil {
-		log.Fatalf("loading bpf objects: %v", err)
+		slog.Error("loading bpf objects", "err", err)
+		os.Exit(1)
 	}
 	return objs
 }
@@ -153,9 +176,10 @@ func mustAttachAllTracepoints(objs bpf.ProbeObjects) []link.Link {
 	for _, a := range attaches {
 		l, err := link.Tracepoint(a.group, a.name, a.prog, nil)
 		if err != nil {
-			log.Fatalf("attaching tracepoint %s/%s: %v", a.group, a.name, err)
+			slog.Error("attaching tracepoint", "group", a.group, "name", a.name, "err", err)
+			os.Exit(1)
 		}
-		log.Printf("attached tracepoint %s/%s", a.group, a.name)
+		slog.Info("attached tracepoint", "group", a.group, "name", a.name)
 		links = append(links, l)
 	}
 	return links
@@ -165,7 +189,8 @@ func mustAttachAllTracepoints(objs bpf.ProbeObjects) []link.Link {
 func mustOpenRingbuf(objs bpf.ProbeObjects) *ringbuf.Reader {
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
-		log.Fatalf("opening ringbuf reader: %v", err)
+		slog.Error("opening ringbuf reader", "err", err)
+		os.Exit(1)
 	}
 	return rd
 }
@@ -181,11 +206,13 @@ func installSignalHandler() (context.Context, context.CancelFunc) {
 func mustBuildPodIndex(nodeName string) *podinformer.Index {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		log.Fatalf("loading in-cluster K8s config: %v", err)
+		slog.Error("loading in-cluster K8s config", "err", err)
+		os.Exit(1)
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		log.Fatalf("constructing K8s client: %v", err)
+		slog.Error("constructing K8s client", "err", err)
+		os.Exit(1)
 	}
 	resolver := podinformer.NewFSCgroupResolver(cgroupRoot)
 	return podinformer.NewIndex(client, nodeName, resolver)
@@ -196,7 +223,7 @@ func mustBuildPodIndex(nodeName string) *podinformer.Index {
 func runShutdownHandler(ctx context.Context, wg *sync.WaitGroup, rd *ringbuf.Reader) {
 	defer wg.Done()
 	<-ctx.Done()
-	log.Printf("shutdown signal received, closing ringbuf")
+	slog.Info("shutdown signal received, closing ringbuf")
 	_ = rd.Close()
 }
 
@@ -211,8 +238,9 @@ func runHeartbeat(ctx context.Context, wg *sync.WaitGroup, captured *uint64, idx
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Printf("heartbeat captured=%d indexed_cgroups=%d",
-				atomic.LoadUint64(captured), idx.Size())
+			slog.Info("heartbeat",
+				"captured", atomic.LoadUint64(captured),
+				"indexed_cgroups", idx.Size())
 		}
 	}
 }
@@ -223,28 +251,29 @@ func runPodInformer(ctx context.Context, wg *sync.WaitGroup, idx *podinformer.In
 	idx.Run(ctx)
 }
 
-// runCaptureLoop drains the ringbuf and emits one log line per captured
-// event, switching on event kind. Reassembly (Plan 01-04) replaces the
-// log-only handler with a real reassembler that produces ReassembledPair
-// instances on a channel.
-func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, idx *podinformer.Index, captured *uint64) {
+// runCaptureLoop drains the ringbuf and switches on event kind.
+// Plan 01-04 replaces the in-loop logging with a real reassembler.
+func runCaptureLoop(ctx context.Context, wg *sync.WaitGroup, rd *ringbuf.Reader, idx *podinformer.Index, captured *uint64) {
 	defer wg.Done()
-	log.Printf("events ringbuf open; waiting for HTTP traffic on this node...")
+	slog.Info("events ringbuf open; waiting for HTTP traffic on this node")
+	_ = ctx // Plan 01-04 uses ctx for backpressure on the pairs channel.
 
 	var e bpf.ProbeEvent
 	for {
 		record, err := rd.Read()
 		if err != nil {
 			if errors.Is(err, ringbuf.ErrClosed) {
-				log.Printf("events ringbuf closed, exiting (total captured=%d)", atomic.LoadUint64(captured))
+				slog.Info("events ringbuf closed", "total_captured", atomic.LoadUint64(captured))
 				return
 			}
-			log.Printf("events ringbuf read error: %v", err)
+			slog.Warn("events ringbuf read error", "err", err)
+			metrics.RingbufDropsTotal.WithLabelValues("decode_error").Inc()
 			continue
 		}
 
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &e); err != nil {
-			log.Printf("events decode error: %v", err)
+			slog.Warn("events decode error", "err", err)
+			metrics.RingbufDropsTotal.WithLabelValues("decode_error").Inc()
 			continue
 		}
 
@@ -259,38 +288,102 @@ func runCaptureLoop(wg *sync.WaitGroup, rd *ringbuf.Reader, idx *podinformer.Ind
 				continue
 			}
 			atomic.AddUint64(captured, 1)
-			// cgroup_id → pod via informer. Misses (host processes outside
-			// kubepods, or pods the informer hasn't seen yet) log as "pod=?".
 			podLabel := "?"
 			if p, ok := idx.Lookup(e.CgroupId); ok {
 				podLabel = p.Namespace + "/" + p.Name
+			} else {
+				metrics.AttributionUnknownTotal.WithLabelValues("pre_sync").Inc()
 			}
 			kindLabel := "write"
 			if e.Kind == kindRead {
 				kindLabel = "read"
 			}
-			log.Printf("[evt=%s cgroup=%d tgid=%d pid=%d fd=%d pod=%s] %s",
-				kindLabel, e.CgroupId, e.Tgid, e.Pid, e.Fd, podLabel, line)
+			slog.Debug("captured event",
+				"kind", kindLabel,
+				"cgroup", e.CgroupId,
+				"pid", e.Pid,
+				"fd", e.Fd,
+				"pod", podLabel,
+				"line", line)
 		case kindClose:
 			// Plan 01-04 wires this into reassembly buffer eviction.
-			// Prototype just logs at TRACE-equivalent verbosity.
 			_ = e
 		default:
-			log.Printf("events unknown kind=%d", e.Kind)
+			slog.Warn("events unknown kind", "kind", e.Kind)
 		}
 	}
 }
 
+// runMetricsServer serves /metrics, /ready, /healthz on the configured
+// port. /ready blocks success on the pod informer's initial sync (so the
+// Helm chart's readinessProbe gates traffic until the informer is fresh).
+// /healthz is always 200 — used by the livenessProbe.
+func runMetricsServer(ctx context.Context, wg *sync.WaitGroup, port int, idx *podinformer.Index) {
+	defer wg.Done()
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
+		if idx.HasSynced() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ready"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("informer not synced"))
+	})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	// ListenAndServe blocks; ctx-cancel triggers Shutdown via goroutine.
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	slog.Info("metrics server listening", "addr", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("metrics server error", "err", err)
+	}
+}
+
+// runServiceDiscoveryLoop is the Plan 01-02 placeholder. Plan 01-06 wires
+// the actual K8s Service informer + PlatformClient.RegisterService loop.
+func runServiceDiscoveryLoop(ctx context.Context, wg *sync.WaitGroup, _ *config.StaticConfig, _ *atomic.Pointer[config.DynamicConfig]) {
+	defer wg.Done()
+	slog.Info("serviceDiscoveryLoop placeholder — Plan 01-06 wires the real loop")
+	<-ctx.Done()
+}
+
+// runConfigPollLoop is the Plan 01-02 placeholder. Plan 01-05 wires the
+// actual ConfigClient.Fetch + atomic.Pointer swap.
+func runConfigPollLoop(ctx context.Context, wg *sync.WaitGroup, _ *config.StaticConfig, _ *atomic.Pointer[config.DynamicConfig]) {
+	defer wg.Done()
+	slog.Info("configPollLoop placeholder — Plan 01-05 wires the real loop")
+	<-ctx.Done()
+}
+
 // httpLinePrefixes is the set of accepted leading tokens for an HTTP/1.1
-// request line or status line.
+// request line or status line. Kept for the diagnostic log path until
+// Plan 01-04's reassembler takes over.
 var httpLinePrefixes = []string{
 	"HTTP/", // response status line
 	"GET ", "POST ", "PUT ", "DELETE ",
 	"HEAD ", "PATCH ", "OPTIONS ", "CONNECT ", "TRACE ",
 }
 
-// firstHTTPLine extracts the request line or status line from a write
-// buffer that the in-kernel filter already pre-screened as HTTP-shaped.
+// firstHTTPLine extracts the request line or status line from a buffer
+// that the in-kernel filter already pre-screened as HTTP-shaped.
 func firstHTTPLine(b []byte) string {
 	idx := bytes.IndexAny(b, "\r\n")
 	if idx < 0 {
