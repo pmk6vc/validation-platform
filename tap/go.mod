@@ -4,6 +4,8 @@ go 1.26.0
 
 require (
 	github.com/cilium/ebpf v0.17.3
+	github.com/prometheus/client_golang v1.20.5
+	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
