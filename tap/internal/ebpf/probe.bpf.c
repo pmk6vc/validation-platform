@@ -2,83 +2,92 @@
 
 // SPDX-License-Identifier: BSD-2-Clause
 //
-// Build constraint above tells Go's toolchain to skip this file entirely.
-// Without it, `go test ./...` with cgo enabled (the default outside our
-// Dockerfile) sees a .c file in a Go package and errors with "C source
-// files not allowed when not using cgo or SWIG". The actual BPF
-// compilation goes through bpf2go → clang -target bpf and ignores this
-// constraint, so the file still gets compiled correctly into BPF
-// bytecode by `go generate`.
+// vp-tap Phase 1 eBPF program — extended from the TAP-1 prototype.
 //
-// vp-tap TAP-1 prototype eBPF program.
+// Hooks four syscall tracepoints (all stable kernel ABI):
 //
-// Hooks the sys_enter_write tracepoint, filters in-kernel to writes whose
-// first 4 bytes match an HTTP/1.1 method or response prefix ("HTTP"), and
-// emits the first MAX_DATA_SIZE bytes of the buffer to userspace via a
-// BPF ring buffer.
+//   sys_enter_write   — emits KIND_WRITE with up to MAX_SEGMENT outbound bytes
+//   sys_enter_read    — stashes the read buffer pointer + fd keyed by task id
+//   sys_exit_read     — looks up the stashed pointer, reads up to args->ret
+//                       inbound bytes, emits KIND_READ
+//   sys_enter_close   — emits KIND_CLOSE so userspace invalidates its
+//                       per-(pid, fd) reassembly buffer
 //
-// We intentionally use tracepoints rather than kprobes (the TAP-1 spec said
-// kprobes on sys_read/sys_write). Tracepoints have a stable ABI across kernel
-// versions, do not depend on the kernel's symbol naming convention
-// (`__x64_sys_write` vs `sys_write`), and work without vmlinux.h / CO-RE for
-// this minimal context-struct shape. Behavioural coverage is identical for
-// the validation criteria.
+// Why three event kinds emitted from four tracepoints: sys_exit_read carries
+// the bytes-returned value but NOT the fd or buffer pointer (those live in
+// the syscall's *entry* context). The standard pattern — used by Pixie,
+// Beyla, Coroot — is to stash (buf, fd) on enter and consume on exit using
+// pid_tgid as the key (a task is single-threaded through one syscall, so
+// pid_tgid is unambiguous for the lifetime of one read()).
 //
-// We only hook sys_enter_write: clients write requests, servers write
-// responses — both surface as a write() with HTTP-shaped bytes. That's
-// enough for the foundation-gate check ("can we see HTTP at all").
+// Why tracepoints (not kprobes): stable ABI across kernels; no CO-RE
+// dependency beyond BTF; TAP-1 already established this choice and the
+// kernel-compat matrix in RESEARCH §2b assumes it.
+//
+// Attribution model (LOCKED, see CONTEXT.md D-05): cgroup_id is the
+// canonical pod-attribution key (VAL-55). (pid, fd) is a transient
+// connection-correlation key carried on each event; userspace stitches
+// segments per-(pid, fd) into HTTP messages.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-// Per-event payload size, in bytes. Three constraints drive the choice:
-//
-//   1. An HTTP/1.1 request line and a few headers fit comfortably in 256 B
-//      (typical request line is < 100 B). That's all the TAP-1 foundation
-//      gate needs to prove.
-//   2. Older kernels cap the BPF program stack at 512 B; keeping per-event
-//      buffers small leaves room for locals and helper-call frames.
-//   3. Power-of-two sizes let the verifier prove `count & (SIZE-1)` is in
-//      range without dataflow analysis — see the mask trick below.
-//
-// Behaviour at the limit: silent truncation. e->len is clamped to
-// MAX_DATA_SIZE and the tail of the buffer is discarded. For TAP-1 that's
-// acceptable (the request line is intact). Larger captures (~1 MiB body
-// coverage) will need a per-CPU scratch map for the read, multiple ringbuf
-// events per write, AND TCP-stream reassembly in userspace — HTTP messages
-// can be split across write() syscalls by Nagle, app-level buffering, or
-// chunked transfer encoding.
-#define MAX_DATA_SIZE 256
+// MAX_SEGMENT — per-event payload cap. 4096 (page size) matches the L7
+// capture convention (Pixie, Beyla, Coroot). HTTP bodies larger than this
+// span multiple ringbuf events keyed by the same (pid, fd); userspace
+// reassembly stitches them.
+#define MAX_SEGMENT 4096
 
+// Event kinds reported to userspace (single byte; struct has padding).
+#define KIND_WRITE 1
+#define KIND_READ  2
+#define KIND_CLOSE 3
+
+// Wire-format event emitted to the ringbuf. Layout must match the Go
+// binary.Read decoder in cmd/vp-tap/main.go. bpf2go generates the Go
+// mirror from the BTF debug info; field order matters.
 struct event {
-    // cgroup_id is the sole attribution key. It identifies the cgroup of the
-    // task that performed the write at the instant the syscall fired — race-
-    // free across PID reuse, container restart, and userspace eviction lag.
-    // Userspace joins this against a K8s-informer-backed cgroup_id → pod map
-    // (see internal/k8s/podinformer). Placed first (8-byte aligned) to avoid
-    // struct padding. See VAL-55 §1 for the full rationale.
-    __u64 cgroup_id;
-    __u32 pid;          // kernel pid (thread id) — diagnostic only
-    __u32 tgid;         // userspace getpid() value — diagnostic only
-    __u32 len;          // bytes actually copied into data[]
-    __u32 fd;           // fd from the write() call
-    __u8  data[MAX_DATA_SIZE];
+    __u64 cgroup_id;             // canonical attribution key (VAL-55)
+    __u64 ts_ns;                 // bpf_ktime_get_ns() — monotonic
+    __u32 pid;                   // kernel pid (thread id)
+    __u32 tgid;                  // userspace getpid()
+    __u32 fd;                    // fd from the syscall — connection correlation
+    __u32 len;                   // bytes copied into data[] (0 for KIND_CLOSE)
+    __u8  kind;                  // KIND_WRITE / KIND_READ / KIND_CLOSE
+    __u8  _pad[7];               // align data[] to 8 bytes
+    __u8  data[MAX_SEGMENT];
 };
 
-// Force `struct event` into the .BTF section so bpf2go's `-type event` flag
-// can find it. Without a reference like this the struct gets stripped before
-// BTF emission and bpf2go errors with "type name event: not found".
+// Force `struct event` into the .BTF section so bpf2go's `-type event`
+// can find it. Without a reference the struct is stripped pre-emission.
 const struct event *unused_event __attribute__((unused));
 
+// Ring buffer for userspace consumption. 32 MiB per RESEARCH.md §2a:
+// medium-envelope load (50 services × ~1k RPS = ~50k events/sec/node) at
+// ~4 KiB/event = ~200 MiB/sec; 32 MiB absorbs a ~150 ms userspace stall.
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 8 * 1024 * 1024); // 8 MiB
+    __uint(max_entries, 32 * 1024 * 1024);
 } events SEC(".maps");
 
-// Context layout for tracepoint/syscalls/sys_enter_write. Matches the format
-// at /sys/kernel/debug/tracing/events/syscalls/sys_enter_write/format. The
-// common-fields preamble (first 8 bytes) and the syscall_nr / args[] layout
-// are stable kernel ABI for syscall tracepoints.
+// sys_enter_read stash: (buf, fd) keyed by pid_tgid (a task can only be in
+// one read() syscall at a time). sys_exit_read consumes + deletes.
+struct read_state {
+    __u64 buf;
+    __u32 fd;
+    __u32 _pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64);          // pid_tgid
+    __type(value, struct read_state);
+} read_buffers SEC(".maps");
+
+// Syscall tracepoint context structs. Layout matches
+// /sys/kernel/debug/tracing/events/syscalls/*/format — stable kernel ABI.
+
 struct sys_enter_write_args {
     __u64 unused;
     __s32 syscall_nr;
@@ -88,40 +97,34 @@ struct sys_enter_write_args {
     __u64 count;
 };
 
-// A 4-byte content sniff that filters in-kernel so userspace only sees
-// writes that *look* like HTTP/1.1. It is deliberately the cheapest
-// possible filter to prove the capture pipeline end-to-end.
-//
-// Known weaknesses:
-//
-//   - False positives: any write whose first 4 bytes happen to match an
-//     HTTP method or "HTTP". Harmless; userspace re-checks the request
-//     line and drops what doesn't parse.
-//   - False negatives: anything that isn't HTTP/1.1 in plaintext gets
-//     dropped. gRPC (binary HTTP/2 frames), TLS (encrypted), Postgres /
-//     Redis / Kafka wire protocols — all invisible.
-//   - Adversarial input is *not* a concern at this layer: the tap is a
-//     passive observer that never gates anything, so a crafted "GET "
-//     prefix just produces a noisy log line. Trust of captured data is a
-//     downstream replay-engine concern.
-//
-// Note: this is content-based pre-filtering, NOT attribution. Attribution
-// is done by cgroup_id (see `bpf_get_current_cgroup_id()` below) and joined
-// in userspace against a K8s informer that maintains a cgroup_id → pod map.
-// We deliberately rejected a (pid,fd) socket-tracking design (eBPF hooks on
-// accept4/connect populating an "interesting sockets" BPF map): cgroup_id is
-// captured atomically with the syscall, race-free, and doesn't require
-// keeping a side-channel map in sync across separate kernel hooks.
-//
-// Future work: target-service filtering (drop captures for pods not in the
-// platform's /api/agent/config target list) lives in userspace, after the
-// cgroup_id → pod join — being wrong there cannot crash the kernel. Larger
-// payloads and protocols beyond HTTP/1.1 are likewise deferred to userspace
-// with real parsers (e.g. golang.org/x/net/http2 with HPACK).
+struct sys_enter_read_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __u64 fd;
+    __u64 buf;
+    __u64 count;
+};
+
+struct sys_exit_read_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __s64 ret; // bytes read, or negative errno
+};
+
+struct sys_enter_close_args {
+    __u64 unused;
+    __s32 syscall_nr;
+    __u32 _pad;
+    __u64 fd;
+};
+
+// In-kernel HTTP/1.1 pre-filter — same shape as the TAP-1 prototype, kept
+// on both write and read sides. False positives are harmless (userspace
+// parser re-checks). False negatives drop non-HTTP/1.1 plaintext (gRPC /
+// TLS — Phase 2 widens this via HTTP/2 dissection in userspace).
 static __always_inline int looks_like_http(const __u8 *p) {
-    // First 4 bytes of an HTTP/1.1 request line are:
-    //   "GET ", "POST", "PUT ", "HEAD", "DELE", "PATC", "OPTI", "CONN", "TRAC"
-    // Responses start with "HTTP".
     if (p[0] == 'G' && p[1] == 'E' && p[2] == 'T' && p[3] == ' ') return 1;
     if (p[0] == 'P' && p[1] == 'O' && p[2] == 'S' && p[3] == 'T') return 1;
     if (p[0] == 'P' && p[1] == 'U' && p[2] == 'T' && p[3] == ' ') return 1;
@@ -135,10 +138,21 @@ static __always_inline int looks_like_http(const __u8 *p) {
     return 0;
 }
 
+// Fill the common header fields on a reserved event.
+static __always_inline void fill_header(struct event *e, __u8 kind, __u32 fd) {
+    e->cgroup_id = bpf_get_current_cgroup_id();
+    e->ts_ns     = bpf_ktime_get_ns();
+    __u64 id = bpf_get_current_pid_tgid();
+    e->pid  = (__u32)id;
+    e->tgid = (__u32)(id >> 32);
+    e->fd   = fd;
+    e->kind = kind;
+}
+
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_sys_enter_write(struct sys_enter_write_args *ctx) {
     __u64 count = ctx->count;
-    if (count < 16) return 0;
+    if (count < 16) return 0; // shorter than the smallest HTTP request line
 
     __u8 prefix[4] = {};
     if (bpf_probe_read_user(&prefix, sizeof(prefix), (void *)ctx->buf) != 0)
@@ -148,24 +162,65 @@ int trace_sys_enter_write(struct sys_enter_write_args *ctx) {
     struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) return 0;
 
-    // bpf_get_current_cgroup_id() returns the cgroup ID of the task that
-    // triggered this tracepoint, captured atomically with the syscall. This
-    // is the foundation of cgroup-ID-based attribution: userspace joins this
-    // value against a cgroup_id → pod map maintained by a K8s informer in
-    // internal/k8s/podinformer.
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_header(e, KIND_WRITE, (__u32)ctx->fd);
+    e->len = count > MAX_SEGMENT ? MAX_SEGMENT : (__u32)count;
 
-    __u64 id = bpf_get_current_pid_tgid();
-    e->pid  = (__u32)id;
-    e->tgid = (__u32)(id >> 32);
-    e->fd   = (__u32)ctx->fd;
-    e->len  = count > MAX_DATA_SIZE ? MAX_DATA_SIZE : (__u32)count;
-
-    // Verifier insists on a bounded constant for the read length; bound
-    // again with a mask so the verifier can prove the access stays in range.
-    __u32 to_read = e->len & (MAX_DATA_SIZE - 1);
-    if (to_read == 0) to_read = MAX_DATA_SIZE - 1;
+    __u32 to_read = e->len & (MAX_SEGMENT - 1);
+    if (to_read == 0) to_read = MAX_SEGMENT - 1;
     bpf_probe_read_user(&e->data, to_read, (void *)ctx->buf);
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_read")
+int trace_sys_enter_read(struct sys_enter_read_args *ctx) {
+    __u64 id = bpf_get_current_pid_tgid();
+    struct read_state st = { .buf = ctx->buf, .fd = (__u32)ctx->fd };
+    bpf_map_update_elem(&read_buffers, &id, &st, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_read")
+int trace_sys_exit_read(struct sys_exit_read_args *ctx) {
+    __u64 id = bpf_get_current_pid_tgid();
+    struct read_state *st = bpf_map_lookup_elem(&read_buffers, &id);
+    if (!st) return 0;
+
+    __u64 buf = st->buf;
+    __u32 fd = st->fd;
+    bpf_map_delete_elem(&read_buffers, &id);
+
+    __s64 ret = ctx->ret;
+    if (ret < 16) return 0; // partial / errno / too small to be HTTP
+
+    __u8 prefix[4] = {};
+    if (bpf_probe_read_user(&prefix, sizeof(prefix), (void *)buf) != 0)
+        return 0;
+    if (!looks_like_http(prefix)) return 0;
+
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) return 0;
+
+    fill_header(e, KIND_READ, fd);
+    e->len = (__u64)ret > MAX_SEGMENT ? MAX_SEGMENT : (__u32)ret;
+
+    __u32 to_read = e->len & (MAX_SEGMENT - 1);
+    if (to_read == 0) to_read = MAX_SEGMENT - 1;
+    bpf_probe_read_user(&e->data, to_read, (void *)buf);
+
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_close")
+int trace_sys_enter_close(struct sys_enter_close_args *ctx) {
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) return 0;
+
+    fill_header(e, KIND_CLOSE, (__u32)ctx->fd);
+    e->len = 0;
+    // data[] left uninitialized; userspace ignores it when kind == KIND_CLOSE
 
     bpf_ringbuf_submit(e, 0);
     return 0;
