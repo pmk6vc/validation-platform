@@ -11,6 +11,13 @@ data class CreateOrganizationRequest(
 /**
  * Response for GET /api/agent/config. Matches the agent's DynamicConfig wire format:
  * duration fields are Long milliseconds, not ISO strings.
+ *
+ * [redactionSalt], [extraRedactedHeaders], [extraBodyRedactionPatterns] added
+ * in Plan 01-03 (CAPTURE-09 + CONTEXT.md D-17). Phase 1 wires the
+ * salt (sourced from organizations.redaction_salt); the extra-allowlist
+ * fields ship empty — Phase 3 SEC-09 wires the platform endpoint that
+ * populates them. Additive evolution: pre-update agents that ignore
+ * unknown fields keep working.
  */
 @Serializable
 data class AgentConfigResponse(
@@ -21,6 +28,9 @@ data class AgentConfigResponse(
     val configPollInterval: Long = 30000,
     val discoveryInterval: Long = 60000,
     val namespaceFilters: List<String> = emptyList(),
+    val redactionSalt: String = "",
+    val extraRedactedHeaders: List<String> = emptyList(),
+    val extraBodyRedactionPatterns: List<String> = emptyList(),
 )
 
 /**

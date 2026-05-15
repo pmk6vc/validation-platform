@@ -122,7 +122,26 @@ fun Application.configureRouting() {
                             )
                         val targetServices =
                             services.items.associate { it.name to it.id.value }
-                        call.respond(AgentConfigResponse(targetServices = targetServices))
+                        // V0008/D-15: pass the per-org redaction salt to the agent
+                        // so its redaction engine can produce per-org-deterministic
+                        // typed placeholders. If the org is somehow missing the
+                        // salt (data corruption), fail loudly rather than serving
+                        // a blank salt that would weaken placeholder determinism.
+                        val organization =
+                            OrganizationRepository.findById(identity.organizationId)
+                                ?: return@get call.respond(
+                                    HttpStatusCode.NotFound,
+                                    "Organization not found",
+                                )
+                        call.respond(
+                            AgentConfigResponse(
+                                targetServices = targetServices,
+                                redactionSalt = organization.redactionSalt,
+                                // SEC-09 hook: empty for Phase 1; Phase 3 populates.
+                                extraRedactedHeaders = emptyList(),
+                                extraBodyRedactionPatterns = emptyList(),
+                            ),
+                        )
                     }
                 }
 

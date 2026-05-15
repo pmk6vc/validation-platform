@@ -147,4 +147,42 @@ class AgentConfigRoutesTest : PlatformDatabaseTestBase() {
             assertEquals(1, config.targetServices.size)
             assertEquals("prod-service", config.targetServices.keys.single())
         }
+
+    @Test
+    fun `GET agent config returns 64 char hex redactionSalt for caller org`() =
+        testApplication {
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
+
+            val response =
+                client.get("/api/agent/config") {
+                    bearerAuth(TestJwtKeys.generateTestJwt(organizationId = org.id.value))
+                }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val config = json.decodeFromString<AgentConfigResponse>(response.bodyAsText())
+            kotlin.test.assertTrue(
+                config.redactionSalt.matches(Regex("[0-9a-f]{64}")),
+                "redactionSalt expected 64-char hex, got: '${'$'}{config.redactionSalt}'",
+            )
+            // SEC-09 hook fields land empty in Phase 1; Phase 3 populates.
+            assertEquals(emptyList(), config.extraRedactedHeaders)
+            assertEquals(emptyList(), config.extraBodyRedactionPatterns)
+        }
+
+    @Test
+    fun `GET agent config redactionSalt is stable per org across calls`() =
+        testApplication {
+            application { module(initDatabase = false, privateKeyPem = TestJwtKeys.privateKeyPem) }
+
+            val token = TestJwtKeys.generateTestJwt(organizationId = org.id.value)
+            val first =
+                json.decodeFromString<AgentConfigResponse>(
+                    client.get("/api/agent/config") { bearerAuth(token) }.bodyAsText(),
+                )
+            val second =
+                json.decodeFromString<AgentConfigResponse>(
+                    client.get("/api/agent/config") { bearerAuth(token) }.bodyAsText(),
+                )
+            assertEquals(first.redactionSalt, second.redactionSalt)
+        }
 }
