@@ -40,15 +40,39 @@ info "Platform image:  ${PLATFORM_IMAGE}"
 info "Collector image: ${COLLECTOR_IMAGE}"
 
 # ---------------------------------------------------------------------------
-# Apply with Cloud SQL paused
+# Plan → strip IAM-user ownership for users about to be dropped → apply
+#
+# If the user has removed an entry from var.dev_db_users (or any other
+# google_sql_user is being destroyed), Postgres will refuse to DROP USER
+# while that role still owns objects or holds grants. We plan first, scan
+# the plan for google_sql_user deletes, strip Postgres-level ownership for
+# only those roles, then apply the saved plan. See common.sh for helpers.
 # ---------------------------------------------------------------------------
 
-info "Pausing Cloud SQL (activation_policy=NEVER)..."
-terraform -chdir="${REPO_ROOT}/infra/platform" apply \
-  -auto-approve \
+info "Planning the down apply (Cloud SQL active=false)..."
+PLAN_FILE="$(mktemp -t platform-down-plan.XXXXXX)"
+terraform -chdir="${REPO_ROOT}/infra/platform" plan \
+  -out="${PLAN_FILE}" \
   -var="cloudsql_active=false" \
   -var="platform_image=${PLATFORM_IMAGE}" \
   -var="collector_image=${COLLECTOR_IMAGE}"
+
+# Portable bash 3.2 array-from-stream (mapfile is bash 4+; macOS ships 3.2).
+USERS_TO_DROP=()
+while IFS= read -r _user; do
+  [[ -n "${_user}" ]] && USERS_TO_DROP+=("${_user}")
+done < <(
+  iam_users_terraform_will_drop "${REPO_ROOT}/infra/platform" "${PLAN_FILE}"
+)
+
+if [[ ${#USERS_TO_DROP[@]} -gt 0 ]]; then
+  info "Plan will drop ${#USERS_TO_DROP[@]} SQL user(s): ${USERS_TO_DROP[*]}"
+  strip_postgres_ownership_for_roles "${USERS_TO_DROP[@]}"
+fi
+
+info "Applying the saved plan..."
+terraform -chdir="${REPO_ROOT}/infra/platform" apply -auto-approve "${PLAN_FILE}"
+rm -f "${PLAN_FILE}"
 
 # ---------------------------------------------------------------------------
 # Summary
